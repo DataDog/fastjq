@@ -284,3 +284,135 @@ func bytesEqualStr(a []byte, s string) bool {
 	}
 	return true
 }
+
+// isFalsy returns true if the JSON value is null or false.
+func isFalsy(v []byte) bool {
+	for i := 0; i < len(v); i++ {
+		switch v[i] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case 'n': // null
+			return true
+		case 'f': // false
+			return true
+		default:
+			return false
+		}
+	}
+	return true // empty = falsy
+}
+
+// jsonEqual compares two raw JSON values for equality.
+func jsonEqual(a, b []byte) bool {
+	a = trimWhitespace(a)
+	b = trimWhitespace(b)
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+
+	// Fast path: identical bytes
+	if bytesEqual(a, b) {
+		return true
+	}
+
+	aCh := a[0]
+	bCh := b[0]
+
+	// Strings: compare unquoted content
+	if aCh == '"' && bCh == '"' {
+		sa := &scanner{data: a}
+		aContent := sa.readString()
+		sb := &scanner{data: b}
+		bContent := sb.readString()
+		return bytesEqual(aContent, bContent)
+	}
+
+	// Booleans and null: first byte determines identity
+	// null vs null, true vs true, false vs false
+	if (aCh == 'n' || aCh == 't' || aCh == 'f') && (bCh == 'n' || bCh == 't' || bCh == 'f') {
+		return aCh == bCh
+	}
+
+	// Numbers: try byte comparison of normalized form, then float fallback
+	if isNumberByte(aCh) && isNumberByte(bCh) {
+		return compareNumbers(a, b)
+	}
+
+	// Objects/arrays: byte-for-byte comparison (already tried above)
+	return false
+}
+
+// compareNumbers compares two JSON number byte sequences.
+func compareNumbers(a, b []byte) bool {
+	// Fast path: byte-identical
+	if bytesEqual(a, b) {
+		return true
+	}
+	// Slow path: parse as float
+	af, aOk := parseJSONFloat(a)
+	bf, bOk := parseJSONFloat(b)
+	if aOk && bOk {
+		return af == bf
+	}
+	return false
+}
+
+// parseJSONFloat parses a JSON number from raw bytes.
+// Uses integer fast path (no alloc for simple integers).
+func parseJSONFloat(b []byte) (float64, bool) {
+	if len(b) == 0 {
+		return 0, false
+	}
+
+	// Integer fast path: optional minus, then all digits
+	neg := false
+	start := 0
+	if b[0] == '-' {
+		neg = true
+		start = 1
+	}
+	isInt := true
+	for i := start; i < len(b); i++ {
+		if b[i] < '0' || b[i] > '9' {
+			isInt = false
+			break
+		}
+	}
+	if isInt && start < len(b) {
+		var n int64
+		for i := start; i < len(b); i++ {
+			n = n*10 + int64(b[i]-'0')
+		}
+		if neg {
+			n = -n
+		}
+		return float64(n), true
+	}
+
+	// Slow path: use strconv via unsafe.String to avoid allocation
+	f, err := parseFloatUnsafe(b)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+func isNumberByte(ch byte) bool {
+	return (ch >= '0' && ch <= '9') || ch == '-'
+}
+
+// trimWhitespace trims leading whitespace from a byte slice.
+func trimWhitespace(b []byte) []byte {
+	for len(b) > 0 {
+		switch b[0] {
+		case ' ', '\t', '\n', '\r':
+			b = b[1:]
+		default:
+			return b
+		}
+	}
+	return b
+}

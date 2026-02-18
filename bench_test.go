@@ -184,6 +184,36 @@ func BenchmarkFastjq_Large_Iterator(b *testing.B) {
 	}
 }
 
+func BenchmarkFastjq_Small_Select(b *testing.B) {
+	p, _ := Compile(`select(.field_2 == "xxxxxxxxxx")`)
+	buf := make([]byte, 0, len(smallJSON))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Large_Select(b *testing.B) {
+	p, _ := Compile(`select(.field_50 == "` + strings.Repeat("x", 200) + `")`)
+	buf := make([]byte, 0, len(largeJSON))
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		buf, _ = p.RunWithBuffer(largeJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_Alternative(b *testing.B) {
+	p, _ := Compile(`.field_2 // "default"`)
+	buf := make([]byte, 0, 64)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
 // --- gojq benchmarks ---
 
 func BenchmarkGojq_Small_Del(b *testing.B) {
@@ -359,5 +389,45 @@ func BenchmarkGojq_Large_Iterator(b *testing.B) {
 				break
 			}
 		}
+	}
+}
+
+func BenchmarkGojq_Small_Select(b *testing.B) {
+	query, _ := gojq.Parse(`select(.field_2 == "xxxxxxxxxx")`)
+	code, _ := gojq.Compile(query)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var v interface{}
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		iter.Next()
+	}
+}
+
+func BenchmarkGojq_Large_Select(b *testing.B) {
+	query, _ := gojq.Parse(`select(.field_50 == "` + strings.Repeat("x", 200) + `")`)
+	code, _ := gojq.Compile(query)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var v interface{}
+		json.Unmarshal(largeJSON, &v)
+		iter := code.Run(v)
+		iter.Next()
+	}
+}
+
+func BenchmarkGojq_Small_Alternative(b *testing.B) {
+	query, _ := gojq.Parse(`.field_2 // "default"`)
+	code, _ := gojq.Compile(query)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var v interface{}
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		json.Marshal(result)
 	}
 }

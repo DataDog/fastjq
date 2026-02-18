@@ -25,6 +25,12 @@ fastjq is a fast, minimal JQ engine for Go that avoids the expensive marshal/unm
 - `{a: .foo, b: .bar}` (object construction, rename)
 - `[.foo, .bar]` (array construction)
 - `expr | expr` (pipe, supports multi-output on left side)
+- `null`, `true`, `false`, `"string"`, `123` (literal values)
+- `.field == "value"`, `.field != "value"` (comparison operators)
+- `select(.level == "error")` (filter — emit input if condition truthy, nothing if falsy)
+- `.foo // "default"` (alternative — use right if left is null/false)
+- `.foo?`, `.[0]?`, `.[]?` (optional — suppress errors, produce nothing)
+- `type` (type name builtin — returns `"string"`, `"number"`, etc.)
 
 ## Key Design Decisions
 
@@ -60,15 +66,32 @@ For deletion, pre-allocate `cap = len(input)` since output is always <= input. `
 
 `. | del(.foo)` is simplified to `del(.foo)` at compile time. General pipes materialize an intermediate buffer.
 
+### 9. Parser Precedence Chain
+
+Operator precedence is implemented via a function call chain: `parseExpr` → `parseAlt` → `parseCmp` → `parseAtom`. Pipe (`|`) is the loosest, handled in `parsePipeExpr`. Then alternative (`//`), then comparison (`==`, `!=`), then atoms. Clean, extensible, no precedence table needed.
+
+### 10. Literals Store Raw JSON Bytes
+
+Literals like `"error"`, `42`, `null` store raw JSON bytes (`[]byte`) at compile time. At runtime, `append(buf, literal...)` — zero-alloc on hot path.
+
+### 11. Select Zero-Output Pattern
+
+`select(cond)` evaluates the condition; if falsy (null or false), it simply doesn't call the callback function — producing zero outputs that propagate naturally through pipes.
+
+### 12. execSingle Fast Path
+
+`execSingle` handles common single-result op types (literal, identity, field, index, compare, type) without creating closures, avoiding heap allocations in hot paths like `select(.field == "value")`.
+
 ## File Structure
 
 ```
 fastjq.go       — Public API: Compile(), Run(), RunWithBuffer(), RunAll(), RunFunc()
-scanner.go      — Zero-alloc JSON scanner (skipValue, readString, object/array iteration)
-query.go        — Query parser + AST types (8 op types)
-exec.go         — Executor: field access, indexing, deletion, iteration, construction, pipe
-fastjq_test.go  — Unit + integration tests (56 tests)
-bench_test.go   — Benchmarks: fastjq vs gojq (22 benchmarks)
+scanner.go      — Zero-alloc JSON scanner (skipValue, readString, object/array iteration, jsonEqual, isFalsy)
+query.go        — Query parser + AST types (13 op types)
+exec.go         — Executor: field access, indexing, deletion, iteration, construction, pipe, compare, select, alternative, type
+float.go        — Zero-alloc float parsing via unsafe.String
+fastjq_test.go  — Unit + integration tests (97 tests)
+bench_test.go   — Benchmarks: fastjq vs gojq (28 benchmarks)
 ```
 
 ## Public API

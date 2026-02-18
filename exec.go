@@ -1,6 +1,15 @@
 package fastjq
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+var (
+	errExpectedObjectField = errors.New("expected object for field access")
+	errExpectedArrayIndex  = errors.New("expected array for index access")
+	errExpectedIterable    = errors.New("expected array or object for .[]")
+)
 
 // execMulti executes an op against input, calling fn for each result.
 // Single-output ops call fn once. Iterators call fn per element.
@@ -26,7 +35,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opIndex:
 		return execIndexMulti(node, input, buf, fn)
 	case opIterator:
-		return execIterator(input, buf, fn)
+		return execIterator(node, input, buf, fn)
 	case opConstruct:
 		result, err := execConstruct(node, input, buf)
 		if err != nil {
@@ -39,8 +48,40 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opLiteral:
+		return fn(append(buf, node.literal...))
+	case opTypeBuiltin:
+		return execType(input, buf, fn)
+	case opCompare:
+		return execCompare(node, input, buf, fn)
+	case opSelect:
+		return execSelect(node, input, buf, fn)
+	case opAlternative:
+		return execAlternative(node, input, buf, fn)
 	default:
 		return fmt.Errorf("unknown op type: %d", node.typ)
+	}
+}
+
+// execSingle evaluates a node that is expected to produce a single result,
+// without creating a closure. Handles common op types directly.
+// Falls back to exec for complex/multi-output types.
+func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
+	switch node.typ {
+	case opLiteral:
+		return append(buf, node.literal...), nil
+	case opIdentity:
+		return execIdentity(input, buf)
+	case opField:
+		return execField(node, input, buf)
+	case opIndex:
+		return execIndex(node, input, buf)
+	case opTypeBuiltin:
+		return execTypeSingle(input, buf)
+	case opCompare:
+		return execCompareSingle(node, input, buf)
+	default:
+		return exec(node, input, buf)
 	}
 }
 
@@ -82,7 +123,10 @@ func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
-		return fmt.Errorf("expected object for field access .%s", node.field)
+		if node.optional {
+			return nil
+		}
+		return errExpectedObjectField
 	}
 
 	fieldName := []byte(node.field)
@@ -105,7 +149,10 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
-		return nil, fmt.Errorf("expected object for field access .%s", node.field)
+		if node.optional {
+			return append(buf, "null"...), nil
+		}
+		return nil, errExpectedObjectField
 	}
 
 	fieldName := []byte(node.field)
@@ -129,7 +176,10 @@ func execIndexMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
-		return fmt.Errorf("expected array for index access .[%d]", node.index)
+		if node.optional {
+			return nil
+		}
+		return errExpectedArrayIndex
 	}
 
 	idx := node.index
@@ -166,7 +216,10 @@ func execIndex(node *op, input []byte, buf []byte) ([]byte, error) {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
-		return nil, fmt.Errorf("expected array for index access .[%d]", node.index)
+		if node.optional {
+			return append(buf, "null"...), nil
+		}
+		return nil, errExpectedArrayIndex
 	}
 
 	idx := node.index
@@ -200,11 +253,14 @@ func execIndex(node *op, input []byte, buf []byte) ([]byte, error) {
 }
 
 // execIterator iterates all elements of an array or values of an object.
-func execIterator(input []byte, buf []byte, fn func([]byte) error) error {
+func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) {
-		return fmt.Errorf("expected array or object for .[]")
+		if node.optional {
+			return nil
+		}
+		return errExpectedIterable
 	}
 
 	switch s.data[s.pos] {
@@ -225,7 +281,10 @@ func execIterator(input []byte, buf []byte, fn func([]byte) error) error {
 		})
 		return nil
 	default:
-		return fmt.Errorf("expected array or object for .[], got %c", s.data[s.pos])
+		if node.optional {
+			return nil
+		}
+		return errExpectedIterable
 	}
 }
 
@@ -382,4 +441,122 @@ func execArrayConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 	}
 	buf = append(buf, ']')
 	return buf, nil
+}
+
+// execTypeSingle returns the JSON type name as a single result (no callback).
+func execTypeSingle(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return append(buf, `"null"`...), nil
+	}
+	switch s.data[s.pos] {
+	case '{':
+		return append(buf, `"object"`...), nil
+	case '[':
+		return append(buf, `"array"`...), nil
+	case '"':
+		return append(buf, `"string"`...), nil
+	case 't', 'f':
+		return append(buf, `"boolean"`...), nil
+	case 'n':
+		return append(buf, `"null"`...), nil
+	default:
+		return append(buf, `"number"`...), nil
+	}
+}
+
+// execCompareSingle evaluates == or != without callbacks (zero-alloc path).
+func execCompareSingle(node *op, input []byte, buf []byte) ([]byte, error) {
+	leftVal, err := execSingle(node.left, input, buf)
+	if err != nil {
+		return nil, err
+	}
+	rightBuf := leftVal[len(leftVal):len(leftVal):cap(leftVal)]
+	rightVal, err := execSingle(node.right, input, rightBuf)
+	if err != nil {
+		return nil, err
+	}
+	eq := jsonEqual(leftVal, rightVal)
+	if node.cmpEq == eq {
+		return append(buf[:0], "true"...), nil
+	}
+	return append(buf[:0], "false"...), nil
+}
+
+// execType returns the JSON type name of the input value.
+func execType(input []byte, buf []byte, fn func([]byte) error) error {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return fn(append(buf, `"null"`...))
+	}
+	switch s.data[s.pos] {
+	case '{':
+		return fn(append(buf, `"object"`...))
+	case '[':
+		return fn(append(buf, `"array"`...))
+	case '"':
+		return fn(append(buf, `"string"`...))
+	case 't', 'f':
+		return fn(append(buf, `"boolean"`...))
+	case 'n':
+		return fn(append(buf, `"null"`...))
+	default:
+		// number
+		return fn(append(buf, `"number"`...))
+	}
+}
+
+// execCompare evaluates == or != between two expressions.
+func execCompare(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	leftVal, err := execSingle(node.left, input, buf)
+	if err != nil {
+		return err
+	}
+	// Use space after left result for right (leftVal may have grown buf)
+	rightBuf := leftVal[len(leftVal):len(leftVal):cap(leftVal)]
+	rightVal, err := execSingle(node.right, input, rightBuf)
+	if err != nil {
+		return err
+	}
+
+	eq := jsonEqual(leftVal, rightVal)
+	if node.cmpEq {
+		if eq {
+			return fn(append(buf[:0], "true"...))
+		}
+		return fn(append(buf[:0], "false"...))
+	}
+	// !=
+	if eq {
+		return fn(append(buf[:0], "false"...))
+	}
+	return fn(append(buf[:0], "true"...))
+}
+
+// execSelect evaluates a condition and emits the input if truthy, nothing if falsy.
+func execSelect(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	condVal, err := execSingle(node.child, input, buf)
+	if err != nil {
+		return err
+	}
+	if isFalsy(condVal) {
+		return nil // zero outputs
+	}
+	return fn(input)
+}
+
+// execAlternative tries left; if result is falsy, evaluates right instead.
+func execAlternative(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	// Fast path for single-result left expressions (common case)
+	result, err := execSingle(node.left, input, buf)
+	if err != nil {
+		return err
+	}
+	if !isFalsy(result) {
+		return fn(result)
+	}
+	// Left was falsy — evaluate right
+	return execMulti(node.right, input, buf, fn)
 }

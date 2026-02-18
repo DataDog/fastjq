@@ -58,6 +58,8 @@ Use `RunAll` or `RunFunc` to consume multiple outputs. `Run`/`RunWithBuffer` ret
 | `{a: .foo}` | Rename field | `{"foo":1}` | `{"a":1}` |
 | `{a: .foo, b: .bar}` | Rename multiple | `{"foo":1,"bar":2}` | `{"a":1,"b":2}` |
 | `{city: .address.city}` | Rename with nested access | `{"address":{"city":"NYC"}}` | `{"city":"NYC"}` |
+| `{status: "ok"}` | Literal value | `{}` | `{"status":"ok"}` |
+| `{name: .name // "anon"}` | With alternative | `{}` | `{"name":"anon"}` |
 
 ### Array Construction
 
@@ -77,6 +79,92 @@ Use `RunAll` or `RunFunc` to consume multiple outputs. `Run`/`RunWithBuffer` ret
 
 Pipes propagate multi-output: if the left side produces N results, the right side runs N times.
 
+### Literals
+
+| Syntax | Description | Example Output |
+|--------|-------------|----------------|
+| `null` | Null literal | `null` |
+| `true` | Boolean true | `true` |
+| `false` | Boolean false | `false` |
+| `"hello"` | String literal | `"hello"` |
+| `42` | Integer literal | `42` |
+| `3.14` | Float literal | `3.14` |
+| `-5` | Negative number | `-5` |
+
+Literals are constant values independent of input.
+
+### Comparison Operators
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `.name == "alice"` | String equality | `{"name":"alice"}` | `true` |
+| `.age != 30` | Not equal | `{"age":25}` | `true` |
+| `.x == null` | Compare to null | `{"y":1}` | `true` |
+| `.x == .y` | Compare two fields | `{"x":1,"y":1}` | `true` |
+| `1.0 == 1` | Number comparison (float path) | any | `true` |
+
+Non-associative: `a == b == c` is a parse error.
+
+### Select (Filter)
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `select(.level == "error")` | Keep if condition is truthy | `{"level":"error","msg":"boom"}` | `{"level":"error","msg":"boom"}` |
+| `select(.level == "error")` | Filter out if condition is falsy | `{"level":"info"}` | *(no output)* |
+| `select(true)` | Always pass through | `42` | `42` |
+| `select(false)` | Always filter out | `42` | *(no output)* |
+| `.[] \| select(.active == true)` | Filter array elements | `[{"active":true},{"active":false}]` | `{"active":true}` |
+
+`select` produces zero outputs when the condition is falsy (null or false). This propagates naturally through pipes.
+
+### Alternative Operator (`//`)
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `.foo // "default"` | Use right if left is null/false | `{"bar":1}` | `"default"` |
+| `null // "x"` | Null triggers alternative | any | `"x"` |
+| `false // "x"` | False triggers alternative | any | `"x"` |
+| `.foo // .bar` | Fallback to another field | `{"bar":"ok"}` | `"ok"` |
+| `.a // .b // .c` | Chained alternatives | `{"c":"found"}` | `"found"` |
+| `.foo // "default"` | Left exists — no fallback | `{"foo":"hi"}` | `"hi"` |
+
+Left-associative. Only triggers on null or false (not on empty string, zero, etc.).
+
+### Optional Operator (`?`)
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `.foo?` | Suppress error on non-object | `"string"` | *(no output)* |
+| `.[0]?` | Suppress error on non-array | `{"a":1}` | *(no output)* |
+| `.[]?` | Suppress error on non-iterable | `42` | *(no output)* |
+| `.foo?` | Normal case — works as usual | `{"foo":"bar"}` | `"bar"` |
+| `.foo?.bar` | Optional field with chain | `"string"` | *(no output)* |
+
+Produces zero outputs (instead of an error) when the input type doesn't match.
+
+### Type Builtin
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `type` | String type name | `"hello"` | `"string"` |
+| `type` | Number type name | `42` | `"number"` |
+| `type` | Object type name | `{"a":1}` | `"object"` |
+| `type` | Array type name | `[1,2]` | `"array"` |
+| `type` | Boolean type name | `true` | `"boolean"` |
+| `type` | Null type name | `null` | `"null"` |
+| `.value \| type` | Piped type check | `{"value":"hi"}` | `"string"` |
+| `.[] \| select(type == "object")` | Filter by type | `[1,"a",{"x":1}]` | `{"x":1}` |
+
+---
+
+## Operator Precedence (loosest → tightest)
+
+```
+pipe (|)  →  alternative (//)  →  comparison (==, !=)  →  atom
+```
+
+So `.level == "error" // false | select(.)` parses as `((.level == "error") // false) | select(.)`.
+
 ---
 
 ## Not Yet Supported
@@ -88,7 +176,6 @@ These operations can be implemented using the existing scanner + byte-copy appro
 | Syntax | Description | Implementation Notes |
 |--------|-------------|---------------------|
 | `.[2:5]`, `.[:3]`, `.[1:]` | Array/string slicing | Iterate to start, copy through end. Just position tracking. |
-| `.foo?` | Optional operator (suppress errors) | Compile-time flag on the node. Return null instead of error. |
 | `length` | Length of string/array/object | Count pass with scanner, write integer to buf. |
 | `keys_unsorted` | Object keys (insertion order) | Iterate object, copy quoted keys into output array. |
 | `values` | Object values | Equivalent to `.[]`, already supported semantically. |
@@ -97,9 +184,7 @@ These operations can be implemented using the existing scanner + byte-copy appro
 | `to_entries` | Object to `[{key,value}]` array | Reformat existing bytes into output buf. |
 | `from_entries` | `[{key,value}]` array to object | Scan array elements, extract key/value, reconstruct object. |
 | `map(expr)` | Map over array | Equivalent to `[.[] \| expr]`. Uses existing execMulti. |
-| `select(cond)` | Filter elements | Evaluate condition, emit or skip. |
 | `empty` | Produce zero outputs | Don't call callback. Trivial. |
-| `null`, `true`, `false` | Literal values | Write constant bytes to buf. |
 | `not` | Boolean negation | Read value, write `true`/`false`. |
 | `first`, `last` | First/last of iterator | `first` = take 1 from execMulti. `last` = keep final. |
 | `limit(n; expr)` | Take first N results | Counter in callback. |
@@ -107,7 +192,6 @@ These operations can be implemented using the existing scanner + byte-copy appro
 | `any`, `all` | Boolean reduction | Short-circuit scan over elements. |
 | `flatten` | Flatten nested arrays | Recursive scan, copy non-array elements. |
 | `range(n)` | Generate 0..n-1 | Write integers via callback. |
-| `type` | Type name string | Peek at first byte, write `"string"`, `"number"`, etc. |
 | `ascii_downcase`, `ascii_upcase` | Case conversion | Byte-by-byte transform in output buf. |
 | `ltrimstr(s)`, `rtrimstr(s)` | String trim prefix/suffix | Byte comparison, copy remainder. |
 | `startswith(s)`, `endswith(s)` | String predicates | Byte comparison, write `true`/`false`. |
@@ -124,7 +208,7 @@ These operations are implementable at zero allocation but involve more complexit
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
 | `if-then-else` | Conditionals | Simple comparisons (`.foo == "bar"`) are zero-alloc via byte comparison. Complex expressions may need intermediate results in the buffer. |
-| `==`, `!=`, `<`, `>`, `<=`, `>=` | Comparison operators | Strings: byte compare, zero-alloc. Numbers: must parse both sides. Still zero-alloc if done in registers, but floating-point edge cases (scientific notation, large numbers) add complexity. |
+| `<`, `>`, `<=`, `>=` | Ordering operators | Strings: byte compare, zero-alloc. Numbers: must parse both sides. Still zero-alloc if done in registers, but floating-point edge cases (scientific notation, large numbers) add complexity. |
 | `and`, `or` | Boolean operators | Need jq truthiness rules (`null` and `false` are falsy, everything else truthy). Zero-alloc. |
 | `+` (arrays) | Array concatenation | `[1] + [2]` = `[1,2]`. Strip brackets, join with comma. Simple. |
 | `+` (strings) | String concatenation | Strip quotes, join, re-quote. Must handle escape sequences. |
@@ -139,7 +223,6 @@ These operations are implementable at zero allocation but involve more complexit
 | `@uri`, `@html` | URL/HTML encoding | Character-by-character transform, write to buf. |
 | `@csv`, `@tsv` | CSV/TSV formatting | Iterate array, write fields with delimiters and escaping. |
 | `label-break` | Control flow | `label $out \| foreach ...` — requires unwinding callback stack. Achievable with a sentinel error value. |
-| `//` (alternative operator) | Null coalescing | `.foo // "default"`. Evaluate left, if null/false evaluate right. Requires parser support for string/number literals as expressions. |
 | `foreach` | Stateful iteration | `foreach .[] as $x (init; update; extract)`. Requires mutable state across iterations. Double-buffering approach keeps it zero-alloc. |
 | Arithmetic (`-`, `*`, `/`, `%`) | Numeric operations | Parse JSON numbers to native types, compute, serialize back. **`strconv.AppendFloat` into buf avoids allocation.** Integer arithmetic is simpler. |
 | String interpolation `\(expr)` | Embedded expressions in strings | Evaluate inner expression, embed in string. Non-string results need serialization. Adds parser complexity. |

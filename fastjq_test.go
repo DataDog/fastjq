@@ -972,3 +972,734 @@ func TestPipeIteratorConstruct(t *testing.T) {
 		t.Errorf("result[1] = %s, want %s", results[1], `{"n":"bob"}`)
 	}
 }
+
+// --- Literals ---
+
+func TestLiteralNull(t *testing.T) {
+	p, err := Compile("null")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"a":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "null" {
+		t.Errorf("got %s, want null", got)
+	}
+}
+
+func TestLiteralTrue(t *testing.T) {
+	p, err := Compile("true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestLiteralFalse(t *testing.T) {
+	p, err := Compile("false")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestLiteralString(t *testing.T) {
+	p, err := Compile(`"hello"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"hello"` {
+		t.Errorf("got %s, want %q", got, `"hello"`)
+	}
+}
+
+func TestLiteralInteger(t *testing.T) {
+	p, err := Compile("42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "42" {
+		t.Errorf("got %s, want 42", got)
+	}
+}
+
+func TestLiteralFloat(t *testing.T) {
+	p, err := Compile("3.14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "3.14" {
+		t.Errorf("got %s, want 3.14", got)
+	}
+}
+
+func TestLiteralNegative(t *testing.T) {
+	p, err := Compile("-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "-5" {
+		t.Errorf("got %s, want -5", got)
+	}
+}
+
+// --- Comparisons ---
+
+func TestCompareStringEqual(t *testing.T) {
+	p, err := Compile(`.name == "alice"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"name":"alice"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestCompareStringNotEqual(t *testing.T) {
+	p, err := Compile(`.name == "bob"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"name":"alice"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestCompareNotEqualOp(t *testing.T) {
+	p, err := Compile(`.age != 30`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"age":25}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestCompareNull(t *testing.T) {
+	p, err := Compile(`.x == null`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"y":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestCompareLiteralStrings(t *testing.T) {
+	p, err := Compile(`"a" == "a"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestCompareLiteralStringsNotEqual(t *testing.T) {
+	p, err := Compile(`"a" != "b"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestCompareFields(t *testing.T) {
+	p, err := Compile(`.x == .y`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"x":1,"y":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestCompareNumberFloat(t *testing.T) {
+	p, err := Compile(`1.0 == 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+// --- Select ---
+
+func TestSelectMatch(t *testing.T) {
+	p, err := Compile(`select(.level == "error")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"level":"error","msg":"boom"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"level":"error","msg":"boom"}` {
+		t.Errorf("got %s, want original input", got)
+	}
+}
+
+func TestSelectNoMatch(t *testing.T) {
+	p, err := Compile(`select(.level == "error")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := p.RunAll([]byte(`{"level":"info","msg":"ok"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d: %s", len(results), results)
+	}
+}
+
+func TestSelectTrue(t *testing.T) {
+	p, err := Compile("select(true)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`42`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "42" {
+		t.Errorf("got %s, want 42", got)
+	}
+}
+
+func TestSelectFalse(t *testing.T) {
+	p, err := Compile("select(false)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := p.RunAll([]byte(`42`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+func TestSelectMissing(t *testing.T) {
+	p, err := Compile("select(.missing)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := p.RunAll([]byte(`{"a":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results (null is falsy), got %d", len(results))
+	}
+}
+
+func TestSelectIteratorFilter(t *testing.T) {
+	p, err := Compile(`.[] | select(.active == true)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte(`[{"name":"alice","active":true},{"name":"bob","active":false},{"name":"carol","active":true}]`)
+	results, err := p.RunAll(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if string(results[0]) != `{"name":"alice","active":true}` {
+		t.Errorf("result[0] = %s", results[0])
+	}
+	if string(results[1]) != `{"name":"carol","active":true}` {
+		t.Errorf("result[1] = %s", results[1])
+	}
+}
+
+func TestSelectIteratorConstruct(t *testing.T) {
+	p, err := Compile(`.[] | select(.level == "error") | {message}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte(`[{"level":"error","message":"boom"},{"level":"info","message":"ok"},{"level":"error","message":"crash"}]`)
+	results, err := p.RunAll(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if string(results[0]) != `{"message":"boom"}` {
+		t.Errorf("result[0] = %s", results[0])
+	}
+	if string(results[1]) != `{"message":"crash"}` {
+		t.Errorf("result[1] = %s", results[1])
+	}
+}
+
+// --- Alternative ---
+
+func TestAlternativeDefault(t *testing.T) {
+	p, err := Compile(`.foo // "default"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"bar":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"default"` {
+		t.Errorf("got %s, want %q", got, `"default"`)
+	}
+}
+
+func TestAlternativeNull(t *testing.T) {
+	p, err := Compile(`null // "x"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"x"` {
+		t.Errorf("got %s, want %q", got, `"x"`)
+	}
+}
+
+func TestAlternativeFalse(t *testing.T) {
+	p, err := Compile(`false // "x"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"x"` {
+		t.Errorf("got %s, want %q", got, `"x"`)
+	}
+}
+
+func TestAlternativeFieldFallback(t *testing.T) {
+	p, err := Compile(`.foo // .bar`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"bar":"fallback"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"fallback"` {
+		t.Errorf("got %s, want %q", got, `"fallback"`)
+	}
+}
+
+func TestAlternativeChained(t *testing.T) {
+	p, err := Compile(`.a // .b // .c`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"c":"found"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"found"` {
+		t.Errorf("got %s, want %q", got, `"found"`)
+	}
+}
+
+func TestAlternativeNotNeeded(t *testing.T) {
+	p, err := Compile(`.foo // "default"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"foo":"exists"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"exists"` {
+		t.Errorf("got %s, want %q", got, `"exists"`)
+	}
+}
+
+// --- Optional ---
+
+func TestOptionalFieldOnString(t *testing.T) {
+	p, err := Compile(".foo?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := p.RunAll([]byte(`"not an object"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d: %s", len(results), results)
+	}
+}
+
+func TestOptionalIndexOnObject(t *testing.T) {
+	p, err := Compile(".[0]?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := p.RunAll([]byte(`{"a":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d: %s", len(results), results)
+	}
+}
+
+func TestOptionalIteratorOnScalar(t *testing.T) {
+	p, err := Compile(".[]?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := p.RunAll([]byte(`42`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d: %s", len(results), results)
+	}
+}
+
+func TestOptionalFieldNormal(t *testing.T) {
+	p, err := Compile(".foo?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"foo":"bar"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"bar"` {
+		t.Errorf("got %s, want %q", got, `"bar"`)
+	}
+}
+
+func TestOptionalChainedField(t *testing.T) {
+	// .foo?.bar — foo optional, bar should still work if foo exists
+	p, err := Compile(".foo?.bar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"foo":{"bar":"baz"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"baz"` {
+		t.Errorf("got %s, want %q", got, `"baz"`)
+	}
+}
+
+func TestOptionalChainedFieldMissing(t *testing.T) {
+	// .foo?.bar — foo is optional and input is not an object
+	p, err := Compile(".foo?.bar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := p.RunAll([]byte(`"string"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d: %s", len(results), results)
+	}
+}
+
+// --- Type ---
+
+func TestTypeString(t *testing.T) {
+	p, err := Compile("type")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`"hello"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"string"` {
+		t.Errorf("got %s, want %q", got, `"string"`)
+	}
+}
+
+func TestTypeNumber(t *testing.T) {
+	p, err := Compile("type")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`42`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"number"` {
+		t.Errorf("got %s, want %q", got, `"number"`)
+	}
+}
+
+func TestTypeObject(t *testing.T) {
+	p, err := Compile("type")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"a":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"object"` {
+		t.Errorf("got %s, want %q", got, `"object"`)
+	}
+}
+
+func TestTypeArray(t *testing.T) {
+	p, err := Compile("type")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`[1,2]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"array"` {
+		t.Errorf("got %s, want %q", got, `"array"`)
+	}
+}
+
+func TestTypeBoolean(t *testing.T) {
+	p, err := Compile("type")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`true`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"boolean"` {
+		t.Errorf("got %s, want %q", got, `"boolean"`)
+	}
+}
+
+func TestTypeNull(t *testing.T) {
+	p, err := Compile("type")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`null`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"null"` {
+		t.Errorf("got %s, want %q", got, `"null"`)
+	}
+}
+
+func TestTypePiped(t *testing.T) {
+	p, err := Compile(".value | type")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"value":"hello"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"string"` {
+		t.Errorf("got %s, want %q", got, `"string"`)
+	}
+}
+
+func TestSelectWithType(t *testing.T) {
+	p, err := Compile(`.[] | select(type == "object")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte(`[1, "hello", {"a":1}, [2], {"b":2}]`)
+	results, err := p.RunAll(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if string(results[0]) != `{"a":1}` {
+		t.Errorf("result[0] = %s", results[0])
+	}
+	if string(results[1]) != `{"b":2}` {
+		t.Errorf("result[1] = %s", results[1])
+	}
+}
+
+// --- Combined ---
+
+func TestCombinedLogFiltering(t *testing.T) {
+	p, err := Compile(`.[] | select(.level == "error") | {msg: .message}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte(`[{"level":"error","message":"boom"},{"level":"info","message":"ok"}]`)
+	results, err := p.RunAll(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if string(results[0]) != `{"msg":"boom"}` {
+		t.Errorf("got %s, want %s", results[0], `{"msg":"boom"}`)
+	}
+}
+
+func TestCombinedServiceDefault(t *testing.T) {
+	p, err := Compile(`.service // "unknown"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"level":"error"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"unknown"` {
+		t.Errorf("got %s, want %q", got, `"unknown"`)
+	}
+}
+
+func TestCombinedOptionalPipeIterator(t *testing.T) {
+	p, err := Compile(`.data? | .items[]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Normal case — data exists
+	input := []byte(`{"data":{"items":[1,2,3]}}`)
+	results, err := p.RunAll(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+}
+
+// --- Precedence ---
+
+func TestPrecedenceCompareAlternativePipe(t *testing.T) {
+	// .level == "error" // false | select(.)
+	// Parses as ((.level == "error") // false) | select(.)
+	// Left side: .level == "error" → true, true // false → true
+	// Pipe sends true to select(.) → select passes through true
+	p, err := Compile(`.level == "error" // false | select(.)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"level":"error"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+
+	// Verify: when level is not "error", comparison is false,
+	// false // false → false (falsy), select(.) filters it out
+	results, err := p.RunAll([]byte(`{"level":"info"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for non-matching, got %d: %s", len(results), results)
+	}
+}
+
+func TestConstructWithLiteralValue(t *testing.T) {
+	p, err := Compile(`{status: "ok", name: .name}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"name":"alice"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"status":"ok","name":"alice"}` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestConstructWithAlternative(t *testing.T) {
+	p, err := Compile(`{name: .name // "anonymous"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`{"age":30}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"name":"anonymous"}` {
+		t.Errorf("got %s", got)
+	}
+}

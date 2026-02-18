@@ -2,14 +2,15 @@
 
 ## Performance Constraints
 
-- **Zero allocations** on the hot path when using `RunWithBuffer` with a reused buffer
+- **Zero allocations** on the hot path when using `RunWithBuffer` with a reused buffer — all operations including select, compare, and alternative achieve 0 allocs
+- **Static error sentinels** on hot-path functions: `fmt.Errorf` with dynamic args poisons escape analysis, so hot-path error returns use pre-allocated `errors.New` values
 - **No marshal/unmarshal**: never converts to `interface{}`, `map[string]interface{}`, or any Go type — operates entirely on raw `[]byte`
 - **No data copying** except into the output buffer: scanner returns sub-slices of input, field values are copied verbatim
 - **Output <= input**: deletion output is always smaller than or equal to input, so output buffer can be pre-allocated at `cap = len(input)`
 
 ## Scope Constraints
 
-- **Supported operations**: identity (`.`), field access (`.foo`, `.foo.bar`), array indexing (`.[0]`, `.[-1]`), deletion (`del(.foo)`, `del(.[0])`), iteration (`.[]`), object construction (`{name}`, `{a: .foo}`), array construction (`[.foo, .bar]`), pipe (`expr | expr`)
+- **Supported operations**: identity (`.`), field access (`.foo`, `.foo.bar`), array indexing (`.[0]`, `.[-1]`), deletion (`del(.foo)`, `del(.[0])`), iteration (`.[]`), object construction (`{name}`, `{a: .foo}`), array construction (`[.foo, .bar]`), pipe (`expr | expr`), literals (`null`, `true`, `false`, `"string"`, `123`), comparison (`==`, `!=`), select (`select(cond)`), alternative (`//`), optional (`.foo?`), type (`type`)
 - **Input format**: valid JSON objects or arrays — no streaming, no JSONL
 - **No validation**: assumes well-formed JSON input; behavior on malformed input is undefined
 - **No pretty-printing**: output is compact JSON only
@@ -17,11 +18,16 @@
 ## Design Constraints
 
 - **Scanner is stateless between runs**: `struct { data []byte; pos int }` reset per call
-- **AST allocates once at compile time**: `Compile()` allocates, `Run()` does not (with buffer reuse)
+- **AST allocates once at compile time**: `Compile()` allocates, `Run()` does not (with buffer reuse, for basic ops)
 - **Comma reconstruction**: deletion never copies commas from input; reconstructs containers with own commas to avoid trailing-comma bugs
 - **String comparison without allocation**: `bytesEqualStr` compares `[]byte` keys to `string` field names without converting
 - **Multi-output via callback**: `execMulti` uses `func([]byte) error` callback to avoid allocating result slices internally
 - **Negative indexing is two-pass**: `arrayLen()` counts first (no alloc), then iterates to resolved index
+- **Precedence via function chain**: `parseExpr` → `parseAlt` → `parseCmp` → `parseAtom` — no precedence table
+- **Literals store raw JSON bytes**: compiled at parse time, zero-alloc at runtime
+- **isFalsy by first-byte check**: `n` = null, `f` = false — one branch, zero alloc
+- **Number comparison**: byte-identical fast path (zero-alloc), `parseFloat` slow path using `unsafe.String` to avoid string allocation
+- **Optional is a flag, not an op type**: `node.optional = true` keeps AST simple
 
 ## Testing Constraints
 
