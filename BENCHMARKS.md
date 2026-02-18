@@ -64,7 +64,36 @@ BenchmarkGojq_Large_Select-16           	 2360940	       505.8 ns/op	    1744 B/
 BenchmarkGojq_Small_Alternative-16      	 2713494	       445.8 ns/op	    1441 B/op	      17 allocs/op
 ```
 
-## Reproducing
+## CLI Throughput: fastjq vs jq
+
+End-to-end JSONL throughput benchmarks comparing `fastjq-bench` (Go CLI using the fastjq library) against `jq` (C implementation, v1.8.1). Both read JSONL from stdin, apply a filter per line, write results to `/dev/null`. Median of 3 runs. Apple M4 Max.
+
+| Operation | Input | jq (s) | fastjq (s) | Speedup |
+|-----------|-------|--------|-------------|---------|
+| Identity (`.`) | small (100K lines, ~11MB) | 0.323 | 0.031 | **10.4x** |
+| Field access (`.field_2`) | small | 0.149 | 0.024 | **6.2x** |
+| Field access (`.field_50`) | large (100 lines, ~16MB) | 0.085 | 0.022 | **3.9x** |
+| Delete field (`del(.field_2)`) | small | 0.336 | 0.033 | **10.2x** |
+| Object construction (`{field_0, field_2}`) | small | 0.246 | 0.048 | **5.1x** |
+| Select all match (`select(.field_2 == "xxx...")`) | small | 0.368 | 0.031 | **11.9x** |
+| Select none match (`select(.field_2 == "nope")`) | small | 0.131 | 0.030 | **4.4x** |
+| Alternative (`.field_2 // "default"`) | small | 0.154 | 0.029 | **5.3x** |
+
+### Key Takeaways (CLI)
+
+- **4x–12x faster** than jq across all operations on real JSONL workloads
+- **Select (all match) is 12x faster**: the most important filter for log processing
+- **Identity and deletion are 10x faster**: validates the zero-copy architecture at scale
+- **Even "large" objects (100KB each) show 4x speedup**: scanning advantage persists
+
+### Reproducing
+
+```bash
+chmod +x bench_vs_jq.sh
+./bench_vs_jq.sh
+```
+
+## Reproducing (Go Benchmarks)
 
 ```bash
 go test -bench=. -benchmem -count=3 -benchtime=2s

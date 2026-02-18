@@ -34,3 +34,4 @@
 - All operations must be covered by unit tests
 - Benchmarks must compare against gojq on small (~100B), medium (~2KB), and large (~100KB+) JSON
 - Benchmarks report ns/op, B/op, and allocs/op
+- CLI throughput benchmarks compare against jq CLI on JSONL streams via `bench_vs_jq.sh`

@@ -85,13 +85,15 @@ Literals like `"error"`, `42`, `null` store raw JSON bytes (`[]byte`) at compile
 ## File Structure
 
 ```
-fastjq.go       — Public API: Compile(), Run(), RunWithBuffer(), RunAll(), RunFunc()
-scanner.go      — Zero-alloc JSON scanner (skipValue, readString, object/array iteration, jsonEqual, isFalsy)
-query.go        — Query parser + AST types (13 op types)
-exec.go         — Executor: field access, indexing, deletion, iteration, construction, pipe, compare, select, alternative, type
-float.go        — Zero-alloc float parsing via unsafe.String
-fastjq_test.go  — Unit + integration tests (97 tests)
-bench_test.go   — Benchmarks: fastjq vs gojq (28 benchmarks)
+fastjq.go                  — Public API: Compile(), Run(), RunWithBuffer(), RunAll(), RunFunc()
+scanner.go                 — Zero-alloc JSON scanner (skipValue, readString, object/array iteration, jsonEqual, isFalsy)
+query.go                   — Query parser + AST types (13 op types)
+exec.go                    — Executor: field access, indexing, deletion, iteration, construction, pipe, compare, select, alternative, type
+float.go                   — Zero-alloc float parsing via unsafe.String
+fastjq_test.go             — Unit + integration tests (97 tests)
+bench_test.go              — Benchmarks: fastjq vs gojq (28 benchmarks)
+cmd/fastjq-bench/main.go  — Minimal JSONL processor CLI for benchmarking against jq
+bench_vs_jq.sh             — Shell script: generates test data, builds CLI, runs JSONL throughput benchmarks vs jq
 ```
 
 ## Public API
