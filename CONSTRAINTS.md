@@ -14,6 +14,8 @@
 - **Input format**: valid JSON objects or arrays — no streaming, no JSONL
 - **No validation**: assumes well-formed JSON input; behavior on malformed input is undefined
 - **No pretty-printing**: output is compact JSON only
+- **`select` condition must be single-output**: `execSelect` evaluates the condition via `execSingle`, which captures only the first result. Conditions that produce multiple values (e.g. `select(.items[] == "x")`) silently test only the first element. Use simple field comparisons: `select(.field == "value")`.
+- **`del` paths must be literal field or index expressions**: `del(.foo)`, `del(.foo.bar)`, `del(.[0])`, and `del(.foo, .bar)` are supported. Dynamic paths are not: `del(.items[])` and `del(.items[] | select(...))` both return an error. There is no way to delete multiple elements matched by a runtime condition.
 
 ## Design Constraints
 
