@@ -11,22 +11,24 @@ All benchmarks run with `go test -bench=. -benchmem`. Results from Apple M4 Max,
 
 ## Summary
 
-| Operation | Input | fastjq | gojq | Speedup | fastjq allocs | gojq allocs |
-|-----------|-------|--------|------|---------|---------------|-------------|
-| Field access | Small (~100B) | 141 ns | 318 ns | **2.3x** | 0 | 13 |
-| Field access | Large (~100KB) | 103 µs | 527 µs | **5.1x** | 0 | 2,835 |
-| Field deletion | Small (~100B) | 163 ns | 864 ns | **5.3x** | 0 | 33 |
-| Field deletion | Medium (~2KB) | 2,479 ns | 17,195 ns | **6.9x** | 0 | 323 |
-| Field deletion | Large (~100KB) | 130 µs | 730 µs | **5.6x** | 0 | 4,666 |
-| Array index `.[2]` | 5-elem array | 25 ns | 575 ns | **23x** | 0 | 20 |
-| Array deletion `del(.[1],.[3])` | 5-elem array | 88 ns | 1,509 ns | **17x** | 0 | 53 |
-| Object construction `{f0, f2}` | Small (~100B) | 287 ns | 653 ns | **2.3x** | 0 | 23 |
-| Object construction `{f0, f50}` | Large (~100KB) | 201 µs | 531 µs | **2.6x** | 0 | 2,867 |
-| Iterator `.[]` | 5-elem array | 31 ns | 703 ns | **23x** | 0 | 26 |
-| Iterator `.[]` | 200-elem array | 9.2 µs | 77 µs | **8.4x** | 0 | 1,811 |
-| Select `select(.f == "x")` | Small (~100B) | 7.4 ns | 527 ns | **71x** | 0 | 20 |
-| Select `select(.f == "x")` | Large (~100KB) | 7.4 ns | 710 µs | **96,000x** | 0 | 4,651 |
-| Alternative `.f // "default"` | Small (~100B) | 6.1 ns | 431 ns | **71x** | 0 | 17 |
+All times in µs. Small/Medium values are sub-microsecond but shown with enough precision to compare.
+
+| Operation | Input | fastjq (µs) | gojq (µs) | Speedup | fastjq allocs | gojq allocs |
+|-----------|-------|------------|----------|---------|---------------|-------------|
+| Field access | Small (~100B) | 0.141 | 0.318 | **2.3x** | 0 | 13 |
+| Field access | Large (~100KB) | 103 | 527 | **5.1x** | 0 | 2,835 |
+| Field deletion | Small (~100B) | 0.163 | 0.864 | **5.3x** | 0 | 33 |
+| Field deletion | Medium (~2KB) | 2.5 | 17.2 | **6.9x** | 0 | 323 |
+| Field deletion | Large (~100KB) | 130 | 730 | **5.6x** | 0 | 4,666 |
+| Array index `.[2]` | 5-elem array | 0.025 | 0.575 | **23x** | 0 | 20 |
+| Array deletion `del(.[1],.[3])` | 5-elem array | 0.088 | 1.509 | **17x** | 0 | 53 |
+| Object construction `{f0, f2}` | Small (~100B) | 0.287 | 0.653 | **2.3x** | 0 | 23 |
+| Object construction `{f0, f50}` | Large (~100KB) | 201 | 531 | **2.6x** | 0 | 2,867 |
+| Iterator `.[]` | 5-elem array | 0.031 | 0.703 | **23x** | 0 | 26 |
+| Iterator `.[]` | 200-elem array | 9.2 | 77 | **8.4x** | 0 | 1,811 |
+| Select `select(.f == "x")` | Small (~100B) | 0.0074 | 0.527 | **71x** | 0 | 20 |
+| Select `select(.f == "x")` | Large (~100KB) | 0.0074 | 710 | **96,000x** | 0 | 4,651 |
+| Alternative `.f // "default"` | Small (~100B) | 0.0061 | 0.431 | **71x** | 0 | 17 |
 
 ## Key Takeaways
 
