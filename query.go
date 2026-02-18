@@ -9,20 +9,33 @@ import (
 type opType int
 
 const (
-	opIdentity opType = iota // .
-	opField                  // .foo
-	opDelete                 // del(.foo)
-	opPipe                   // expr | expr
+	opIdentity       opType = iota // .
+	opField                        // .foo
+	opDelete                       // del(.foo)
+	opPipe                         // expr | expr
+	opIndex                        // .[0], .[-1]
+	opIterator                     // .[]
+	opConstruct                    // {name, a: .foo}
+	opArrayConstruct               // [.foo, .bar]
 )
+
+// pair represents a key-expression pair in object construction.
+type pair struct {
+	key  string
+	expr *op
+}
 
 // op is a node in the query AST.
 type op struct {
 	typ    opType
-	field  string   // for opField
-	fields []op     // for opDelete: list of field-access paths to delete
-	left   *op      // for opPipe
-	right  *op      // for opPipe
-	child  *op      // for opField chaining: .foo.bar → opField{field:"foo", child: opField{field:"bar"}}
+	field  string // for opField
+	fields []op   // for opDelete: list of field-access/index paths to delete
+	left   *op    // for opPipe
+	right  *op    // for opPipe
+	child  *op    // for opField chaining: .foo.bar → opField{field:"foo", child: opField{field:"bar"}}
+	index  int    // for opIndex: array index (negative = from end)
+	pairs  []pair // for opConstruct: {key: expr} pairs
+	elems  []*op  // for opArrayConstruct: expressions
 }
 
 // parse compiles a jq query string into an AST.
@@ -73,22 +86,36 @@ func parseExpr(s string) (*op, string, error) {
 		return parseDotExpr(s)
 	}
 
+	if s[0] == '{' {
+		return parseConstruct(s)
+	}
+
+	if s[0] == '[' {
+		return parseArrayConstruct(s)
+	}
+
 	return nil, s, fmt.Errorf("unexpected character %q", s[0:1])
 }
 
-// parseDotExpr parses identity (.) or field access (.foo, .foo.bar).
+// parseDotExpr parses identity (.) or field access (.foo, .foo.bar),
+// array index (.[0], .[-1]), or iterator (.[]).
 func parseDotExpr(s string) (*op, string, error) {
 	s = s[1:] // skip '.'
 
+	// Check for .[...] — array index or iterator
+	if len(s) > 0 && s[0] == '[' {
+		return parseBracketExpr(s)
+	}
+
 	// Identity: just "." followed by end, whitespace, pipe, comma, or paren
-	if s == "" || s[0] == ' ' || s[0] == '\t' || s[0] == '\n' || s[0] == '\r' || s[0] == '|' || s[0] == ',' || s[0] == ')' {
+	if s == "" || s[0] == ' ' || s[0] == '\t' || s[0] == '\n' || s[0] == '\r' || s[0] == '|' || s[0] == ',' || s[0] == ')' || s[0] == '}' || s[0] == ']' {
 		return &op{typ: opIdentity}, s, nil
 	}
 
 	return parseFieldChain(s)
 }
 
-// parseFieldChain parses "foo.bar.baz" into a chained opField.
+// parseFieldChain parses "foo.bar.baz" or "foo[0]" into a chained opField.
 func parseFieldChain(s string) (*op, string, error) {
 	name, rest := readIdentifier(s)
 	if name == "" {
@@ -96,6 +123,17 @@ func parseFieldChain(s string) (*op, string, error) {
 	}
 
 	node := &op{typ: opField, field: name}
+
+	// Check for chained bracket: .foo[0] or .foo[]
+	if len(rest) > 0 && rest[0] == '[' {
+		child, remaining, err := parseBracketExpr(rest)
+		if err != nil {
+			return nil, rest, err
+		}
+		node.child = child
+		rest = remaining
+		return node, rest, nil
+	}
 
 	// Check for chained field: .foo.bar
 	if len(rest) > 0 && rest[0] == '.' {
@@ -113,7 +151,7 @@ func parseFieldChain(s string) (*op, string, error) {
 	return node, rest, nil
 }
 
-// parseDel parses del(.foo), del(.foo, .bar), del(.foo.bar).
+// parseDel parses del(.foo), del(.foo, .bar), del(.foo.bar), del(.[0]).
 func parseDel(s string) (*op, string, error) {
 	s = s[4:] // skip "del("
 
@@ -147,6 +185,164 @@ func parseDel(s string) (*op, string, error) {
 	}
 
 	return &op{typ: opDelete, fields: fields}, s, nil
+}
+
+// parseBracketExpr parses [N] (index) or [] (iterator) after a dot or field.
+// Assumes s starts with '['.
+func parseBracketExpr(s string) (*op, string, error) {
+	s = s[1:] // skip '['
+	s = strings.TrimSpace(s)
+
+	// .[] — iterator
+	if len(s) > 0 && s[0] == ']' {
+		s = s[1:] // skip ']'
+		return &op{typ: opIterator}, s, nil
+	}
+
+	// .[N] or .[-N] — array index
+	neg := false
+	if len(s) > 0 && s[0] == '-' {
+		neg = true
+		s = s[1:]
+	}
+	idx, rest, err := parseInt(s)
+	if err != nil {
+		return nil, s, fmt.Errorf("expected number in array index: %w", err)
+	}
+	if neg {
+		idx = -idx
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ']' {
+		return nil, rest, fmt.Errorf("expected ']' after array index")
+	}
+	rest = rest[1:] // skip ']'
+
+	node := &op{typ: opIndex, index: idx}
+
+	// Check for further chaining: .[0].name or .[0][1]
+	if len(rest) > 0 && rest[0] == '.' {
+		if len(rest) > 1 && isIdentStart(rest[1]) {
+			child, remaining, err := parseFieldChain(rest[1:])
+			if err != nil {
+				return nil, rest, err
+			}
+			node.child = child
+			rest = remaining
+		} else if len(rest) > 1 && rest[1] == '[' {
+			child, remaining, err := parseBracketExpr(rest[1:])
+			if err != nil {
+				return nil, rest, err
+			}
+			node.child = child
+			rest = remaining
+		}
+	} else if len(rest) > 0 && rest[0] == '[' {
+		child, remaining, err := parseBracketExpr(rest)
+		if err != nil {
+			return nil, rest, err
+		}
+		node.child = child
+		rest = remaining
+	}
+
+	return node, rest, nil
+}
+
+// parseInt parses a non-negative integer from the start of s.
+func parseInt(s string) (int, string, error) {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return 0, s, fmt.Errorf("expected digit")
+	}
+	n := 0
+	for _, ch := range s[:i] {
+		n = n*10 + int(ch-'0')
+	}
+	return n, s[i:], nil
+}
+
+// parseConstruct parses object construction: {name}, {name, age}, {a: .foo, b: .bar}.
+// Assumes s starts with '{'.
+func parseConstruct(s string) (*op, string, error) {
+	s = s[1:] // skip '{'
+	var pairs []pair
+
+	for {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil, "", fmt.Errorf("unclosed object construction")
+		}
+		if s[0] == '}' {
+			s = s[1:]
+			break
+		}
+		if len(pairs) > 0 {
+			if s[0] != ',' {
+				return nil, s, fmt.Errorf("expected ',' in object construction")
+			}
+			s = strings.TrimSpace(s[1:])
+		}
+
+		// Read key name
+		key, rest := readIdentifier(s)
+		if key == "" {
+			return nil, s, fmt.Errorf("expected field name in object construction")
+		}
+		s = strings.TrimSpace(rest)
+
+		// Check for `: expr` (rename) or shorthand
+		if len(s) > 0 && s[0] == ':' {
+			s = strings.TrimSpace(s[1:])
+			expr, remaining, err := parseExpr(s)
+			if err != nil {
+				return nil, remaining, fmt.Errorf("in object construction: %w", err)
+			}
+			pairs = append(pairs, pair{key: key, expr: expr})
+			s = remaining
+		} else {
+			// Shorthand: {name} is equivalent to {name: .name}
+			pairs = append(pairs, pair{key: key, expr: &op{typ: opField, field: key}})
+		}
+	}
+
+	return &op{typ: opConstruct, pairs: pairs}, s, nil
+}
+
+// parseArrayConstruct parses array construction: [.foo, .bar].
+// Assumes s starts with '['.
+func parseArrayConstruct(s string) (*op, string, error) {
+	s = s[1:] // skip '['
+	var elems []*op
+
+	for {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return nil, "", fmt.Errorf("unclosed array construction")
+		}
+		if s[0] == ']' {
+			s = s[1:]
+			break
+		}
+		if len(elems) > 0 {
+			if s[0] != ',' {
+				return nil, s, fmt.Errorf("expected ',' in array construction")
+			}
+			s = strings.TrimSpace(s[1:])
+		}
+
+		expr, remaining, err := parseExpr(s)
+		if err != nil {
+			return nil, remaining, fmt.Errorf("in array construction: %w", err)
+		}
+		elems = append(elems, expr)
+		s = remaining
+	}
+
+	return &op{typ: opArrayConstruct, elems: elems}, s, nil
 }
 
 // readIdentifier reads a field name (letters, digits, underscore, hyphen).

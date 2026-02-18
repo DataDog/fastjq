@@ -174,6 +174,76 @@ func (s *scanner) skipToEndOfObject() {
 	}
 }
 
+// arrayIter iterates over elements of a JSON array.
+// Assumes pos is at the opening '['.
+// Calls fn with each element's index and start/end positions.
+// If fn returns false, iteration stops early.
+func (s *scanner) arrayIter(fn func(index int, elemStart, elemEnd int) bool) {
+	s.pos++ // skip '['
+	s.skipWhitespace()
+	if s.pos < len(s.data) && s.data[s.pos] == ']' {
+		s.pos++ // empty array
+		return
+	}
+	idx := 0
+	for s.pos < len(s.data) {
+		s.skipWhitespace()
+		elemStart := s.pos
+		s.skipValue()
+		elemEnd := s.pos
+
+		if !fn(idx, elemStart, elemEnd) {
+			// caller asked to stop — skip to end of array
+			s.skipToEndOfArray()
+			return
+		}
+
+		idx++
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ',' {
+			s.pos++
+		} else {
+			break
+		}
+	}
+	s.skipWhitespace()
+	if s.pos < len(s.data) && s.data[s.pos] == ']' {
+		s.pos++
+	}
+}
+
+// skipToEndOfArray skips to the closing ']' of the current array,
+// accounting for nesting. Used after early-exit from arrayIter.
+func (s *scanner) skipToEndOfArray() {
+	depth := 1
+	for s.pos < len(s.data) && depth > 0 {
+		ch := s.data[s.pos]
+		switch ch {
+		case '"':
+			s.skipString()
+			continue
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+		}
+		s.pos++
+	}
+}
+
+// arrayLen counts the number of elements in a JSON array without copying.
+// Assumes pos is at the opening '['. Resets pos after counting.
+func (s *scanner) arrayLen() int {
+	saved := s.pos
+	count := 0
+	s.arrayIter(func(index int, elemStart, elemEnd int) bool {
+		count++
+		return true
+	})
+	s.pos = saved
+	return count
+}
+
 // findField scans an object for a specific field name and returns
 // the start and end positions of its value. Returns -1, -1 if not found.
 // Assumes pos is at the opening '{'.

@@ -9,8 +9,8 @@
 
 ## Scope Constraints
 
-- **Supported operations**: identity (`.`), field access (`.foo`, `.foo.bar`), deletion (`del(.foo)`, `del(.foo, .bar)`, `del(.foo.bar)`), pipe (`expr | expr`)
-- **Input format**: valid JSON objects only — no streaming, no JSONL, no arrays at top level for deletion
+- **Supported operations**: identity (`.`), field access (`.foo`, `.foo.bar`), array indexing (`.[0]`, `.[-1]`), deletion (`del(.foo)`, `del(.[0])`), iteration (`.[]`), object construction (`{name}`, `{a: .foo}`), array construction (`[.foo, .bar]`), pipe (`expr | expr`)
+- **Input format**: valid JSON objects or arrays — no streaming, no JSONL
 - **No validation**: assumes well-formed JSON input; behavior on malformed input is undefined
 - **No pretty-printing**: output is compact JSON only
 
@@ -18,8 +18,10 @@
 
 - **Scanner is stateless between runs**: `struct { data []byte; pos int }` reset per call
 - **AST allocates once at compile time**: `Compile()` allocates, `Run()` does not (with buffer reuse)
-- **Comma reconstruction**: deletion never copies commas from input; reconstructs `{` + kept pairs with own commas + `}` to avoid trailing-comma bugs
+- **Comma reconstruction**: deletion never copies commas from input; reconstructs containers with own commas to avoid trailing-comma bugs
 - **String comparison without allocation**: `bytesEqualStr` compares `[]byte` keys to `string` field names without converting
+- **Multi-output via callback**: `execMulti` uses `func([]byte) error` callback to avoid allocating result slices internally
+- **Negative indexing is two-pass**: `arrayLen()` counts first (no alloc), then iterates to resolved index
 
 ## Testing Constraints
 
