@@ -48,6 +48,12 @@ All times in µs. Small/Medium values are sub-microsecond but shown with enough 
 | `last(expr)` | 200-elem array | 3.2 | 1.488 | 0.5x†| 0 | 24 |
 | `limit(3; expr)` | 5-elem array | 0.034 | 1.605 | **47x** | 0 | 42 |
 | `limit(10; expr)` | 200-elem array | 0.656 | 1.560 | **2.4x** | 0 | 24 |
+| `add` (numbers) | 5-elem array | 0.057 | 0.657 | **12x** | 0 | 24 |
+| `add` (strings) | 5-elem array | 0.130 | 0.857 | **6.6x** | 0 | 31 |
+| `range(100)` | — | 0.448 | 4.409 | **9.8x** | 1† | 18 |
+| `flatten` | 3-elem nested array | 0.104 | 1.268 | **12x** | 0 | 38 |
+| `split(",")` | Short string | 0.110 | 0.773 | **7x** | 0 | 21 |
+| `join(",")` | 5-elem array | 0.100 | 0.848 | **8.5x** | 0 | 30 |
 | `ascii_downcase` in select | Small (~100B) | 0.010 | 0.564 | **56x** | 0 | 21 |
 | `ascii_downcase` in select | Large (~100KB) | 178 | 794 | **4.5x** | 0 | 4,652 |
 | `startswith("s")` in select | Small (~100B) | 0.010 | 0.568 | **57x** | 0 | 21 |
@@ -73,6 +79,7 @@ All times in µs. Small/Medium values are sub-microsecond but shown with enough 
 
 - **fastjq achieves 0 allocations** across all operations in steady state when using `RunWithBuffer` or `RunFunc`
 - **‡ `with_entries` on very large inputs (100KB+ objects with large nested field values) has 2 allocs** from the entry scratch buffer growing beyond its initial 64-byte capacity. In typical log processing with field values < 64 bytes, it is 0 allocs.
+- **† `range(n)` shows 1 alloc** from a 64-byte number-formatting scratch buffer escaping to the heap (recycled by the allocator in steady state). All other operations are 0 allocs.
 - **† For small raw arrays of primitives, gojq can be faster** — once unmarshaled to `[]interface{}`, gojq accesses elements as native Go slice operations. fastjq always scans the raw JSON bytes, which is slower for tiny arrays (~600B) of numbers.
 - **Fastest on small inputs** where gojq's marshal/unmarshal overhead dominates (up to 63x faster)
 - **Still significantly faster on large inputs** (2.5x–5x) where both engines are scanning lots of data
@@ -149,6 +156,18 @@ BenchmarkGojq_Small_Startswith-16       	 2127511	       566.5 ns/op	    1801 B/
 BenchmarkGojq_Small_Endswith-16         	 2098352	       567.3 ns/op	    1801 B/op	      21 allocs/op
 BenchmarkGojq_Small_Ltrimstr-16         	 2939564	       407.9 ns/op	    1305 B/op	      16 allocs/op
 BenchmarkGojq_Small_Rtrimstr-16         	 2907825	       412.4 ns/op	    1305 B/op	      16 allocs/op
+BenchmarkFastjq_Small_Add-16            	20463265	        57.08 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_AddStrings-16     	 9052885	       130.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Range-16          	 2721411	       447.9 ns/op	      64 B/op	       1 allocs/op
+BenchmarkFastjq_Small_Flatten-16        	11245194	       104.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Split-16          	11085291	       110.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Join-16           	11583574	       100.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Add-16              	 1839897	       656.7 ns/op	    1433 B/op	      24 allocs/op
+BenchmarkGojq_Small_AddStrings-16       	 1404336	       856.5 ns/op	    1689 B/op	      31 allocs/op
+BenchmarkGojq_Small_Range-16            	  268592	      4409 ns/op	    1864 B/op	      18 allocs/op
+BenchmarkGojq_Small_Flatten-16          	  967195	      1268 ns/op	    1857 B/op	      38 allocs/op
+BenchmarkGojq_Small_Split-16            	 1540765	       773.0 ns/op	    1553 B/op	      21 allocs/op
+BenchmarkGojq_Small_Join-16             	 1426618	       848.4 ns/op	    1745 B/op	      30 allocs/op
 BenchmarkFastjq_Large_Has-16            	    8361	    159283 ns/op	       0 B/op	       0 allocs/op
 BenchmarkFastjq_Large_Length-16         	    9829	    178947 ns/op	       0 B/op	       0 allocs/op
 BenchmarkFastjq_Large_KeysUnsorted-16   	    5937	    190536 ns/op	       0 B/op	       0 allocs/op

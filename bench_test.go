@@ -295,6 +295,25 @@ func BenchmarkFastjq_Small_AnyExpr(b *testing.B) {
 func BenchmarkFastjq_Large_AnyExpr(b *testing.B) {
 	benchFastjqObj(b, `any(. > 100)`, largeIntArr)
 }
+func BenchmarkFastjq_Small_Add(b *testing.B) {
+	benchFastjqObj(b, `add`, []byte(`[1,2,3,4,5]`))
+}
+func BenchmarkFastjq_Small_AddStrings(b *testing.B) {
+	benchFastjqObj(b, `add`, []byte(`["field_0","field_1","field_2","field_3","field_4"]`))
+}
+func BenchmarkFastjq_Small_Range(b *testing.B) {
+	benchFastjqFunc(b, `range(100)`, []byte(`null`))
+}
+func BenchmarkFastjq_Small_Flatten(b *testing.B) {
+	benchFastjqObj(b, `flatten`, []byte(`[[1,2],[3,[4,5]],[6]]`))
+}
+func BenchmarkFastjq_Small_Split(b *testing.B) {
+	benchFastjqObj(b, `split(",")`, []byte(`"field_0,field_1,field_2,field_3,field_4"`))
+}
+func BenchmarkFastjq_Small_Join(b *testing.B) {
+	benchFastjqObj(b, `join(",")`, []byte(`["field_0","field_1","field_2","field_3","field_4"]`))
+}
+
 func BenchmarkFastjq_Small_AsciiDowncase(b *testing.B) {
 	benchFastjqObj(b, `select(.field_2 | ascii_downcase == "xxxxxxxxxx")`, smallJSON)
 }
@@ -416,6 +435,25 @@ func BenchmarkGojq_Small_AnyExpr(b *testing.B) {
 	benchGojqObj(b, `any(. == "xxxxxxxxxx")`, []byte(`["aaaa","bbbb","xxxxxxxxxx","cccc","dddd"]`))
 }
 func BenchmarkGojq_Large_AnyExpr(b *testing.B) { benchGojqObj(b, `any(. > 100)`, largeIntArr) }
+func BenchmarkGojq_Small_Add(b *testing.B) {
+	benchGojqObj(b, `add`, []byte(`[1,2,3,4,5]`))
+}
+func BenchmarkGojq_Small_AddStrings(b *testing.B) {
+	benchGojqObj(b, `add`, []byte(`["field_0","field_1","field_2","field_3","field_4"]`))
+}
+func BenchmarkGojq_Small_Range(b *testing.B) {
+	benchGojqIter(b, `range(100)`, []byte(`null`))
+}
+func BenchmarkGojq_Small_Flatten(b *testing.B) {
+	benchGojqObj(b, `flatten`, []byte(`[[1,2],[3,[4,5]],[6]]`))
+}
+func BenchmarkGojq_Small_Split(b *testing.B) {
+	benchGojqObj(b, `split(",")`, []byte(`"field_0,field_1,field_2,field_3,field_4"`))
+}
+func BenchmarkGojq_Small_Join(b *testing.B) {
+	benchGojqObj(b, `join(",")`, []byte(`["field_0","field_1","field_2","field_3","field_4"]`))
+}
+
 func BenchmarkGojq_Small_AsciiDowncase(b *testing.B) {
 	benchGojqObj(b, `select(.field_2 | ascii_downcase == "xxxxxxxxxx")`, smallJSON)
 }

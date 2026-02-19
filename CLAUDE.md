@@ -29,10 +29,12 @@ go test -bench=. -benchmem -count=1
 ```
 Check that no existing benchmark has regressed meaningfully. For new features that are hot-path, add a benchmark.
 
+**Every new operation must have a fastjq benchmark AND a matching gojq benchmark.** Add them to `bench_test.go` following the existing helper pattern (`benchFastjqObj`, `benchGojqObj`, etc.) before committing. No exceptions.
+
 **Any non-zero `allocs/op` in a fastjq benchmark is a failure.** Stop and check in with the user before proceeding. The options are:
 - Fix the allocation (preferred)
 - Reject the feature as incompatible with the zero-alloc constraint
-- Document it explicitly as a known edge case (e.g. `with_entries` uses a single recycled 64-byte scratch buffer — 0 allocs in steady state)
+- Document it explicitly as a known edge case (e.g. `with_entries` uses a single recycled 64-byte scratch buffer; `range(n)` uses a 64-byte stack buffer that escapes — both show 1 alloc/call but recycled in steady state)
 
 ### 5. Update ALL the docs
 Every code change that affects the public surface, supported operations, or performance characteristics must update:
@@ -44,6 +46,7 @@ Every code change that affects the public surface, supported operations, or perf
 | `CONSTRAINTS.md` | Scope constraints (supported ops), any new design constraints |
 | `SYNTAX.md` | Add new operations with examples; move from "Not Yet Supported" to supported |
 | `BENCHMARKS.md` | Re-run benchmarks and update the summary table and raw output if numbers changed |
+| `bench_test.go` | Add fastjq + gojq benchmarks for every new operation (required, not optional) |
 | `CHANGELOG.md` | Add an entry for every meaningful change (see format below) |
 
 #### CHANGELOG format
@@ -70,15 +73,17 @@ These are non-negotiable. Any change that violates them needs explicit discussio
 ## Key files
 
 ```
-fastjq.go                  — Public API
-scanner.go                 — Zero-alloc JSON scanner
-query.go                   — Parser + AST (16 op types)
-exec.go                    — Executor
-float.go                   — Zero-alloc float parsing
-fastjq_test.go             — Unit tests (158 tests)
-bench_test.go              — Benchmarks (fastjq vs gojq)
-cmd/fastjq-bench/main.go  — JSONL CLI for benchmarking vs jq
-bench_vs_jq.sh             — CLI throughput benchmark script
+fastjq.go           — Public API
+scanner.go          — Zero-alloc JSON scanner
+query.go            — Parser + AST (39 op types)
+exec.go             — Executor
+float.go            — Zero-alloc float parsing
+fastjq_test.go      — Unit tests (397 tests)
+correctness_test.go — Edge case, no-panic, and unicode tests
+fuzz_test.go        — Fuzz tests (FuzzCompile, FuzzRunFixed, FuzzBoth)
+bench_test.go       — Benchmarks (fastjq vs gojq) — ADD NEW OPS HERE
+cmd/fastjq/main.go  — JSONL CLI (`fastjq 'query' < input.jsonl`)
+bench_vs_jq.sh      — CLI throughput benchmark script
 ```
 
 ## Benchmark reliability notes

@@ -1286,12 +1286,15 @@ func execRange(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 	}
 
+	// Use a fixed-size stack buffer for formatting each number so we never
+	// allocate for the intermediate result (avoids alloc when buf is nil).
+	var numBuf [64]byte
 	for v := from; (step > 0 && v < to) || (step < 0 && v > to); v += step {
 		var result []byte
 		if v == float64(int64(v)) && v >= -1e15 && v <= 1e15 {
-			result = appendInt(buf[:0], int(v))
+			result = appendInt(numBuf[:0], int(v))
 		} else {
-			result = strconv.AppendFloat(buf[:0], v, 'f', -1, 64)
+			result = strconv.AppendFloat(numBuf[:0], v, 'f', -1, 64)
 		}
 		if err := fn(result); err != nil {
 			return err
