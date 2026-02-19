@@ -184,23 +184,26 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 
 fastjq is intentionally scope-limited. It will not grow into a full jq implementation.
 
-**`select` conditions must produce a single value.**
-The condition is evaluated via a single-result path. If the condition uses an iterator (e.g. `select(.items[] == "x")`), only the first element is tested and the rest are silently ignored. Use simple field comparisons: `select(.field == "value")`.
+**`select` conditions must be single-valued.**
+The condition is evaluated via a single-result path. Conditions using `and`/`or` work fine. Conditions using an iterator (e.g. `select(.items[] == "x")`) silently test only the first element. Use `any(.[]; . == "x")` instead.
 
 **`del` paths must be literal field or index expressions.**
 `del(.foo)`, `del(.foo.bar)`, `del(.[0])`, and `del(.foo, .bar)` work. Dynamic deletion does not: `del(.items[])` and `del(.items[] | select(...))` both return an error.
+
+**`.field` on `null` errors — use `.field?` for null-safe access.**
+In jq, `null | .field` returns `null`. In fastjq it errors. This affects chained access when an intermediate field is absent: `.a.b` where `.a` is a missing field returns `null` (absent field → null → child chain skipped), but `.a.b` where `.a` is explicitly `null` errors. Use `.a?.b?` for full null-safety.
 
 **No arithmetic or string interpolation.**
 `+`, `-`, `*`, `/`, `%` and `"\(.field)"` template syntax are not supported.
 
 **No higher-order functions or builtins beyond those listed.**
-`reduce`, `foreach`, `@base64`, `@uri`, `@csv`, `env`, `path`, `indices`, `sort`, `group_by`, `unique`, `test` (regex), etc. are not supported. See [SYNTAX.md](SYNTAX.md) for the full roadmap of what's feasible.
+`reduce`, `foreach`, `@base64`, `@uri`, `@csv`, `env`, `path`, `indices`, `sort`, `group_by`, `unique`, `test` (regex), etc. are not supported. See [SYNTAX.md](SYNTAX.md) for the full roadmap.
 
 **No recursive descent** (`..|..`).
 
 **No try-catch** (beyond `?` optional suppression).
 
-**Input must be valid JSON.** Behavior on malformed input is undefined. Output is always compact (no pretty-printing).
+**Output is always compact JSON.** Input can be pretty-printed or compact. Behavior on malformed input is undefined.
 
 ## Further reading
 

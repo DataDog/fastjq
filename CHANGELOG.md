@@ -21,6 +21,17 @@ Five new zero-alloc operations:
 
 ---
 
+## [Unreleased] — README, .gitignore, null propagation docs
+
+### Changed
+- **README Limitations** updated:
+  - `select` limitation clarified: `and`/`or` conditions work fine; only iterator-based conditions are limited
+  - Added new limitation: `.field` on `null` errors — use `.field?` for null-safe access (discovered by compat test)
+  - Last line now correctly says "Input can be pretty-printed or compact" (fastjq handles whitespace)
+- **.gitignore** updated to exclude build artifacts (`fastjq`, `fastjq-bench`, `*.test`) and local Claude settings
+
+---
+
 ## [Unreleased] — jq compatibility harness
 
 ### Added

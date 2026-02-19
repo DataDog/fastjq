@@ -1,2 +1,10 @@
+# Build artifacts
+fastjq
+fastjq-bench
+*.test
 
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Personal dev notes
 DEV_TODO.md
