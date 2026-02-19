@@ -11,7 +11,7 @@
 ## Scope Constraints
 
 - **Supported operations**: identity (`.`), field access (`.foo`, `.foo.bar`), array indexing (`.[0]`, `.[-1]`), deletion (`del(.foo)`, `del(.[0])`), iteration (`.[]`), object construction (`{name}`, `{a: .foo}`), array construction (`[.foo, .bar]`), pipe (`expr | expr`), literals (`null`, `true`, `false`, `"string"`, `123`), comparison (`==`, `!=`), select (`select(cond)`), alternative (`//`), optional (`.foo?`), type (`type`)
-- **Input format**: valid JSON objects or arrays — whitespace between tokens is supported; no streaming, no JSONL
+- **Input format**: valid JSON objects or arrays — no streaming, no JSONL
 - **No validation**: assumes well-formed JSON input; behavior on malformed input is undefined
 - **No pretty-printing**: output is compact JSON only
 - **`select` condition must be single-output**: `execSelect` evaluates the condition via `execSingle`, which captures only the first result. Conditions that produce multiple values (e.g. `select(.items[] == "x")`) silently test only the first element. Use simple field comparisons: `select(.field == "value")`.

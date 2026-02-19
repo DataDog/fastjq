@@ -127,7 +127,7 @@ The condition is evaluated via a single-result path. If the condition uses an it
 
 **No try-catch** (beyond `?` optional suppression).
 
-**Input must be valid JSON.** Whitespace between tokens is handled throughout the scanner. Behavior on malformed input is undefined. Output is always compact (no pretty-printing).
+**Input must be valid JSON.** Behavior on malformed input is undefined. Output is always compact (no pretty-printing).
 
 ## How It Works
 
