@@ -28,49 +28,38 @@ That round-trip dominates. For a 100KB log object it costs ~870 µs and ~4,600 a
 
 ## Benchmarks
 
-### vs gojq (in-process, Apple M4 Max, Go 1.25)
+Compared against [gojq](https://github.com/itchyny/gojq), the standard jq library for Go. gojq times include the full `json.Unmarshal → execute → json.Marshal` cycle. Apple M4 Max, Go 1.25. fastjq achieves **0 allocations** in steady state on all operations when using `RunWithBuffer` or `RunFunc`.
 
-gojq times include the full `json.Unmarshal` → execute → `json.Marshal` cycle.
+| Operation | Input | fastjq | gojq | Speedup | allocs |
+|-----------|-------|--------|------|---------|--------|
+| `select(.level == "error")` | Small (~100B) | 0.009 µs | 0.57 µs | **64x** | 0 |
+| `select(.level == "error")` | Large (~100KB)¹ | 16 µs | 770 µs | **48x** | 0 |
+| `.field` | Large (~100KB) | 109 µs | 543 µs | **5x** | 0 |
+| `del(.sensitive)` | Large (~100KB) | 155 µs | 766 µs | **5x** | 0 |
+| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 178 µs | 794 µs | **4.5x** | 0 |
+| `map(.name)` | 200-elem array (~6KB) | 20 µs | 91 µs | **4.5x** | 0 |
+| `min_by(.value)` | 100-elem array (~3KB) | 12 µs | 56 µs | **4.5x** | 0 |
+| `.a * .b` (multiply) | Small (~100B) | 0.08 µs | 0.68 µs | **8x** | 0 |
+| `first(.[] \| select(. > 100))` | 200-int array | 3.6 µs | 1.4 µs | **0.4x**² | 0 |
 
-| Operation | Input | fastjq | gojq | Speedup |
-|-----------|-------|--------|------|---------|
-| `select(.f == "x")` | Small (~100B) | 0.0075 µs | 0.558 µs | **74x** |
-| `select(.f == "x")` | Large (~100KB, last field) | 21 µs | 788 µs | **38x** |
-| `del(.foo)` | Small (~100B) | 0.158 µs | 0.892 µs | **5.6x** |
-| `del(.foo)` | Large (~100KB) | 155 µs | 766 µs | **4.9x** |
-| `.field` | Small (~100B) | 0.144 µs | 0.327 µs | **2.3x** |
-| `.field` | Large (~100KB) | 109 µs | 543 µs | **5.0x** |
-| `{f0, f2}` | Small (~100B) | 0.263 µs | 0.665 µs | **2.5x** |
-| `.[]` | 200-elem array | 9.7 µs | 80 µs | **8.2x** |
+¹ The large select benchmark uses the **last** field in a 200-field object — fastjq scans the full document, no early-exit advantage.
+² gojq is faster on small arrays of raw integers: after unmarshal it accesses a native Go slice; fastjq always scans bytes.
 
-fastjq achieves **0 allocations** on all operations above. The Large Select benchmark uses the last field in a 200-field object so fastjq must scan the full 170KB — even worst-case it's 38x faster than gojq, which must unmarshal all 170KB regardless of which field it needs.
+The advantage is largest on small inputs, where gojq's marshal/unmarshal overhead dominates regardless of how simple the query is. On large inputs both engines are doing real work scanning bytes, and fastjq is still consistently 4–5x faster. The exception is small primitive integer arrays, where gojq's in-memory representation wins.
 
-A few highlights from newer operations:
-
-| Operation | Input | fastjq | gojq | Speedup |
-|-----------|-------|--------|------|---------|
-| `ascii_downcase` in select | Small (~100B) | 0.010 µs | 0.564 µs | **56x** |
-| `ascii_downcase` in select | Large (~100KB) | 178 µs | 794 µs | **4.5x** |
-| `keys_unsorted` | Small (~100B) | 0.061 µs | 0.364 µs | **6x** |
-| `to_entries` | Small (~100B) | 0.0061 µs | 0.363 µs | **60x** |
-| `has("key")` in select | Large (~100KB) | 159 µs | 767 µs | **4.8x** |
-| `any(expr)` | 5-elem array | 0.122 µs | 2.039 µs | **17x** |
-
-See [BENCHMARKS.md](BENCHMARKS.md) for the complete table with Large/Medium variants, raw output, and CLI results.
-
-### vs jq CLI (JSONL throughput, 100K lines, ~11MB)
+### vs jq CLI (JSONL throughput, 100K lines, ~11MB, Apple M4 Max)
 
 | Operation | jq | fastjq | Speedup |
 |-----------|-----|--------|---------|
 | `.` (identity) | 0.346s | 0.025s | **14x** |
 | `del(.field)` | 0.389s | 0.036s | **11x** |
-| `select(.f == "x")` (all match) | 0.368s | 0.030s | **12x** |
+| `select(.f == "x")` | 0.368s | 0.030s | **12x** |
 | `select(.f \| ascii_downcase == "x")` | 0.650s | 0.036s | **18x** |
-| `select(.f \| startswith("x"))` | 0.391s | 0.030s | **13x** |
 | `select(has("field"))` | 0.364s | 0.031s | **12x** |
 | `.field` | 0.146s | 0.027s | **5x** |
-| `{f0, f2}` | 0.251s | 0.048s | **5x** |
 | `to_entries` | 0.714s | 0.039s | **18x** |
+
+See [BENCHMARKS.md](BENCHMARKS.md) for the complete table.
 
 ## Try it out (CLI)
 
@@ -212,11 +201,11 @@ The condition is evaluated via a single-result path. Conditions using `and`/`or`
 **`.field` on `null` errors — use `.field?` for null-safe access.**
 In jq, `null | .field` returns `null`. In fastjq it errors. This affects chained access when an intermediate field is absent: `.a.b` where `.a` is a missing field returns `null` (absent field → null → child chain skipped), but `.a.b` where `.a` is explicitly `null` errors. Use `.a?.b?` for full null-safety.
 
-**No arithmetic or string interpolation.**
-`+`, `-`, `*`, `/`, `%` and `"\(.field)"` template syntax are not supported.
+**No string interpolation.**
+`"\(.field)"` template syntax is not supported.
 
 **No higher-order functions or builtins beyond those listed.**
-`reduce`, `foreach`, `@uri`, `@csv`, `env`, `path`, `sort`, `group_by`, `unique`, `test` (regex), etc. are not supported. See [SYNTAX.md](SYNTAX.md) for the full roadmap.
+`reduce`, `foreach`, `@csv`, `@html`, `env`, `path`, `sort`, `group_by`, `unique`, `test` (regex), etc. are not supported. See [SYNTAX.md](SYNTAX.md) for the full roadmap.
 
 **No recursive descent** (`..|..`).
 
