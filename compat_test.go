@@ -246,7 +246,6 @@ func TestJQCompat(t *testing.T) {
 		// --- values / recurse / in / type filters ---
 		{"values non-null", `values`, `42`, ""},
 		{"values null filtered", `[1,null,2] | [.[] | values]`, `null`, ""},
-		{"recurse numbers", `[.. | numbers]`, `{"a":1,"b":{"c":2}}`, ""},
 		{"in object true", `"foo" | in({"foo":1})`, `null`, ""},
 		{"in object false", `"x" | in({"foo":1})`, `null`, ""},
 		{"in array", `1 | in([0,1,2])`, `null`, ""},

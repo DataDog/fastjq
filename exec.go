@@ -138,8 +138,6 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(result)
 	case opValues:
 		return execValues(input, buf, fn)
-	case opRecurse:
-		return execRecurse(input, buf, fn)
 	case opIn:
 		return fn(execIn(node, input, buf))
 	case opSlice:
@@ -321,8 +319,6 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			return input[:len(input):len(input)], nil
 		}
 		return append(buf, input...), nil
-	case opRecurse:
-		return exec(node, input, buf)
 	case opIn:
 		return execIn(node, input, buf), nil
 	case opSlice:
@@ -1833,41 +1829,6 @@ func execValues(input []byte, buf []byte, fn func([]byte) error) error {
 	return fn(input)
 }
 
-// execRecurse recursively streams all values in a JSON structure (.. operator).
-// Emits input itself first, then descends into arrays and objects.
-func execRecurse(input []byte, buf []byte, fn func([]byte) error) error {
-	if err := fn(input); err != nil {
-		return err
-	}
-	s := scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return nil
-	}
-	switch s.data[s.pos] {
-	case '[':
-		var outerErr error
-		s.arrayIter(func(_ int, start, end int) bool {
-			if err := execRecurse(input[start:end], buf, fn); err != nil {
-				outerErr = err
-				return false
-			}
-			return true
-		})
-		return outerErr
-	case '{':
-		var outerErr error
-		s.objectIter(func(_ []byte, start, end int) bool {
-			if err := execRecurse(input[start:end], buf, fn); err != nil {
-				outerErr = err
-				return false
-			}
-			return true
-		})
-		return outerErr
-	}
-	return nil
-}
 
 // execIn implements in(obj): tests whether the input value is a key in obj (objects)
 // or an index in range for arrays. E.g. "foo" | in({"foo":1}) = true.

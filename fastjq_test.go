@@ -1898,39 +1898,6 @@ func TestValuesObjectStream(t *testing.T) {
 	}
 }
 
-// --- recurse / .. ---
-
-func TestRecurseFlat(t *testing.T) {
-	p, _ := Compile(`.. | numbers`)
-	results, _ := p.RunAll([]byte(`{"a":1,"b":2}`))
-	if len(results) != 2 {
-		t.Errorf("expected 2 numbers, got %d: %v", len(results), results)
-	}
-}
-func TestRecurseNested(t *testing.T) {
-	p, _ := Compile(`.. | numbers`)
-	results, _ := p.RunAll([]byte(`{"a":{"b":1},"c":[2,3]}`))
-	if len(results) != 3 {
-		t.Errorf("expected 3 numbers, got %d: %v", len(results), results)
-	}
-}
-func TestRecurseEmitsSelf(t *testing.T) {
-	// recurse emits the root itself first
-	p, _ := Compile(`[.. | strings]`)
-	got, _ := p.Run([]byte(`{"x":"hello","y":{"z":"world"}}`))
-	if string(got) != `["hello","world"]` {
-		t.Errorf("got %s", got)
-	}
-}
-func TestRecurseScalar(t *testing.T) {
-	// recurse on a scalar emits just the scalar
-	p, _ := Compile(`[..]`)
-	got, _ := p.Run([]byte(`42`))
-	if string(got) != `[42]` {
-		t.Errorf("got %s", got)
-	}
-}
-
 // --- in ---
 
 func TestInObjectTrue(t *testing.T)   { assertQuery(t, `"foo" | in({"foo":1,"bar":2})`, `null`, `true`) }

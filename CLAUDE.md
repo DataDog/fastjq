@@ -34,10 +34,7 @@ Check that no existing benchmark has regressed meaningfully. For new features th
 **Any non-zero `allocs/op` in a fastjq benchmark is a failure.** Stop and check in with the user before proceeding. The options are:
 - Fix the allocation (preferred)
 - Reject the feature as incompatible with the zero-alloc constraint
-- Document it explicitly as a known edge case. Accepted exceptions so far:
-  - `with_entries`: 1 alloc for 64-byte entry scratch (recycled in steady state)
-  - `recurse`/`..`: ~3-4 allocs per nesting level from recursive closures; bounded by JSON depth (not element count), unavoidable without a full stack redesign
-  Only accept if the feature is genuinely useful and allocs are truly unavoidable. Reject if allocs scale with element count (see `range` rejection in SYNTAX.md).
+- Document it explicitly as a known edge case (e.g. `with_entries` uses a single recycled 64-byte scratch buffer — 0 allocs in steady state). Only accept if the alloc is a single fixed-size buffer recycled by the allocator. Reject if allocs scale with input structure (see `range` and `recurse` in SYNTAX.md Rejected section).
 
 ### 5. Update ALL the docs
 Every code change that affects the public surface, supported operations, or performance characteristics must update:

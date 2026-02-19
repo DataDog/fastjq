@@ -198,16 +198,6 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 `@base64d` accepts standard (`+/`), URL-safe (`-_`), padded and unpadded input. Non-printable decoded bytes are escaped as `\uXXXX`.
 `@base64` operates on the raw bytes between quotes. Escape sequences in the input (e.g. `\n`) are encoded as their literal characters (`\` and `n`), not as the decoded byte — use `split` + `join` to handle those cases.
 
-### Recursive Descent
-
-| Syntax | Description | Example Input | Example Output |
-|--------|-------------|---------------|----------------|
-| `recurse` / `..` | Emit all values recursively (self first, then depth-first) | `{"a":{"b":1}}` | `{"a":{"b":1}}`, `{"b":1}`, `1` |
-| `.. \| numbers` | Extract all numbers at any depth | `{"a":1,"b":{"c":2}}` | `1`, `2` |
-| `[.. \| strings]` | Collect all strings anywhere in the structure | `{"x":"hi","y":{"z":"bye"}}` | `["hi","bye"]` |
-
-`recurse`/`..` allocates ~3-4 per nesting level (recursive closures). For typical log records (depth 2-5) this is 10-20 allocs/call — unavoidable without a full stack redesign.
-
 ### Type Filters
 
 | Syntax | Description | Equivalent to |
@@ -382,11 +372,14 @@ These operations are implementable at zero allocation but involve more complexit
 
 ### Rejected — structurally incompatible with zero-alloc constraint
 
-These operations were evaluated and explicitly rejected because they cannot be implemented without violating the zero-alloc guarantee, even in steady state.
+These operations were evaluated, implemented, and then removed after benchmarking revealed unavoidable allocations.
+
+These operations were evaluated, implemented, and then removed after benchmarking confirmed unavoidable allocations incompatible with the zero-alloc guarantee.
 
 | Syntax | Reason |
 |--------|--------|
-| `range(n)` / `range(from; to; step)` | **Synthesizes new data not present in the input.** Every other fastjq operation transforms or extracts bytes that already exist in the input. `range` must generate integer values from scratch. Formatting each integer into bytes requires a temporary buffer. Any buffer that is passed to the result callback (`fn func([]byte) error`) is conservatively considered to escape to the heap by Go's escape analysis, because `fn` is a function interface value. This results in 1 heap allocation per `execRange` call. Additionally, the fixed-size buffer approach (`[64]byte`) silently overflows for extreme float step values (e.g. `range(0; 1e200; 1e190)` formats numbers with 200+ digits), causing extra hidden allocations. Rejected: out of scope. |
+| `range(n)` / `range(from; to; step)` | **Synthesizes new data not present in the input.** Every other fastjq operation transforms or extracts bytes already in the input. `range` generates integer values from scratch. Formatting each integer requires a buffer passed to `fn func([]byte) error` — Go's escape analysis conservatively heap-allocates any buffer passed to a function interface, giving 1 alloc/call. Additionally, a fixed `[64]byte` buffer silently overflows for extreme float steps, causing unbounded extra allocations. |
+| `recurse` / `..` | **Recursive closures escape to heap, scaling with JSON depth.** The recursive descent creates an `objectIter`/`arrayIter` closure at every nesting level that captures `fn func([]byte) error`. Because `fn` is a function interface, Go assumes the closure may outlive the stack frame and heap-allocates it — ~3-4 allocs per level. For a 3-level JSON object, that is ~11 allocs/call. Unlike `range` (fixed 1 alloc), `recurse` allocs scale with input depth. Fixing this would require a full stack-based redesign that avoids closures entirely, incompatible with the current callback architecture. |
 
 ### Challenging — likely require allocation
 

@@ -44,7 +44,6 @@ const (
 	opBase64                       // @base64 — encode string to base64
 	opBase64D                      // @base64d — decode base64 string
 	opValues                       // values — stream non-null values of object/array
-	opRecurse                      // recurse / .. — recursive descent
 	opIn                           // in(obj) — reverse membership test
 	opSplit                        // split("s")
 	opJoin                         // join("s")
@@ -475,14 +474,6 @@ func parseAtom(s string) (*op, string, error) {
 		}
 		cond := &op{typ: opAnd, left: mkTypeNeq("array"), right: mkTypeNeq("object")}
 		return &op{typ: opSelect, child: cond}, s[7:], nil
-	}
-
-	// recurse / .. — recursive descent
-	if strings.HasPrefix(s, "recurse") && (len(s) == 7 || !isIdentChar(s[7])) {
-		return &op{typ: opRecurse}, s[7:], nil
-	}
-	if strings.HasPrefix(s, "..") && (len(s) == 2 || !isIdentChar(s[2])) {
-		return &op{typ: opRecurse}, s[2:], nil
 	}
 
 	// in(expr) — reverse membership test

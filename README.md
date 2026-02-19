@@ -172,7 +172,6 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `all` / `all(expr)` | True if all elements/results are truthy (short-circuit) |
 | `.[n:m]`, `.[:m]`, `.[n:]`, `.[:]` | Slice array or string (negative indices count from end) |
 | `values` | Pass through if not null; produce no output if null. Use as `.[] \| values` to filter nulls from a stream |
-| `recurse`, `..` | Recursively emit all values in a nested structure |
 | `numbers`, `strings`, `arrays`, `objects`, `booleans`, `nulls` | Type filters — equivalent to `select(type == "X")` |
 | `iterables`, `scalars` | Type filters — arrays/objects or everything else |
 | `"key": expr` | Quoted string keys in object construction: `{"a": .b}` |
