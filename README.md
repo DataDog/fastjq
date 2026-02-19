@@ -93,7 +93,7 @@ func (p *Program) RunAll(input []byte) ([][]byte, error)
 func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 ```
 
-`Compile` allocates. `Run`/`RunWithBuffer`/`RunFunc` do not (for basic ops with a reused buffer).
+`Compile` allocates. `Run`/`RunWithBuffer`/`RunFunc` achieve zero allocations at steady state across all supported operations.
 
 ## Supported Operations
 

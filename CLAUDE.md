@@ -29,6 +29,11 @@ go test -bench=. -benchmem -count=1
 ```
 Check that no existing benchmark has regressed meaningfully. For new features that are hot-path, add a benchmark.
 
+**Any non-zero `allocs/op` in a fastjq benchmark is a failure.** Stop and check in with the user before proceeding. The options are:
+- Fix the allocation (preferred)
+- Reject the feature as incompatible with the zero-alloc constraint
+- Document it explicitly as a known edge case (e.g. `with_entries` uses a single recycled 64-byte scratch buffer — 0 allocs in steady state)
+
 ### 5. Update ALL the docs
 Every code change that affects the public surface, supported operations, or performance characteristics must update:
 
