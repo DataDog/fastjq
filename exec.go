@@ -521,7 +521,9 @@ func execDeleteObject(node *op, input []byte, buf []byte, s *scanner) ([]byte, e
 				if d.child == nil {
 					return true // simple delete — skip this pair
 				}
-				// Nested delete — recurse into the value
+				// Nested delete — recurse into the value.
+				// Save the slice header before the call so we can recover if
+				// the nested target is not an object/array (execDelete returns nil).
 				if !first {
 					buf = append(buf, ',')
 				}
@@ -529,11 +531,13 @@ func execDeleteObject(node *op, input []byte, buf []byte, s *scanner) ([]byte, e
 				buf = append(buf, '"')
 				buf = append(buf, key...)
 				buf = append(buf, '"', ':')
+				preDel := buf // full slice header — survives buf=nil from error
 				nestedNode := &op{typ: opDelete, fields: []op{*d.child}}
 				var err error
 				buf, err = execDelete(nestedNode, input[valueStart:valueEnd], buf)
 				if err != nil {
-					buf = append(buf, input[valueStart:valueEnd]...)
+					// Nested target is not an object/array — keep original value.
+					buf = append(preDel, input[valueStart:valueEnd]...)
 				}
 				return true
 			}
@@ -790,7 +794,7 @@ func execSelect(node *op, input []byte, buf []byte, fn func([]byte) error) error
 	return fn(input)
 }
 
-// execLength returns the length of a JSON value:
+/// execLength returns the length of a JSON value:
 // string → number of bytes between quotes, array → element count,
 // object → key count, null → 0.
 func execLength(input []byte, buf []byte, fn func([]byte) error) error {
@@ -809,14 +813,19 @@ func execLengthSingle(input []byte, buf []byte) ([]byte, error) {
 	}
 	switch s.data[s.pos] {
 	case '"':
-		// String length: count bytes between quotes (not Unicode codepoints,
-		// but consistent with how jq counts — bytes of the unquoted content).
+		// String length: count logical characters. Each escape sequence counts
+		// as 1 character: \uXXXX (6 bytes) = 1, \n / \" / etc. (2 bytes) = 1.
 		s.pos++ // skip opening quote
 		n := 0
 		for s.pos < len(s.data) {
 			ch := s.data[s.pos]
 			if ch == '\\' {
-				s.pos += 2
+				s.pos++ // skip backslash
+				if s.pos < len(s.data) && s.data[s.pos] == 'u' && s.pos+4 < len(s.data) {
+					s.pos += 5 // skip u + 4 hex digits (\uXXXX)
+				} else if s.pos < len(s.data) {
+					s.pos++ // skip single escaped char
+				}
 				n++
 				continue
 			}

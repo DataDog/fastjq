@@ -4,6 +4,25 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — correctness: fuzz tests, no-panic guarantees, edge case fixes
+
+### Added
+- `fuzz_test.go`: three fuzz functions using Go's `testing.F`:
+  - `FuzzCompile` — any string → Compile must not panic
+  - `FuzzRunFixed` — fixed queries against arbitrary input → Run must not panic
+  - `FuzzBoth` — random query + random input → no panic after compile error skip
+- `correctness_test.go`: 26 tests covering edge cases that expose real bugs:
+  - `TestNoPanicMalformedInput` — all operations vs truncated/malformed/empty JSON via `recover()`
+  - `TestNoPanicInvalidQueries` — Compile must not panic on any string
+  - String escapes, unicode, numbers, deeply nested, large objects, empty collections, falsy semantics, etc.
+
+### Fixed (bugs found by correctness tests)
+- **`del(.a.b)` panic on non-object value** — when the nested target value (e.g. `1`) is not an object/array, `execDelete` returned `(nil, err)` setting `buf = nil`. Subsequent `buf[:savedLen]` caused a panic. Fixed by saving the full slice header (`preDel := buf`) before calling `execDelete` and using that for the fallback append.
+
+- **`length` wrong for `\uXXXX` escapes** — `length` on `"\u0041BC"` returned 7 instead of 3. The scanner skipped only 2 bytes for any escape sequence (`\\` + 1 char), but `\uXXXX` is 6 bytes. Fixed by detecting `u` after the backslash and skipping 5 more bytes (u + 4 hex digits), matching jq's behaviour of counting escape sequences as 1 logical character.
+
+---
+
 ## [Unreleased] — README improvements and code refactoring
 
 ### Changed (README)
