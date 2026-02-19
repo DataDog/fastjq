@@ -4,191 +4,77 @@ import (
 	"testing"
 )
 
+// assertQuery compiles query, runs it against input, and checks the result equals want.
+// Reduces 8-line boilerplate to a single call for simple single-output tests.
+func assertQuery(t *testing.T, query, input, want string) {
+	t.Helper()
+	p, err := Compile(query)
+	if err != nil {
+		t.Fatalf("Compile(%q): %v", query, err)
+	}
+	got, err := p.Run([]byte(input))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if string(got) != want {
+		t.Errorf("query %q on %s: got %s, want %s", query, input, got, want)
+	}
+}
+
+// assertNoOutput compiles query, runs it against input, and checks it produces zero outputs.
+func assertNoOutput(t *testing.T, query, input string) {
+	t.Helper()
+	p, err := Compile(query)
+	if err != nil {
+		t.Fatalf("Compile(%q): %v", query, err)
+	}
+	results, err := p.RunAll([]byte(input))
+	if err != nil {
+		t.Fatalf("RunAll: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("query %q on %s: expected 0 results, got %d: %v", query, input, len(results), results)
+	}
+}
+
 func TestIdentity(t *testing.T) {
-	p, err := Compile(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte(`{"name":"alice","age":30}`)
-	got, err := p.Run(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != string(input) {
-		t.Errorf("got %s, want %s", got, input)
-	}
+	assertQuery(t, ".", `{"name":"alice","age":30}`, `{"name":"alice","age":30}`)
 }
-
 func TestFieldAccess(t *testing.T) {
-	p, err := Compile(".name")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte(`{"name":"alice","age":30}`)
-	got, err := p.Run(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `"alice"` {
-		t.Errorf("got %s, want %q", got, `"alice"`)
-	}
+	assertQuery(t, ".name", `{"name":"alice","age":30}`, `"alice"`)
 }
-
 func TestFieldAccessNumber(t *testing.T) {
-	p, err := Compile(".age")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte(`{"name":"alice","age":30}`)
-	got, err := p.Run(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "30" {
-		t.Errorf("got %s, want 30", got)
-	}
+	assertQuery(t, ".age", `{"name":"alice","age":30}`, "30")
 }
-
 func TestFieldAccessNested(t *testing.T) {
-	p, err := Compile(".address.city")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte(`{"name":"alice","address":{"city":"NYC","zip":"10001"}}`)
-	got, err := p.Run(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `"NYC"` {
-		t.Errorf("got %s, want %q", got, `"NYC"`)
-	}
+	assertQuery(t, ".address.city", `{"name":"alice","address":{"city":"NYC","zip":"10001"}}`, `"NYC"`)
 }
-
 func TestFieldAccessMissing(t *testing.T) {
-	p, err := Compile(".missing")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte(`{"name":"alice"}`)
-	got, err := p.Run(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "null" {
-		t.Errorf("got %s, want null", got)
-	}
+	assertQuery(t, ".missing", `{"name":"alice"}`, "null")
 }
 
 func TestDeleteSingle(t *testing.T) {
-	p, err := Compile("del(.age)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte(`{"name":"alice","age":30,"city":"NYC"}`)
-	got, err := p.Run(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := `{"name":"alice","city":"NYC"}`
-	if string(got) != expected {
-		t.Errorf("got %s, want %s", got, expected)
-	}
+	assertQuery(t, "del(.age)", `{"name":"alice","age":30,"city":"NYC"}`, `{"name":"alice","city":"NYC"}`)
 }
-
 func TestDeleteMultiple(t *testing.T) {
-	p, err := Compile("del(.age, .city)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte(`{"name":"alice","age":30,"city":"NYC"}`)
-	got, err := p.Run(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := `{"name":"alice"}`
-	if string(got) != expected {
-		t.Errorf("got %s, want %s", got, expected)
-	}
+	assertQuery(t, "del(.age, .city)", `{"name":"alice","age":30,"city":"NYC"}`, `{"name":"alice"}`)
 }
-
 func TestDeleteFirst(t *testing.T) {
-	p, err := Compile("del(.name)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte(`{"name":"alice","age":30}`)
-	got, err := p.Run(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := `{"age":30}`
-	if string(got) != expected {
-		t.Errorf("got %s, want %s", got, expected)
-	}
+	assertQuery(t, "del(.name)", `{"name":"alice","age":30}`, `{"age":30}`)
 }
-
 func TestDeleteLast(t *testing.T) {
-	p, err := Compile("del(.age)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte(`{"name":"alice","age":30}`)
-	got, err := p.Run(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := `{"name":"alice"}`
-	if string(got) != expected {
-		t.Errorf("got %s, want %s", got, expected)
-	}
+	assertQuery(t, "del(.age)", `{"name":"alice","age":30}`, `{"name":"alice"}`)
 }
-
 func TestDeleteAll(t *testing.T) {
-	p, err := Compile("del(.name, .age)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte(`{"name":"alice","age":30}`)
-	got, err := p.Run(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := `{}`
-	if string(got) != expected {
-		t.Errorf("got %s, want %s", got, expected)
-	}
+	assertQuery(t, "del(.name, .age)", `{"name":"alice","age":30}`, `{}`)
 }
-
 func TestDeleteNested(t *testing.T) {
-	p, err := Compile("del(.address.zip)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte(`{"name":"alice","address":{"city":"NYC","zip":"10001"}}`)
-	got, err := p.Run(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := `{"name":"alice","address":{"city":"NYC"}}`
-	if string(got) != expected {
-		t.Errorf("got %s, want %s", got, expected)
-	}
+	assertQuery(t, "del(.address.zip)",
+		`{"name":"alice","address":{"city":"NYC","zip":"10001"}}`,
+		`{"name":"alice","address":{"city":"NYC"}}`)
 }
-
 func TestDeleteNonexistent(t *testing.T) {
-	p, err := Compile("del(.missing)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := []byte(`{"name":"alice","age":30}`)
-	got, err := p.Run(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := `{"name":"alice","age":30}`
-	if string(got) != expected {
-		t.Errorf("got %s, want %s", got, expected)
-	}
+	assertQuery(t, "del(.missing)", `{"name":"alice","age":30}`, `{"name":"alice","age":30}`)
 }
 
 func TestPipe(t *testing.T) {
@@ -975,217 +861,24 @@ func TestPipeIteratorConstruct(t *testing.T) {
 
 // --- Literals ---
 
-func TestLiteralNull(t *testing.T) {
-	p, err := Compile("null")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{"a":1}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "null" {
-		t.Errorf("got %s, want null", got)
-	}
-}
-
-func TestLiteralTrue(t *testing.T) {
-	p, err := Compile("true")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "true" {
-		t.Errorf("got %s, want true", got)
-	}
-}
-
-func TestLiteralFalse(t *testing.T) {
-	p, err := Compile("false")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "false" {
-		t.Errorf("got %s, want false", got)
-	}
-}
-
-func TestLiteralString(t *testing.T) {
-	p, err := Compile(`"hello"`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `"hello"` {
-		t.Errorf("got %s, want %q", got, `"hello"`)
-	}
-}
-
-func TestLiteralInteger(t *testing.T) {
-	p, err := Compile("42")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "42" {
-		t.Errorf("got %s, want 42", got)
-	}
-}
-
-func TestLiteralFloat(t *testing.T) {
-	p, err := Compile("3.14")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "3.14" {
-		t.Errorf("got %s, want 3.14", got)
-	}
-}
-
-func TestLiteralNegative(t *testing.T) {
-	p, err := Compile("-5")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "-5" {
-		t.Errorf("got %s, want -5", got)
-	}
-}
+func TestLiteralNull(t *testing.T)     { assertQuery(t, "null", `{"a":1}`, "null") }
+func TestLiteralTrue(t *testing.T)     { assertQuery(t, "true", `{}`, "true") }
+func TestLiteralFalse(t *testing.T)    { assertQuery(t, "false", `{}`, "false") }
+func TestLiteralString(t *testing.T)   { assertQuery(t, `"hello"`, `{}`, `"hello"`) }
+func TestLiteralInteger(t *testing.T)  { assertQuery(t, "42", `{}`, "42") }
+func TestLiteralFloat(t *testing.T)    { assertQuery(t, "3.14", `{}`, "3.14") }
+func TestLiteralNegative(t *testing.T) { assertQuery(t, "-5", `{}`, "-5") }
 
 // --- Comparisons ---
 
-func TestCompareStringEqual(t *testing.T) {
-	p, err := Compile(`.name == "alice"`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{"name":"alice"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "true" {
-		t.Errorf("got %s, want true", got)
-	}
-}
-
-func TestCompareStringNotEqual(t *testing.T) {
-	p, err := Compile(`.name == "bob"`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{"name":"alice"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "false" {
-		t.Errorf("got %s, want false", got)
-	}
-}
-
-func TestCompareNotEqualOp(t *testing.T) {
-	p, err := Compile(`.age != 30`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{"age":25}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "true" {
-		t.Errorf("got %s, want true", got)
-	}
-}
-
-func TestCompareNull(t *testing.T) {
-	p, err := Compile(`.x == null`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{"y":1}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "true" {
-		t.Errorf("got %s, want true", got)
-	}
-}
-
-func TestCompareLiteralStrings(t *testing.T) {
-	p, err := Compile(`"a" == "a"`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "true" {
-		t.Errorf("got %s, want true", got)
-	}
-}
-
-func TestCompareLiteralStringsNotEqual(t *testing.T) {
-	p, err := Compile(`"a" != "b"`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "true" {
-		t.Errorf("got %s, want true", got)
-	}
-}
-
-func TestCompareFields(t *testing.T) {
-	p, err := Compile(`.x == .y`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{"x":1,"y":1}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "true" {
-		t.Errorf("got %s, want true", got)
-	}
-}
-
-func TestCompareNumberFloat(t *testing.T) {
-	p, err := Compile(`1.0 == 1`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "true" {
-		t.Errorf("got %s, want true", got)
-	}
-}
+func TestCompareStringEqual(t *testing.T)      { assertQuery(t, `.name == "alice"`, `{"name":"alice"}`, "true") }
+func TestCompareStringNotEqual(t *testing.T)   { assertQuery(t, `.name == "bob"`, `{"name":"alice"}`, "false") }
+func TestCompareNotEqualOp(t *testing.T)       { assertQuery(t, `.age != 30`, `{"age":25}`, "true") }
+func TestCompareNull(t *testing.T)             { assertQuery(t, `.x == null`, `{"y":1}`, "true") }
+func TestCompareLiteralStrings(t *testing.T)   { assertQuery(t, `"a" == "a"`, `{}`, "true") }
+func TestCompareLiteralStringsNotEqual(t *testing.T) { assertQuery(t, `"a" != "b"`, `{}`, "true") }
+func TestCompareFields(t *testing.T)           { assertQuery(t, `.x == .y`, `{"x":1,"y":1}`, "true") }
+func TestCompareNumberFloat(t *testing.T)      { assertQuery(t, `1.0 == 1`, `{}`, "true") }
 
 // --- Select ---
 
@@ -1477,103 +1170,13 @@ func TestOptionalChainedFieldMissing(t *testing.T) {
 
 // --- Type ---
 
-func TestTypeString(t *testing.T) {
-	p, err := Compile("type")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`"hello"`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `"string"` {
-		t.Errorf("got %s, want %q", got, `"string"`)
-	}
-}
-
-func TestTypeNumber(t *testing.T) {
-	p, err := Compile("type")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`42`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `"number"` {
-		t.Errorf("got %s, want %q", got, `"number"`)
-	}
-}
-
-func TestTypeObject(t *testing.T) {
-	p, err := Compile("type")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{"a":1}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `"object"` {
-		t.Errorf("got %s, want %q", got, `"object"`)
-	}
-}
-
-func TestTypeArray(t *testing.T) {
-	p, err := Compile("type")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`[1,2]`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `"array"` {
-		t.Errorf("got %s, want %q", got, `"array"`)
-	}
-}
-
-func TestTypeBoolean(t *testing.T) {
-	p, err := Compile("type")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`true`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `"boolean"` {
-		t.Errorf("got %s, want %q", got, `"boolean"`)
-	}
-}
-
-func TestTypeNull(t *testing.T) {
-	p, err := Compile("type")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`null`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `"null"` {
-		t.Errorf("got %s, want %q", got, `"null"`)
-	}
-}
-
-func TestTypePiped(t *testing.T) {
-	p, err := Compile(".value | type")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := p.Run([]byte(`{"value":"hello"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `"string"` {
-		t.Errorf("got %s, want %q", got, `"string"`)
-	}
-}
+func TestTypeString(t *testing.T)  { assertQuery(t, "type", `"hello"`, `"string"`) }
+func TestTypeNumber(t *testing.T)  { assertQuery(t, "type", `42`, `"number"`) }
+func TestTypeObject(t *testing.T)  { assertQuery(t, "type", `{"a":1}`, `"object"`) }
+func TestTypeArray(t *testing.T)   { assertQuery(t, "type", `[1,2]`, `"array"`) }
+func TestTypeBoolean(t *testing.T) { assertQuery(t, "type", `true`, `"boolean"`) }
+func TestTypeNull(t *testing.T)    { assertQuery(t, "type", `null`, `"null"`) }
+func TestTypePiped(t *testing.T)   { assertQuery(t, ".value | type", `{"value":"hello"}`, `"string"`) }
 
 func TestSelectWithType(t *testing.T) {
 	p, err := Compile(`.[] | select(type == "object")`)

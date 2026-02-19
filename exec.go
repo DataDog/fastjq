@@ -861,6 +861,15 @@ func appendInt(buf []byte, n int) []byte {
 	return buf
 }
 
+// appendKV appends a {"key":"k","value":v} entry to buf. Used by execToEntries and execWithEntries.
+func appendKV(buf []byte, key []byte, value []byte) []byte {
+	buf = append(buf, `{"key":"`...)
+	buf = append(buf, key...)
+	buf = append(buf, `","value":`...)
+	buf = append(buf, value...)
+	return append(buf, '}')
+}
+
 // execToEntries converts a JSON object to [{key, value}] array.
 // Non-object input produces an empty array.
 func execToEntries(input []byte, buf []byte) ([]byte, error) {
@@ -876,11 +885,7 @@ func execToEntries(input []byte, buf []byte) ([]byte, error) {
 			buf = append(buf, ',')
 		}
 		first = false
-		buf = append(buf, `{"key":"`...)
-		buf = append(buf, key...)
-		buf = append(buf, `","value":`...)
-		buf = append(buf, input[valueStart:valueEnd]...)
-		buf = append(buf, '}')
+		buf = appendKV(buf, key, input[valueStart:valueEnd])
 		return true
 	})
 	buf = append(buf, ']')
@@ -1006,11 +1011,7 @@ func execWithEntries(node *op, input []byte, buf []byte, fn func([]byte) error) 
 		vE := s.pos
 
 		entryBuf = entryBuf[:0]
-		entryBuf = append(entryBuf, `{"key":"`...)
-		entryBuf = append(entryBuf, key...)
-		entryBuf = append(entryBuf, `","value":`...)
-		entryBuf = append(entryBuf, input[vS:vE]...)
-		entryBuf = append(entryBuf, '}')
+		entryBuf = appendKV(entryBuf, key, input[vS:vE])
 
 		// exec returns nil when f produces no output (e.g. select dropped it).
 		// parseEntryKeyValue returns nil for nil/non-entry results — those are skipped.
@@ -1265,10 +1266,7 @@ func execStringPredicate(input []byte, buf []byte, s string, start, end bool) []
 	sc := &scanner{data: input}
 	sc.skipWhitespace()
 	if sc.pos >= len(sc.data) || sc.data[sc.pos] != '"' {
-		if buf == nil {
-			return bFalse
-		}
-		return append(buf, "false"...)
+		return boolResult(buf, false)
 	}
 	content := sc.readString()
 	var match bool
@@ -1277,16 +1275,7 @@ func execStringPredicate(input []byte, buf []byte, s string, start, end bool) []
 	} else { // end
 		match = len(content) >= len(s) && bytesEqualStr(content[len(content)-len(s):], s)
 	}
-	if buf == nil {
-		if match {
-			return bTrue
-		}
-		return bFalse
-	}
-	if match {
-		return append(buf, "true"...)
-	}
-	return append(buf, "false"...)
+	return boolResult(buf, match)
 }
 
 // execTrimStr implements ltrimstr (left=true) and rtrimstr (left=false).
