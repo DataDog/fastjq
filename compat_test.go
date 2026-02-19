@@ -139,6 +139,8 @@ func TestJQCompat(t *testing.T) {
 		{`eq string miss`, `.name == "bob"`, `{"name":"alice"}`, ""},
 		{`neq`, `.x != 1`, `{"x":2}`, ""},
 		{`lt`, `.x < 5`, `{"x":3}`, ""},
+		{`lte`, `.x <= 5`, `{"x":5}`, ""},
+		{`gt`, `.x > 3`, `{"x":5}`, ""},
 		{`gte`, `.x >= 5`, `{"x":5}`, ""},
 		{`eq null`, `.x == null`, `{"y":1}`, ""},
 
@@ -235,11 +237,13 @@ func TestJQCompat(t *testing.T) {
 		{`startswith true`, `startswith("foo")`, `"foobar"`, ""},
 		{`startswith false`, `startswith("bar")`, `"foobar"`, ""},
 		{`endswith true`, `endswith("bar")`, `"foobar"`, ""},
+		{`endswith false`, `endswith("foo")`, `"foobar"`, ""},
 		{`ltrimstr match`, `ltrimstr("foo")`, `"foobar"`, ""},
 		{`ltrimstr no match`, `ltrimstr("xyz")`, `"foobar"`, ""},
 		{`rtrimstr match`, `rtrimstr("bar")`, `"foobar"`, ""},
+		{`rtrimstr no match`, `rtrimstr("xyz")`, `"foobar"`, ""},
 
-		// --- values / recurse / in / type filters ---
+		// --- values / in / type filters ---
 		{"values non-null", `values`, `42`, ""},
 		{"values null filtered", `[1,null,2] | [.[] | values]`, `null`, ""},
 		{"in object true", `"foo" | in({"foo":1})`, `null`, ""},
@@ -247,6 +251,12 @@ func TestJQCompat(t *testing.T) {
 		{"in array", `1 | in([0,1,2])`, `null`, ""},
 		{"numbers filter", `[1,"a",2,"b"] | [.[] | numbers]`, `null`, ""},
 		{"strings filter", `[1,"a",2,"b"] | [.[] | strings]`, `null`, ""},
+		{"arrays filter", `[1,"a",[2],{"b":3}] | [.[] | arrays]`, `null`, ""},
+		{"objects filter", `[1,"a",[2],{"b":3}] | [.[] | objects]`, `null`, ""},
+		{"booleans filter", `[1,true,"a",false,null] | [.[] | booleans]`, `null`, ""},
+		{"nulls filter", `[1,null,"a",null] | [.[] | nulls]`, `null`, ""},
+		{"iterables filter", `[1,"a",[2],{"b":3}] | [.[] | iterables]`, `null`, ""},
+		{"scalars filter", `[1,"a",[2],{"b":3}] | [.[] | scalars]`, `null`, ""},
 		{"quoted object key", `{"a": 1, "b": 2}`, `null`, ""},
 
 		// --- @base64 / @base64d ---
@@ -258,7 +268,10 @@ func TestJQCompat(t *testing.T) {
 		{"index string", `index(",")`, `"a,b,c"`, ""},
 		{"rindex string", `rindex(",")`, `"a,b,c"`, ""},
 		{"indices string", `indices(",")`, `"a,b,c"`, ""},
-		{"index array", `index(2)`, `[1,2,3,2,1]`, ""},
+		{"index array elem", `index(2)`, `[1,2,3,2,1]`, ""},
+		{"rindex array elem", `rindex(2)`, `[1,2,3,2,1]`, ""},
+		{"indices array elem", `indices(2)`, `[1,2,3,2,1]`, ""},
+		{"index array miss", `index(9)`, `[1,2,3]`, ""},
 		{"indices miss", `indices("x")`, `"hello"`, ""},
 
 		// --- has(n) ---
@@ -307,6 +320,40 @@ func TestJQCompat(t *testing.T) {
 
 		// --- Grouping ---
 		{"grouping precedence", `(.a == 1) and (.b == 2)`, `{"a":1,"b":2}`, ""},
+
+		// --- Arithmetic: -, *, /, % ---
+		{"subtract integers", `.a - .b`, `{"a":10,"b":3}`, ""},
+		{"subtract negative result", `3 - 10`, `null`, ""},
+		{"multiply integers", `.a * .b`, `{"a":6,"b":7}`, ""},
+		{"multiply exact float", `2.5 * 4`, `null`, ""},
+		{"divide exact", `10 / 2`, `null`, ""},
+		{"divide fraction", `7 / 2`, `null`, ""},
+		{"modulo", `10 % 3`, `null`, ""},
+		{"modulo negative", `-7 % 3`, `null`, ""},
+		{"arith precedence mul over add", `1 + 2 * 3`, `null`, ""},
+		{"arith precedence mixed", `2 * 3 + 4 * 5`, `null`, ""},
+		{"array difference", `[1,2,3,2,1] - [2]`, `null`, ""},
+		{"array difference empty rhs", `[1,2,3] - []`, `null`, ""},
+		{"string repeat", `"ab" * 3`, `null`, ""},
+		{"string split via div", `"a,b,c" / ","`, `null`, ""},
+
+		// --- min / max / min_by / max_by ---
+		{"min numbers", `min`, `[3,1,4,1,5,9]`, ""},
+		{"max numbers", `max`, `[3,1,4,1,5,9]`, ""},
+		{"min strings", `min`, `["banana","apple","cherry"]`, ""},
+		{"max strings", `max`, `["banana","apple","cherry"]`, ""},
+		{"min empty", `min`, `[]`, ""},
+		{"max empty", `max`, `[]`, ""},
+		{"min single", `min`, `[42]`, ""},
+		{"min_by field", `min_by(.n)`, `[{"n":"b","v":2},{"n":"a","v":1},{"n":"c","v":3}]`, ""},
+		{"max_by field", `max_by(.v)`, `[{"name":"a","v":10},{"name":"b","v":5},{"name":"c","v":20}]`, ""},
+		{"min_by number", `min_by(.age)`, `[{"name":"bob","age":25},{"name":"alice","age":30}]`, ""},
+
+		// --- @uri ---
+		{"uri encode space", `@uri`, `"hello world"`, ""},
+		{"uri encode special", `@uri`, `"a/b?c=d&e=f"`, ""},
+		{"uri encode unreserved passthrough", `@uri`, `"abc-._~"`, ""},
+		{"uri encode empty", `@uri`, `""`, ""},
 
 		// --- Complex / realistic log processing patterns ---
 		{"log filter level", `select(.level == "error")`, `{"level":"error","msg":"boom","ts":1234}`, ""},
@@ -363,6 +410,36 @@ func TestJQCompat(t *testing.T) {
 			".a.b.c?", `{"a":null}`,
 			"null", "error",
 			"jq null-propagates: null | .field = null; fastjq errors on .field when the input is null unless the field itself is marked optional. Use .a?.b?.c? in fastjq.",
+		},
+		{
+			"add objects duplicate keys",
+			"add", `[{"a":1},{"a":2}]`,
+			`{"a":2}`, `{"a":1,"a":2}`,
+			"jq deduplicates keys on object merge (last wins); fastjq appends all key-value pairs, producing a duplicate-key object. Use to_entries | ... | from_entries for explicit dedup.",
+		},
+		{
+			"@uri with JSON escape sequences",
+			`"\n" | @uri`, `null`,
+			`"%0A"`, `"%5Cn"`,
+			"jq decodes JSON escape sequences before URI-encoding (\\n → 0x0A → %0A); fastjq operates on raw JSON string bytes (\\n is two bytes: backslash + n → %5Cn). Matches for plain ASCII strings.",
+		},
+		{
+			"null arithmetic (null - x)",
+			`null - 5`, `null`,
+			`error`, `null`,
+			"jq errors on null in arithmetic (except +); fastjq propagates null through -, *, /, %. Use the // operator for null-safe defaults before arithmetic.",
+		},
+		{
+			"null arithmetic (x * null)",
+			`5 * null`, `null`,
+			`error`, `null`,
+			"Same as above — jq errors, fastjq returns null.",
+		},
+		{
+			"string repeat zero",
+			`"ab" * 0`, `null`,
+			`""`, `null`,
+			"jq returns empty string for string * 0; fastjq returns null (treating zero/negative as no repetition).",
 		},
 	}
 
