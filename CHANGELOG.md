@@ -21,6 +21,20 @@ Five new zero-alloc operations:
 
 ---
 
+## [Unreleased] — values, recurse/.., in, type filters, quoted object keys
+
+### Added
+- **`values`** — `select(. != null)`. Filters null from streams: `.[] | values`. Zero-alloc.
+- **`recurse` / `..`** — recursive descent, emitting all nested values depth-first. ~3-4 allocs/level from recursive closures (bounded by JSON depth, not element count). 11x faster than gojq on typical nested objects.
+- **`in(obj)`** — reverse membership: `"key" | in({"key":1})` = `true`. Zero-alloc.
+- **Type-filter builtins** — parser aliases for `select(type == X)`: `numbers`, `strings`, `arrays`, `objects`, `booleans`, `nulls`, `iterables`, `scalars`. All zero-alloc (desugared at parse time, no new ops).
+- **Quoted string keys in object construction** — `{"foo": .bar}` now works alongside `{foo: .bar}`. Fixes `in({"key":1})` patterns.
+
+### Known exception
+`recurse`/`..` has ~3-4 allocs per nesting level. Documented in CLAUDE.md.
+
+---
+
 ## [Unreleased] — @base64 / @base64d
 
 ### Added

@@ -243,6 +243,17 @@ func TestJQCompat(t *testing.T) {
 		{`ltrimstr no match`, `ltrimstr("xyz")`, `"foobar"`, ""},
 		{`rtrimstr match`, `rtrimstr("bar")`, `"foobar"`, ""},
 
+		// --- values / recurse / in / type filters ---
+		{"values non-null", `values`, `42`, ""},
+		{"values null filtered", `[1,null,2] | [.[] | values]`, `null`, ""},
+		{"recurse numbers", `[.. | numbers]`, `{"a":1,"b":{"c":2}}`, ""},
+		{"in object true", `"foo" | in({"foo":1})`, `null`, ""},
+		{"in object false", `"x" | in({"foo":1})`, `null`, ""},
+		{"in array", `1 | in([0,1,2])`, `null`, ""},
+		{"numbers filter", `[1,"a",2,"b"] | [.[] | numbers]`, `null`, ""},
+		{"strings filter", `[1,"a",2,"b"] | [.[] | strings]`, `null`, ""},
+		{"quoted object key", `{"a": 1, "b": 2}`, `null`, ""},
+
 		// --- @base64 / @base64d ---
 		{"base64 encode", `@base64`, `"hello"`, ""},
 		{"base64 decode", `@base64d`, `"aGVsbG8="`, ""},

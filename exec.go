@@ -136,6 +136,12 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opValues:
+		return execValues(input, buf, fn)
+	case opRecurse:
+		return execRecurse(input, buf, fn)
+	case opIn:
+		return fn(execIn(node, input, buf))
 	case opSlice:
 		result, err := execSlice(node, input, buf)
 		if err != nil {
@@ -307,6 +313,18 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execBase64Encode(input, buf)
 	case opBase64D:
 		return execBase64Decode(input, buf)
+	case opValues:
+		if isNull(input) {
+			return bNull, nil // null → null in single-result context
+		}
+		if buf == nil {
+			return input[:len(input):len(input)], nil
+		}
+		return append(buf, input...), nil
+	case opRecurse:
+		return exec(node, input, buf)
+	case opIn:
+		return execIn(node, input, buf), nil
 	case opSlice:
 		return execSlice(node, input, buf)
 	case opPlus:
@@ -1796,6 +1814,99 @@ func execBase64Decode(input []byte, buf []byte) ([]byte, error) {
 
 	buf = append(buf, '"')
 	return buf, nil
+}
+
+// isNull reports whether a JSON value (possibly whitespace-padded) is null.
+func isNull(v []byte) bool {
+	s := scanner{data: v}
+	s.skipWhitespace()
+	return s.pos < len(s.data) && s.data[s.pos] == 'n'
+}
+
+// execValues implements `values` = select(. != null).
+// Emits input unchanged if it is not null; emits nothing if null.
+// Use as `.[] | values` to filter nulls from a stream.
+func execValues(input []byte, buf []byte, fn func([]byte) error) error {
+	if isNull(input) {
+		return nil // null → produce 0 outputs
+	}
+	return fn(input)
+}
+
+// execRecurse recursively streams all values in a JSON structure (.. operator).
+// Emits input itself first, then descends into arrays and objects.
+func execRecurse(input []byte, buf []byte, fn func([]byte) error) error {
+	if err := fn(input); err != nil {
+		return err
+	}
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return nil
+	}
+	switch s.data[s.pos] {
+	case '[':
+		var outerErr error
+		s.arrayIter(func(_ int, start, end int) bool {
+			if err := execRecurse(input[start:end], buf, fn); err != nil {
+				outerErr = err
+				return false
+			}
+			return true
+		})
+		return outerErr
+	case '{':
+		var outerErr error
+		s.objectIter(func(_ []byte, start, end int) bool {
+			if err := execRecurse(input[start:end], buf, fn); err != nil {
+				outerErr = err
+				return false
+			}
+			return true
+		})
+		return outerErr
+	}
+	return nil
+}
+
+// execIn implements in(obj): tests whether the input value is a key in obj (objects)
+// or an index in range for arrays. E.g. "foo" | in({"foo":1}) = true.
+func execIn(node *op, input []byte, buf []byte) []byte {
+	// Evaluate the container expression
+	container, err := execSingle(node.child, input, nil)
+	if err != nil {
+		return boolResult(buf, false)
+	}
+
+	cs := scanner{data: container}
+	cs.skipWhitespace()
+	if cs.pos >= len(cs.data) {
+		return boolResult(buf, false)
+	}
+
+	is := scanner{data: input}
+	is.skipWhitespace()
+
+	switch cs.data[cs.pos] {
+	case '{': // "key" | in(obj) — check if input string is a key
+		if is.pos < len(is.data) && is.data[is.pos] == '"' {
+			key := is.readString()
+			vs, _ := cs.findField(key)
+			return boolResult(buf, vs != -1)
+		}
+	case '[': // n | in(arr) — check if input integer is a valid index
+		if is.pos < len(is.data) {
+			f, ok := parseJSONFloat(input)
+			if ok {
+				idx := int(f)
+				if idx >= 0 {
+					length := cs.arrayLen()
+					return boolResult(buf, idx < length)
+				}
+			}
+		}
+	}
+	return boolResult(buf, false)
 }
 
 // execDebug prints the input to stderr and is used by opDebug.

@@ -198,6 +198,39 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 `@base64d` accepts standard (`+/`), URL-safe (`-_`), padded and unpadded input. Non-printable decoded bytes are escaped as `\uXXXX`.
 `@base64` operates on the raw bytes between quotes. Escape sequences in the input (e.g. `\n`) are encoded as their literal characters (`\` and `n`), not as the decoded byte — use `split` + `join` to handle those cases.
 
+### Recursive Descent
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `recurse` / `..` | Emit all values recursively (self first, then depth-first) | `{"a":{"b":1}}` | `{"a":{"b":1}}`, `{"b":1}`, `1` |
+| `.. \| numbers` | Extract all numbers at any depth | `{"a":1,"b":{"c":2}}` | `1`, `2` |
+| `[.. \| strings]` | Collect all strings anywhere in the structure | `{"x":"hi","y":{"z":"bye"}}` | `["hi","bye"]` |
+
+`recurse`/`..` allocates ~3-4 per nesting level (recursive closures). For typical log records (depth 2-5) this is 10-20 allocs/call — unavoidable without a full stack redesign.
+
+### Type Filters
+
+| Syntax | Description | Equivalent to |
+|--------|-------------|---------------|
+| `numbers` | Keep only numbers | `select(type == "number")` |
+| `strings` | Keep only strings | `select(type == "string")` |
+| `arrays` | Keep only arrays | `select(type == "array")` |
+| `objects` | Keep only objects | `select(type == "object")` |
+| `booleans` | Keep only booleans | `select(type == "boolean")` |
+| `nulls` | Keep only null | `select(type == "null")` |
+| `values` | Keep anything that is not null | `select(. != null)` |
+| `iterables` | Keep arrays and objects | `select(type == "array" or type == "object")` |
+| `scalars` | Keep non-containers | `select(type != "array" and type != "object")` |
+
+These are all zero-alloc parser aliases — no new ops, just desugared to existing `select(type == ...)` forms.
+
+### Reverse Membership
+
+| Syntax | Description | Example | Output |
+|--------|-------------|---------|--------|
+| `"key" \| in(obj)` | True if string is a key in the object | `"foo" \| in({"foo":1})` | `true` |
+| `n \| in(arr)` | True if integer n is a valid array index | `1 \| in([0,1,2])` | `true` |
+
 ### Search and Debug
 
 | Syntax | Description | Example Input | Example Output |
@@ -318,10 +351,7 @@ So `a or b and c` parses as `a or (b and c)` — `and` binds tighter than `or`.
 
 | Syntax | Description | Implementation Notes |
 |--------|-------------|---------------------|
-| `values` | Object values | Equivalent to `.[]`, already supported semantically. |
-| `in(expr)` | Reverse membership test | Same scan logic, reversed operands. |
-| `recurse` / `..` | Recursive descent | Walk all nested values via scanner, stream via callback. |
-| `path(expr)` | Output path as array | Emit path like `["foo","bar"]` or `["items",0]`. |
+| `path(expr)` | Output path as array | Emit path like `["foo","bar"]` or `["items",0]`. Requires tracking current path as we descend — needs a path accumulator. |
 
 ### Feasible but require careful handling
 

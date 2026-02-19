@@ -311,6 +311,23 @@ func BenchmarkFastjq_Small_Join(b *testing.B) {
 	benchFastjqObj(b, `join(",")`, []byte(`["field_0","field_1","field_2","field_3","field_4"]`))
 }
 
+func BenchmarkFastjq_Small_Recurse(b *testing.B) {
+	// count all strings in a nested structure
+	benchFastjqFunc(b, `[.. | strings] | length`,
+		[]byte(`{"a":"x","b":{"c":"y","d":["z","w"]}}`))
+}
+func BenchmarkFastjq_Small_Values(b *testing.B) {
+	// filter nulls from stream
+	benchFastjqFunc(b, `.[] | values`, []byte(`[1,null,2,null,3,null,4,null,5]`))
+}
+func BenchmarkGojq_Small_Recurse(b *testing.B) {
+	benchGojqObj(b, `[.. | strings] | length`,
+		[]byte(`{"a":"x","b":{"c":"y","d":["z","w"]}}`))
+}
+func BenchmarkGojq_Small_Values(b *testing.B) {
+	benchGojqIter(b, `.[] | values`, []byte(`[1,null,2,null,3,null,4,null,5]`))
+}
+
 func BenchmarkFastjq_Small_Base64Encode(b *testing.B) {
 	benchFastjqObj(b, `@base64`, []byte(`"hello world from fastjq benchmark"`))
 }

@@ -43,6 +43,9 @@ const (
 	opDebug                        // debug — print to stderr, pass through
 	opBase64                       // @base64 — encode string to base64
 	opBase64D                      // @base64d — decode base64 string
+	opValues                       // values — stream non-null values of object/array
+	opRecurse                      // recurse / .. — recursive descent
+	opIn                           // in(obj) — reverse membership test
 	opSplit                        // split("s")
 	opJoin                         // join("s")
 	opAsciiDowncase                // ascii_downcase
@@ -434,6 +437,57 @@ func parseAtom(s string) (*op, string, error) {
 	// debug — print to stderr, pass through
 	if strings.HasPrefix(s, "debug") && (len(s) == 5 || !isIdentChar(s[5])) {
 		return &op{typ: opDebug}, s[5:], nil
+	}
+
+	// values — non-null filter (desugars to select(. != null))
+	if strings.HasPrefix(s, "values") && (len(s) == 6 || !isIdentChar(s[6])) {
+		return &op{typ: opValues}, s[6:], nil
+	}
+
+	// Type-filter builtins: select(type == "X") aliases
+	for _, tf := range []struct {
+		name, typeName string
+	}{
+		{"numbers", "number"}, {"strings", "string"}, {"arrays", "array"},
+		{"objects", "object"}, {"booleans", "boolean"}, {"nulls", "null"},
+	} {
+		n := len(tf.name)
+		if strings.HasPrefix(s, tf.name) && (len(s) == n || !isIdentChar(s[n])) {
+			lit := &op{typ: opLiteral, literal: []byte(`"` + tf.typeName + `"`)}
+			cmp := &op{typ: opCompare, left: &op{typ: opTypeBuiltin}, right: lit, cmpOp: cmpEq}
+			return &op{typ: opSelect, child: cmp}, s[n:], nil
+		}
+	}
+	// iterables = select(type == "array" or type == "object")
+	if strings.HasPrefix(s, "iterables") && (len(s) == 9 || !isIdentChar(s[9])) {
+		mkTypeCmp := func(t string) *op {
+			return &op{typ: opCompare, left: &op{typ: opTypeBuiltin},
+				right: &op{typ: opLiteral, literal: []byte(`"` + t + `"`)}, cmpOp: cmpEq}
+		}
+		cond := &op{typ: opOr, left: mkTypeCmp("array"), right: mkTypeCmp("object")}
+		return &op{typ: opSelect, child: cond}, s[9:], nil
+	}
+	// scalars = select(type != "array" and type != "object")
+	if strings.HasPrefix(s, "scalars") && (len(s) == 7 || !isIdentChar(s[7])) {
+		mkTypeNeq := func(t string) *op {
+			return &op{typ: opCompare, left: &op{typ: opTypeBuiltin},
+				right: &op{typ: opLiteral, literal: []byte(`"` + t + `"`)}, cmpOp: cmpNeq}
+		}
+		cond := &op{typ: opAnd, left: mkTypeNeq("array"), right: mkTypeNeq("object")}
+		return &op{typ: opSelect, child: cond}, s[7:], nil
+	}
+
+	// recurse / .. — recursive descent
+	if strings.HasPrefix(s, "recurse") && (len(s) == 7 || !isIdentChar(s[7])) {
+		return &op{typ: opRecurse}, s[7:], nil
+	}
+	if strings.HasPrefix(s, "..") && (len(s) == 2 || !isIdentChar(s[2])) {
+		return &op{typ: opRecurse}, s[2:], nil
+	}
+
+	// in(expr) — reverse membership test
+	if strings.HasPrefix(s, "in(") {
+		return parseUnaryExprBuiltin(s[3:], opIn)
 	}
 
 	// @base64 / @base64d — check @base64d before @base64 to avoid prefix collision
@@ -988,12 +1042,33 @@ func parseConstruct(s string) (*op, string, error) {
 			s = strings.TrimSpace(s[1:])
 		}
 
-		// Read key name
-		key, rest := readIdentifier(s)
-		if key == "" {
-			return nil, s, fmt.Errorf("expected field name in object construction")
+		// Read key name — either bare identifier (foo) or quoted string ("foo")
+		var key string
+		if len(s) > 0 && s[0] == '"' {
+			i := 1
+			for i < len(s) {
+				if s[i] == '\\' {
+					i += 2
+					continue
+				}
+				if s[i] == '"' {
+					break
+				}
+				i++
+			}
+			if i >= len(s) {
+				return nil, s, fmt.Errorf("unterminated key string in object construction")
+			}
+			key = s[1:i]
+			s = strings.TrimSpace(s[i+1:])
+		} else {
+			var rest string
+			key, rest = readIdentifier(s)
+			if key == "" {
+				return nil, s, fmt.Errorf("expected field name in object construction")
+			}
+			s = strings.TrimSpace(rest)
 		}
-		s = strings.TrimSpace(rest)
 
 		// Check for `: expr` (rename) or shorthand
 		if len(s) > 0 && s[0] == ':' {

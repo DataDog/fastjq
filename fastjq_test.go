@@ -1876,6 +1876,72 @@ func TestStringOpsComposed(t *testing.T) {
 	}
 }
 
+// --- values ---
+
+func TestValuesPassesNonNull(t *testing.T)  { assertQuery(t, `values`, `{"a":1}`, `{"a":1}`) }
+func TestValuesPassesZero(t *testing.T)     { assertQuery(t, `values`, `0`, `0`) }
+func TestValuesPassesFalse(t *testing.T)    { assertQuery(t, `values`, `false`, `false`) }
+func TestValuesFiltersNull(t *testing.T)    { assertNoOutput(t, `values`, `null`) }
+func TestValuesInStream(t *testing.T) {
+	// .[] | values filters nulls from a stream
+	p, _ := Compile(`.[] | values`)
+	results, _ := p.RunAll([]byte(`[1,null,2,null,3]`))
+	if len(results) != 3 || string(results[0]) != "1" || string(results[2]) != "3" {
+		t.Errorf("got %v", results)
+	}
+}
+func TestValuesObjectStream(t *testing.T) {
+	p, _ := Compile(`.[] | values`)
+	results, _ := p.RunAll([]byte(`{"a":1,"b":null,"c":3}`))
+	if len(results) != 2 || string(results[0]) != "1" || string(results[1]) != "3" {
+		t.Errorf("got %v", results)
+	}
+}
+
+// --- recurse / .. ---
+
+func TestRecurseFlat(t *testing.T) {
+	p, _ := Compile(`.. | numbers`)
+	results, _ := p.RunAll([]byte(`{"a":1,"b":2}`))
+	if len(results) != 2 {
+		t.Errorf("expected 2 numbers, got %d: %v", len(results), results)
+	}
+}
+func TestRecurseNested(t *testing.T) {
+	p, _ := Compile(`.. | numbers`)
+	results, _ := p.RunAll([]byte(`{"a":{"b":1},"c":[2,3]}`))
+	if len(results) != 3 {
+		t.Errorf("expected 3 numbers, got %d: %v", len(results), results)
+	}
+}
+func TestRecurseEmitsSelf(t *testing.T) {
+	// recurse emits the root itself first
+	p, _ := Compile(`[.. | strings]`)
+	got, _ := p.Run([]byte(`{"x":"hello","y":{"z":"world"}}`))
+	if string(got) != `["hello","world"]` {
+		t.Errorf("got %s", got)
+	}
+}
+func TestRecurseScalar(t *testing.T) {
+	// recurse on a scalar emits just the scalar
+	p, _ := Compile(`[..]`)
+	got, _ := p.Run([]byte(`42`))
+	if string(got) != `[42]` {
+		t.Errorf("got %s", got)
+	}
+}
+
+// --- in ---
+
+func TestInObjectTrue(t *testing.T)   { assertQuery(t, `"foo" | in({"foo":1,"bar":2})`, `null`, `true`) }
+func TestInObjectFalse(t *testing.T)  { assertQuery(t, `"baz" | in({"foo":1})`, `null`, `false`) }
+func TestInArrayTrue(t *testing.T)    { assertQuery(t, `1 | in([0,1,2])`, `null`, `true`) }
+func TestInArrayFalse(t *testing.T)   { assertQuery(t, `5 | in([0,1,2])`, `null`, `false`) }
+func TestInArrayNeg(t *testing.T)     { assertQuery(t, `-1 | in([0,1,2])`, `null`, `false`) }
+func TestInFieldAccess(t *testing.T) {
+	assertQuery(t, `.key | in({"foo":1,"bar":2})`, `{"key":"foo"}`, `true`)
+}
+
 // --- @base64 / @base64d ---
 
 func TestBase64Encode(t *testing.T)        { assertQuery(t, `@base64`, `"hello"`, `"aGVsbG8="`) }
