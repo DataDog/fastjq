@@ -23,18 +23,18 @@ go test -v -count=1
 ```
 No regressions. Every new feature needs tests. If something is hard to test, that's a signal the design needs reconsideration.
 
-### 4. Run benchmarks
+### 4. Run benchmarks and update BENCHMARKS.md
 ```bash
-go test -bench=. -benchmem -count=1
+go run scripts/update_benchmarks.go
 ```
-Check that no existing benchmark has regressed meaningfully. For new features that are hot-path, add a benchmark.
+This runs the full benchmark suite (~3 minutes) and **automatically regenerates both the summary comparison table and raw output section** of `BENCHMARKS.md`. Never edit `BENCHMARKS.md` by hand — always use this script.
 
-**Every new operation must have a fastjq benchmark AND a matching gojq benchmark.** Add them to `bench_test.go` following the existing helper pattern (`benchFastjqObj`, `benchGojqObj`, etc.) before committing. No exceptions.
+**Every new operation must have a fastjq benchmark AND a matching gojq benchmark.** Add them to `bench_test.go` following the existing helper pattern (`benchFastjqObj`, `benchGojqObj`, etc.) before committing. Also add a corresponding `row{}` entry to `tableRows` in `scripts/update_benchmarks.go` so it appears in the summary table.
 
 **Any non-zero `allocs/op` in a fastjq benchmark is a failure.** Stop and check in with the user before proceeding. The options are:
 - Fix the allocation (preferred)
 - Reject the feature as incompatible with the zero-alloc constraint
-- Document it explicitly as a known edge case (e.g. `with_entries` uses a single recycled 64-byte scratch buffer — 0 allocs in steady state). Only accept if the alloc is a single fixed-size buffer recycled by the allocator. Reject if allocs scale with input structure (see `range` and `recurse` in SYNTAX.md Rejected section).
+- Document it explicitly as a known edge case. Only accept if the alloc is a single fixed-size buffer recycled by the allocator. Reject if allocs scale with input structure (see `range` and `recurse` in SYNTAX.md Rejected section).
 
 ### 5. Update ALL the docs
 Every code change that affects the public surface, supported operations, or performance characteristics must update:
@@ -45,7 +45,7 @@ Every code change that affects the public surface, supported operations, or perf
 | `DESIGN.md` | Supported operations list, file structure, new design decisions |
 | `CONSTRAINTS.md` | Scope constraints (supported ops), any new design constraints |
 | `SYNTAX.md` | Add new operations with examples; move from "Not Yet Supported" to supported |
-| `BENCHMARKS.md` | Re-run benchmarks and update the summary table and raw output if numbers changed |
+| `BENCHMARKS.md` | Run `go run scripts/update_benchmarks.go` — regenerates summary table + raw output automatically |
 | `bench_test.go` | Add fastjq + gojq benchmarks for every new operation (required, not optional) |
 | `CHANGELOG.md` | Add an entry for every meaningful change (see format below) |
 
