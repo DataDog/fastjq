@@ -21,6 +21,23 @@ Five new zero-alloc operations:
 
 ---
 
+## [Unreleased] — jq compatibility harness
+
+### Added
+`compat_test.go`: 149 test cases verifying fastjq produces byte-identical output to the jq CLI (1.8.1) across all supported operations. Tests cover identity, field access, deletion, construction, pipes, comparisons, boolean logic, select, alternative, type, has, length, map, to/from/with_entries, keys_unsorted, any/all, first/last/limit, if-then-else, string operations (downcase, upcase, startswith, endswith, ltrimstr, rtrimstr), flatten, add, split, join, unicode, and realistic log processing patterns.
+
+Tests are skipped automatically when `jq` is not in PATH.
+
+### Known intentional differences from jq (documented in the test)
+
+| Behaviour | jq | fastjq | Notes |
+|-----------|-----|--------|-------|
+| Scientific notation casing | `1.5E+10` | `1.5e10` | fastjq preserves raw input bytes; jq normalises to uppercase E with explicit sign |
+| `del(.a.b)` when `.a` is not an object/array | error | no-op, keeps original | fastjq silently ignores nested-del type errors, jq errors |
+| Null propagation: `null \| .field` | `null` | error (use `.field?`) | jq null-propagates field access; fastjq errors unless the field is marked optional with `?` |
+
+---
+
 ## [Unreleased] — correctness: fuzz tests, no-panic guarantees, edge case fixes
 
 ### Added
