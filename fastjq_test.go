@@ -1704,6 +1704,243 @@ func TestConstructWithAlternative(t *testing.T) {
 	}
 }
 
+// --- empty ---
+
+func TestEmptyProducesNoOutput(t *testing.T) {
+	p, _ := Compile("empty")
+	results, err := p.RunAll([]byte(`{"a":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+func TestEmptyInPipe(t *testing.T) {
+	p, _ := Compile(`. | empty`)
+	results, err := p.RunAll([]byte(`{"a":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+// --- has ---
+
+func TestHasFieldPresent(t *testing.T) {
+	p, _ := Compile(`has("name")`)
+	got, err := p.Run([]byte(`{"name":"alice","age":30}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestHasFieldMissing(t *testing.T) {
+	p, _ := Compile(`has("missing")`)
+	got, err := p.Run([]byte(`{"name":"alice"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestHasFieldNullValue(t *testing.T) {
+	// has returns true even when the field value is null
+	p, _ := Compile(`has("x")`)
+	got, err := p.Run([]byte(`{"x":null}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true (field exists even if null)", got)
+	}
+}
+
+func TestHasEmptyObject(t *testing.T) {
+	p, _ := Compile(`has("x")`)
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestHasInSelect(t *testing.T) {
+	p, _ := Compile(`select(has("error"))`)
+	input := []byte(`{"error":"something went wrong"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+	results, err := p.RunAll([]byte(`{"level":"info"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results when field absent")
+	}
+}
+
+func TestHasDistinguishesNullFromMissing(t *testing.T) {
+	// has("x") vs .x != null — they differ when value is null
+	pHas, _ := Compile(`has("x")`)
+	pNotNull, _ := Compile(`.x != null`)
+	input := []byte(`{"x":null}`)
+
+	gotHas, _ := pHas.Run(input)
+	gotNotNull, _ := pNotNull.Run(input)
+
+	if string(gotHas) != "true" {
+		t.Errorf("has: got %s, want true", gotHas)
+	}
+	if string(gotNotNull) != "false" {
+		t.Errorf("!= null: got %s, want false", gotNotNull)
+	}
+}
+
+// --- if-then-else ---
+
+func TestIfThenElseTrue(t *testing.T) {
+	p, _ := Compile(`if .level == "error" then "ALERT" else "ok" end`)
+	got, err := p.Run([]byte(`{"level":"error"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"ALERT"` {
+		t.Errorf("got %s, want \"ALERT\"", got)
+	}
+}
+
+func TestIfThenElseFalse(t *testing.T) {
+	p, _ := Compile(`if .level == "error" then "ALERT" else "ok" end`)
+	got, err := p.Run([]byte(`{"level":"info"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"ok"` {
+		t.Errorf("got %s, want \"ok\"", got)
+	}
+}
+
+func TestIfThenNoElse(t *testing.T) {
+	// No else branch — defaults to identity (pass input through)
+	p, _ := Compile(`if .debug then . end`)
+	input := []byte(`{"debug":false,"msg":"hi"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s, want input (identity)", got)
+	}
+}
+
+func TestIfThenElseWithDel(t *testing.T) {
+	p, _ := Compile(`if has("secret") then del(.secret) else . end`)
+	withSecret := []byte(`{"name":"alice","secret":"s3cr3t"}`)
+	got, err := p.Run(withSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"name":"alice"}` {
+		t.Errorf("got %s", got)
+	}
+	noSecret := []byte(`{"name":"bob"}`)
+	got2, err := p.Run(noSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got2) != string(noSecret) {
+		t.Errorf("got %s, want input unchanged", got2)
+	}
+}
+
+func TestIfThenElseEmpty(t *testing.T) {
+	// Use empty as else to filter records
+	p, _ := Compile(`if .level == "error" then . else empty end`)
+	results, err := p.RunAll([]byte(`{"level":"info"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results (empty else), got %d", len(results))
+	}
+	input := []byte(`{"level":"error","msg":"boom"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestIfThenElseWithConstruct(t *testing.T) {
+	p, _ := Compile(`if .status >= 400 then {alert: .path, code: .status} else empty end`)
+	input := []byte(`{"status":500,"path":"/api/data"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"alert":"/api/data","code":500}` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestIfThenElseNested(t *testing.T) {
+	p, _ := Compile(`if .level == "error" then "high" else if .level == "warn" then "med" else "low" end end`)
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{`{"level":"error"}`, `"high"`},
+		{`{"level":"warn"}`, `"med"`},
+		{`{"level":"info"}`, `"low"`},
+	}
+	for _, tc := range cases {
+		got, err := p.Run([]byte(tc.input))
+		if err != nil {
+			t.Fatalf("input %s: %v", tc.input, err)
+		}
+		if string(got) != tc.want {
+			t.Errorf("input %s: got %s, want %s", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestIfConditionWithPipe(t *testing.T) {
+	// if (.level | not) then . else empty end — pass through non-debug records
+	p, _ := Compile(`if (.debug | not) then . else empty end`)
+	keep := []byte(`{"debug":false,"msg":"hi"}`)
+	got, err := p.Run(keep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(keep) {
+		t.Errorf("got %s", got)
+	}
+	results, err := p.RunAll([]byte(`{"debug":true,"msg":"noise"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for debug=true")
+	}
+}
+
 // --- and / or / not ---
 
 func TestAndBothTrue(t *testing.T) {

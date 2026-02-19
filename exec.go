@@ -63,6 +63,12 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return fn(append(buf, "true"...))
 		}
 		return fn(append(buf, "false"...))
+	case opEmpty:
+		return nil // produce zero outputs — never call fn
+	case opHas:
+		return execHas(node, input, buf, fn)
+	case opIf:
+		return execIf(node, input, buf, fn)
 	case opSelect:
 		return execSelect(node, input, buf, fn)
 	case opAlternative:
@@ -619,6 +625,39 @@ func execSelect(node *op, input []byte, buf []byte, fn func([]byte) error) error
 	if isFalsy(condVal) {
 		return nil // zero outputs
 	}
+	return fn(input)
+}
+
+// execHas checks whether the input object contains a field.
+// Returns true if the field exists (even if its value is null), false otherwise.
+func execHas(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
+		return fn(append(buf, "false"...))
+	}
+	key := []byte(node.field)
+	vs, _ := s.findField(key)
+	if vs == -1 {
+		return fn(append(buf, "false"...))
+	}
+	return fn(append(buf, "true"...))
+}
+
+// execIf evaluates cond; if truthy runs the then-branch, otherwise the else-branch.
+// If no else-branch is present (child==nil), the else defaults to identity.
+func execIf(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	condVal, err := execSingle(node.left, input, buf)
+	if err != nil {
+		return err
+	}
+	if !isFalsy(condVal) {
+		return execMulti(node.right, input, buf, fn)
+	}
+	if node.child != nil {
+		return execMulti(node.child, input, buf, fn)
+	}
+	// default else: identity
 	return fn(input)
 }
 

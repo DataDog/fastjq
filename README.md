@@ -116,6 +116,9 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `.foo < val`, `.foo <= val`, `.foo > val`, `.foo >= val` | Ordering (numbers and strings) |
 | `expr and expr`, `expr or expr` | Boolean — short-circuit, always return true/false |
 | `.foo \| not` | Boolean negation |
+| `has("key")` | True if object contains field (even if value is null) |
+| `if cond then expr else expr end` | Conditional — else is optional (defaults to identity) |
+| `empty` | Produce zero outputs — use as else branch to drop records |
 | `select(.level == "error")` | Filter — pass through or drop |
 | `.foo // "default"` | Alternative — use right if left is null/false |
 | `.foo?`, `.[0]?`, `.[]?` | Optional — suppress errors |

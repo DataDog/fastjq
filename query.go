@@ -25,6 +25,9 @@ const (
 	opAnd                          // expr and expr
 	opOr                           // expr or expr
 	opNot                          // not
+	opEmpty                        // empty — produce zero outputs
+	opHas                          // has("key")
+	opIf                           // if cond then expr else expr end
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -255,6 +258,21 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opLiteral, literal: []byte("false")}, s[5:], nil
 	}
 
+	// if-then-else
+	if strings.HasPrefix(s, "if") && (len(s) == 2 || !isIdentChar(s[2])) {
+		return parseIf(s)
+	}
+
+	// empty — produce zero outputs
+	if strings.HasPrefix(s, "empty") && (len(s) == 5 || !isIdentChar(s[5])) {
+		return &op{typ: opEmpty}, s[5:], nil
+	}
+
+	// has("key")
+	if strings.HasPrefix(s, "has(") {
+		return parseHas(s)
+	}
+
 	// not builtin (with boundary check)
 	if strings.HasPrefix(s, "not") && (len(s) == 3 || !isIdentChar(s[3])) {
 		return &op{typ: opNot}, s[3:], nil
@@ -268,6 +286,19 @@ func parseAtom(s string) (*op, string, error) {
 	// Dot expressions
 	if s[0] == '.' {
 		return parseDotExpr(s)
+	}
+
+	// Parenthesized expression: (expr)
+	if s[0] == '(' {
+		inner, rest, err := parsePipeExpr(s[1:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' to close grouped expression")
+		}
+		return inner, rest[1:], nil
 	}
 
 	// Object construction
@@ -346,6 +377,75 @@ func parseFieldChain(s string) (*op, string, error) {
 	}
 
 	return node, rest, nil
+}
+
+// parseHas parses has("key") — checks whether an object contains a field.
+func parseHas(s string) (*op, string, error) {
+	s = strings.TrimSpace(s[4:]) // skip "has("
+	if len(s) == 0 || s[0] != '"' {
+		return nil, s, fmt.Errorf("has() requires a string field name")
+	}
+	// Scan to closing quote, handling escapes
+	i := 1
+	for i < len(s) {
+		if s[i] == '\\' {
+			i += 2
+			continue
+		}
+		if s[i] == '"' {
+			break
+		}
+		i++
+	}
+	if i >= len(s) {
+		return nil, s, fmt.Errorf("unterminated string in has()")
+	}
+	key := s[1:i]
+	rest := strings.TrimSpace(s[i+1:])
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after has() argument")
+	}
+	return &op{typ: opHas, field: key}, rest[1:], nil
+}
+
+// parseIf parses if COND then EXPR else EXPR end.
+// The else branch is optional; if omitted it defaults to identity (.).
+func parseIf(s string) (*op, string, error) {
+	s = strings.TrimSpace(s[2:]) // skip "if"
+
+	cond, rest, err := parsePipeExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if !strings.HasPrefix(rest, "then") || (len(rest) > 4 && isIdentChar(rest[4])) {
+		return nil, rest, fmt.Errorf("expected 'then' in if expression")
+	}
+	rest = strings.TrimSpace(rest[4:])
+
+	thenBranch, rest, err := parsePipeExpr(rest)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+
+	var elseBranch *op
+	if strings.HasPrefix(rest, "else") && (len(rest) == 4 || !isIdentChar(rest[4])) {
+		rest = strings.TrimSpace(rest[4:])
+		elseBranch, rest, err = parsePipeExpr(rest)
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+	}
+
+	if !strings.HasPrefix(rest, "end") || (len(rest) > 3 && isIdentChar(rest[3])) {
+		return nil, rest, fmt.Errorf("expected 'end' to close if expression")
+	}
+	rest = rest[3:]
+
+	// left=cond, right=thenBranch, child=elseBranch (nil → identity)
+	return &op{typ: opIf, left: cond, right: thenBranch, child: elseBranch}, rest, nil
 }
 
 // parseDel parses del(.foo), del(.foo, .bar), del(.foo.bar), del(.[0]).

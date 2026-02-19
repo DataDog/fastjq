@@ -39,6 +39,14 @@ Every code change that affects the public surface, supported operations, or perf
 | `CONSTRAINTS.md` | Scope constraints (supported ops), any new design constraints |
 | `SYNTAX.md` | Add new operations with examples; move from "Not Yet Supported" to supported |
 | `BENCHMARKS.md` | Re-run benchmarks and update the summary table and raw output if numbers changed |
+| `CHANGELOG.md` | Add an entry for every meaningful change (see format below) |
+
+#### CHANGELOG format
+Add a new `## [Unreleased] — short description` section at the top. Include:
+- **Added** — new operations or APIs
+- **Fixed** — bug fixes or correctness improvements
+- **Tradeoffs** — any design decisions with non-obvious consequences
+- **Benchmark results** — if numbers changed significantly (>10%), note the before/after. Always note if a benchmark regressed.
 
 ### 6. Ask before committing
 **Do not commit automatically.** Show the user what you've done and ask if they want to commit. Let them review first.
