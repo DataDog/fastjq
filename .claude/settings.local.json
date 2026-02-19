@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(go mod init:*)",
+      "Bash(go get:*)",
+      "Bash(go mod tidy:*)",
+      "Bash(go test:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(go build:*)",
+      "Bash(go tool pprof:*)",
+      "Bash(jq:*)",
+      "Bash(hyperfine:*)",
+      "Bash(perl:*)",
+      "Bash(chmod:*)",
+      "Bash(./bench_vs_jq.sh:*)",
+      "Bash(/tmp/gojq_timing.go:*)",
+      "Bash(go run:*)"
+    ]
+  }
+}

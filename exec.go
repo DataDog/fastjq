@@ -54,6 +54,15 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execType(input, buf, fn)
 	case opCompare:
 		return execCompare(node, input, buf, fn)
+	case opAnd:
+		return execAnd(node, input, buf, fn)
+	case opOr:
+		return execOr(node, input, buf, fn)
+	case opNot:
+		if isFalsy(input) {
+			return fn(append(buf, "true"...))
+		}
+		return fn(append(buf, "false"...))
 	case opSelect:
 		return execSelect(node, input, buf, fn)
 	case opAlternative:
@@ -80,6 +89,43 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execTypeSingle(input, buf)
 	case opCompare:
 		return execCompareSingle(node, input, buf)
+	case opAnd:
+		leftVal, err := execSingle(node.left, input, buf)
+		if err != nil {
+			return nil, err
+		}
+		if isFalsy(leftVal) {
+			return append(buf[:0], "false"...), nil
+		}
+		rightVal, err := execSingle(node.right, input, buf)
+		if err != nil {
+			return nil, err
+		}
+		if isFalsy(rightVal) {
+			return append(buf[:0], "false"...), nil
+		}
+		return append(buf[:0], "true"...), nil
+	case opOr:
+		leftVal, err := execSingle(node.left, input, buf)
+		if err != nil {
+			return nil, err
+		}
+		if !isFalsy(leftVal) {
+			return append(buf[:0], "true"...), nil
+		}
+		rightVal, err := execSingle(node.right, input, buf)
+		if err != nil {
+			return nil, err
+		}
+		if !isFalsy(rightVal) {
+			return append(buf[:0], "true"...), nil
+		}
+		return append(buf[:0], "false"...), nil
+	case opNot:
+		if isFalsy(input) {
+			return append(buf, "true"...), nil
+		}
+		return append(buf, "false"...), nil
 	default:
 		return exec(node, input, buf)
 	}
@@ -466,7 +512,7 @@ func execTypeSingle(input []byte, buf []byte) ([]byte, error) {
 	}
 }
 
-// execCompareSingle evaluates == or != without callbacks (zero-alloc path).
+// execCompareSingle evaluates a comparison without callbacks (zero-alloc path).
 func execCompareSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	leftVal, err := execSingle(node.left, input, buf)
 	if err != nil {
@@ -477,8 +523,7 @@ func execCompareSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	eq := jsonEqual(leftVal, rightVal)
-	if node.cmpEq == eq {
+	if evalCmpOp(node.cmpOp, leftVal, rightVal) {
 		return append(buf[:0], "true"...), nil
 	}
 	return append(buf[:0], "false"...), nil
@@ -508,31 +553,61 @@ func execType(input []byte, buf []byte, fn func([]byte) error) error {
 	}
 }
 
-// execCompare evaluates == or != between two expressions.
+// execCompare evaluates a comparison between two expressions.
 func execCompare(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	leftVal, err := execSingle(node.left, input, buf)
 	if err != nil {
 		return err
 	}
-	// Use space after left result for right (leftVal may have grown buf)
 	rightBuf := leftVal[len(leftVal):len(leftVal):cap(leftVal)]
 	rightVal, err := execSingle(node.right, input, rightBuf)
 	if err != nil {
 		return err
 	}
+	if evalCmpOp(node.cmpOp, leftVal, rightVal) {
+		return fn(append(buf[:0], "true"...))
+	}
+	return fn(append(buf[:0], "false"...))
+}
 
-	eq := jsonEqual(leftVal, rightVal)
-	if node.cmpEq {
-		if eq {
-			return fn(append(buf[:0], "true"...))
-		}
+// execAnd evaluates left and right; returns true only if both are truthy.
+// Short-circuits: right is not evaluated if left is falsy.
+func execAnd(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	leftVal, err := execSingle(node.left, input, buf)
+	if err != nil {
+		return err
+	}
+	if isFalsy(leftVal) {
 		return fn(append(buf[:0], "false"...))
 	}
-	// !=
-	if eq {
+	rightVal, err := execSingle(node.right, input, buf)
+	if err != nil {
+		return err
+	}
+	if isFalsy(rightVal) {
 		return fn(append(buf[:0], "false"...))
 	}
 	return fn(append(buf[:0], "true"...))
+}
+
+// execOr evaluates left or right; returns true if either is truthy.
+// Short-circuits: right is not evaluated if left is truthy.
+func execOr(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	leftVal, err := execSingle(node.left, input, buf)
+	if err != nil {
+		return err
+	}
+	if !isFalsy(leftVal) {
+		return fn(append(buf[:0], "true"...))
+	}
+	rightVal, err := execSingle(node.right, input, buf)
+	if err != nil {
+		return err
+	}
+	if !isFalsy(rightVal) {
+		return fn(append(buf[:0], "true"...))
+	}
+	return fn(append(buf[:0], "false"...))
 }
 
 // execSelect evaluates a condition and emits the input if truthy, nothing if falsy.

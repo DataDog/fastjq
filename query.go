@@ -18,10 +18,25 @@ const (
 	opConstruct                    // {name, a: .foo}
 	opArrayConstruct               // [.foo, .bar]
 	opLiteral                      // null, true, false, "string", 123
-	opCompare                      // == and !=
+	opCompare                      // ==, !=, <, <=, >, >=
 	opSelect                       // select(cond)
 	opAlternative                  // expr // expr
 	opTypeBuiltin                  // type builtin
+	opAnd                          // expr and expr
+	opOr                           // expr or expr
+	opNot                          // not
+)
+
+// cmpOperator is the comparison operator used in opCompare nodes.
+type cmpOperator int
+
+const (
+	cmpEq  cmpOperator = iota // ==
+	cmpNeq                    // !=
+	cmpLt                     // <
+	cmpLe                     // <=
+	cmpGt                     // >
+	cmpGe                     // >=
 )
 
 // pair represents a key-expression pair in object construction.
@@ -41,9 +56,9 @@ type op struct {
 	index    int     // for opIndex: array index (negative = from end)
 	pairs    []pair  // for opConstruct: {key: expr} pairs
 	elems    []*op   // for opArrayConstruct: expressions
-	literal  []byte  // for opLiteral: raw JSON bytes
-	cmpEq    bool    // for opCompare: true = ==, false = !=
-	optional bool    // for opField/opIndex/opIterator: suppress errors
+	literal  []byte       // for opLiteral: raw JSON bytes
+	cmpOp    cmpOperator  // for opCompare: comparison operator
+	optional bool         // for opField/opIndex/opIterator: suppress errors
 }
 
 // parse compiles a jq query string into an AST.
@@ -96,9 +111,9 @@ func parseExpr(s string) (*op, string, error) {
 }
 
 // parseAlt parses alternative expressions: expr // expr // ...
-// Left-associative. Delegates down to parseCmp.
+// Left-associative. Delegates down to parseOr.
 func parseAlt(s string) (*op, string, error) {
-	left, rest, err := parseCmp(s)
+	left, rest, err := parseOr(s)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -119,7 +134,55 @@ func parseAlt(s string) (*op, string, error) {
 	return left, rest, nil
 }
 
-// parseCmp parses comparison expressions: atom == atom, atom != atom.
+// parseOr parses: expr or expr or ...
+// Left-associative. Delegates down to parseAnd.
+func parseOr(s string) (*op, string, error) {
+	left, rest, err := parseAnd(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	for {
+		rest = strings.TrimSpace(rest)
+		if len(rest) >= 2 && rest[0] == 'o' && rest[1] == 'r' && (len(rest) == 2 || !isIdentChar(rest[2])) {
+			rest = strings.TrimSpace(rest[2:])
+			right, remainder, err := parseAnd(rest)
+			if err != nil {
+				return nil, remainder, err
+			}
+			left = &op{typ: opOr, left: left, right: right}
+			rest = remainder
+			continue
+		}
+		break
+	}
+	return left, rest, nil
+}
+
+// parseAnd parses: expr and expr and ...
+// Left-associative. Delegates down to parseCmp.
+func parseAnd(s string) (*op, string, error) {
+	left, rest, err := parseCmp(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	for {
+		rest = strings.TrimSpace(rest)
+		if len(rest) >= 3 && rest[0] == 'a' && rest[1] == 'n' && rest[2] == 'd' && (len(rest) == 3 || !isIdentChar(rest[3])) {
+			rest = strings.TrimSpace(rest[3:])
+			right, remainder, err := parseCmp(rest)
+			if err != nil {
+				return nil, remainder, err
+			}
+			left = &op{typ: opAnd, left: left, right: right}
+			rest = remainder
+			continue
+		}
+		break
+	}
+	return left, rest, nil
+}
+
+// parseCmp parses comparison expressions: ==, !=, <, <=, >, >=
 // Non-associative (no chaining). Delegates down to parseAtom.
 func parseCmp(s string) (*op, string, error) {
 	left, rest, err := parseAtom(s)
@@ -127,25 +190,32 @@ func parseCmp(s string) (*op, string, error) {
 		return nil, rest, err
 	}
 	rest = strings.TrimSpace(rest)
-	if len(rest) >= 2 {
-		if rest[0] == '=' && rest[1] == '=' {
-			rest = strings.TrimSpace(rest[2:])
-			right, remainder, err := parseAtom(rest)
-			if err != nil {
-				return nil, remainder, err
-			}
-			return &op{typ: opCompare, left: left, right: right, cmpEq: true}, remainder, nil
-		}
-		if rest[0] == '!' && rest[1] == '=' {
-			rest = strings.TrimSpace(rest[2:])
-			right, remainder, err := parseAtom(rest)
-			if err != nil {
-				return nil, remainder, err
-			}
-			return &op{typ: opCompare, left: left, right: right, cmpEq: false}, remainder, nil
-		}
+
+	var operator cmpOperator
+	var advance int
+	switch {
+	case len(rest) >= 2 && rest[0] == '=' && rest[1] == '=':
+		operator, advance = cmpEq, 2
+	case len(rest) >= 2 && rest[0] == '!' && rest[1] == '=':
+		operator, advance = cmpNeq, 2
+	case len(rest) >= 2 && rest[0] == '<' && rest[1] == '=':
+		operator, advance = cmpLe, 2
+	case len(rest) >= 2 && rest[0] == '>' && rest[1] == '=':
+		operator, advance = cmpGe, 2
+	case len(rest) >= 1 && rest[0] == '<':
+		operator, advance = cmpLt, 1
+	case len(rest) >= 1 && rest[0] == '>':
+		operator, advance = cmpGt, 1
 	}
-	return left, rest, nil
+	if advance == 0 {
+		return left, rest, nil
+	}
+	rest = strings.TrimSpace(rest[advance:])
+	right, remainder, err := parseAtom(rest)
+	if err != nil {
+		return nil, remainder, err
+	}
+	return &op{typ: opCompare, left: left, right: right, cmpOp: operator}, remainder, nil
 }
 
 // parseAtom parses a single atomic expression (not including pipe, alternative, or comparison).
@@ -183,6 +253,11 @@ func parseAtom(s string) (*op, string, error) {
 	// false literal (with boundary check)
 	if strings.HasPrefix(s, "false") && (len(s) == 5 || !isIdentChar(s[5])) {
 		return &op{typ: opLiteral, literal: []byte("false")}, s[5:], nil
+	}
+
+	// not builtin (with boundary check)
+	if strings.HasPrefix(s, "not") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return &op{typ: opNot}, s[3:], nil
 	}
 
 	// type builtin (with boundary check)

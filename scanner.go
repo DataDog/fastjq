@@ -404,6 +404,94 @@ func isNumberByte(ch byte) bool {
 	return (ch >= '0' && ch <= '9') || ch == '-'
 }
 
+// jsonCompare compares two raw JSON values for ordering.
+// Returns (-1, true) if a < b, (0, true) if equal, (1, true) if a > b.
+// Returns (0, false) if the types are incompatible or not orderable.
+// Supports numbers and strings only.
+func jsonCompare(a, b []byte) (int, bool) {
+	a = trimWhitespace(a)
+	b = trimWhitespace(b)
+	if len(a) == 0 || len(b) == 0 {
+		return 0, false
+	}
+
+	aCh, bCh := a[0], b[0]
+
+	if isNumberByte(aCh) && isNumberByte(bCh) {
+		af, aOk := parseJSONFloat(a)
+		bf, bOk := parseJSONFloat(b)
+		if !aOk || !bOk {
+			return 0, false
+		}
+		if af < bf {
+			return -1, true
+		}
+		if af > bf {
+			return 1, true
+		}
+		return 0, true
+	}
+
+	if aCh == '"' && bCh == '"' {
+		sa := &scanner{data: a}
+		aContent := sa.readString()
+		sb := &scanner{data: b}
+		bContent := sb.readString()
+		return bytesCompare(aContent, bContent), true
+	}
+
+	return 0, false
+}
+
+// bytesCompare compares two byte slices lexicographically.
+// Returns -1, 0, or 1.
+func bytesCompare(a, b []byte) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	return 0
+}
+
+// evalCmpOp evaluates a comparison operator against two raw JSON values.
+func evalCmpOp(op cmpOperator, a, b []byte) bool {
+	switch op {
+	case cmpEq:
+		return jsonEqual(a, b)
+	case cmpNeq:
+		return !jsonEqual(a, b)
+	}
+	cmp, ok := jsonCompare(a, b)
+	if !ok {
+		return false
+	}
+	switch op {
+	case cmpLt:
+		return cmp < 0
+	case cmpLe:
+		return cmp <= 0
+	case cmpGt:
+		return cmp > 0
+	case cmpGe:
+		return cmp >= 0
+	}
+	return false
+}
+
 // trimWhitespace trims leading whitespace from a byte slice.
 func trimWhitespace(b []byte) []byte {
 	for len(b) > 0 {

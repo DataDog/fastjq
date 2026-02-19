@@ -112,7 +112,10 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `[.foo, .bar]` | Array construction |
 | `expr \| expr` | Pipe |
 | `null`, `true`, `false`, `"str"`, `123` | Literals |
-| `.foo == "val"`, `.foo != "val"` | Comparison |
+| `.foo == "val"`, `.foo != "val"` | Equality |
+| `.foo < val`, `.foo <= val`, `.foo > val`, `.foo >= val` | Ordering (numbers and strings) |
+| `expr and expr`, `expr or expr` | Boolean — short-circuit, always return true/false |
+| `.foo \| not` | Boolean negation |
 | `select(.level == "error")` | Filter — pass through or drop |
 | `.foo // "default"` | Alternative — use right if left is null/false |
 | `.foo?`, `.[0]?`, `.[]?` | Optional — suppress errors |

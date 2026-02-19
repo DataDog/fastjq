@@ -1704,6 +1704,332 @@ func TestConstructWithAlternative(t *testing.T) {
 	}
 }
 
+// --- and / or / not ---
+
+func TestAndBothTrue(t *testing.T) {
+	p, _ := Compile(`.a == 1 and .b == 2`)
+	got, err := p.Run([]byte(`{"a":1,"b":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestAndLeftFalse(t *testing.T) {
+	p, _ := Compile(`.a == 1 and .b == 2`)
+	got, err := p.Run([]byte(`{"a":9,"b":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestAndRightFalse(t *testing.T) {
+	p, _ := Compile(`.a == 1 and .b == 2`)
+	got, err := p.Run([]byte(`{"a":1,"b":9}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestOrLeftTrue(t *testing.T) {
+	p, _ := Compile(`.a == 1 or .b == 2`)
+	got, err := p.Run([]byte(`{"a":1,"b":9}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestOrRightTrue(t *testing.T) {
+	p, _ := Compile(`.a == 1 or .b == 2`)
+	got, err := p.Run([]byte(`{"a":9,"b":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestOrBothFalse(t *testing.T) {
+	p, _ := Compile(`.a == 1 or .b == 2`)
+	got, err := p.Run([]byte(`{"a":9,"b":9}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestNotFalse(t *testing.T) {
+	p, _ := Compile(`false | not`)
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestNotTrue(t *testing.T) {
+	p, _ := Compile(`true | not`)
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestNotNull(t *testing.T) {
+	p, _ := Compile(`null | not`)
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestNotFieldPipe(t *testing.T) {
+	p, _ := Compile(`.debug | not`)
+	// debug=false → not → true
+	got, err := p.Run([]byte(`{"debug":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestSelectWithAnd(t *testing.T) {
+	p, _ := Compile(`select(.level == "error" and .retries > 2)`)
+	input := []byte(`{"level":"error","retries":3}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+	results, err := p.RunAll([]byte(`{"level":"error","retries":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results when retries <= 2")
+	}
+}
+
+func TestSelectWithOr(t *testing.T) {
+	p, _ := Compile(`select(.level == "error" or .level == "fatal")`)
+	input := []byte(`{"level":"fatal","msg":"down"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestSelectWithNot(t *testing.T) {
+	p, _ := Compile(`select(.debug | not)`)
+	input := []byte(`{"level":"info","debug":false}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+	results, err := p.RunAll([]byte(`{"debug":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results when debug=true")
+	}
+}
+
+func TestAndOrPrecedence(t *testing.T) {
+	// a or b and c  parses as  a or (b and c)  — and binds tighter
+	// .a=false, .b=true, .c=true → false or (true and true) → true
+	p, _ := Compile(`.a or .b and .c`)
+	got, err := p.Run([]byte(`{"a":false,"b":true,"c":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true (and binds tighter than or)", got)
+	}
+	// .a=false, .b=true, .c=false → false or (true and false) → false
+	got2, err := p.Run([]byte(`{"a":false,"b":true,"c":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got2) != "false" {
+		t.Errorf("got %s, want false", got2)
+	}
+}
+
+// --- Ordering operators ---
+
+func TestLessThanNumbers(t *testing.T) {
+	p, _ := Compile(`.x < .y`)
+	got, err := p.Run([]byte(`{"x":1,"y":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestLessThanFalse(t *testing.T) {
+	p, _ := Compile(`.x < .y`)
+	got, err := p.Run([]byte(`{"x":2,"y":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestLessThanEqual(t *testing.T) {
+	p, _ := Compile(`.x < .y`)
+	got, err := p.Run([]byte(`{"x":1,"y":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false (equal is not less than)", got)
+	}
+}
+
+func TestLessThanOrEqualTrue(t *testing.T) {
+	p, _ := Compile(`.x <= .y`)
+	got, err := p.Run([]byte(`{"x":1,"y":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestGreaterThan(t *testing.T) {
+	p, _ := Compile(`.latency > 100`)
+	got, err := p.Run([]byte(`{"latency":200}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestGreaterThanOrEqual(t *testing.T) {
+	p, _ := Compile(`.status >= 400`)
+	got, err := p.Run([]byte(`{"status":400}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestLessThanStrings(t *testing.T) {
+	p, _ := Compile(`.a < .b`)
+	got, err := p.Run([]byte(`{"a":"abc","b":"abd"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestGreaterThanStrings(t *testing.T) {
+	p, _ := Compile(`.a > .b`)
+	got, err := p.Run([]byte(`{"a":"z","b":"a"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestOrderingCrossTypeFalse(t *testing.T) {
+	// string < number — incompatible types return false
+	p, _ := Compile(`.a < .b`)
+	got, err := p.Run([]byte(`{"a":"hello","b":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false (cross-type)", got)
+	}
+}
+
+func TestSelectWithOrderingOperator(t *testing.T) {
+	p, _ := Compile(`select(.latency > 500)`)
+	input := []byte(`{"latency":750,"path":"/api"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+	results, err := p.RunAll([]byte(`{"latency":100}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for low latency")
+	}
+}
+
+func TestComplexFilter(t *testing.T) {
+	// Realistic log filter: errors with high latency from a specific service
+	p, _ := Compile(`select(.level == "error" and .latency > 500 and .service == "api")`)
+	match := []byte(`{"level":"error","latency":750,"service":"api"}`)
+	got, err := p.Run(match)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(match) {
+		t.Errorf("got %s", got)
+	}
+	noMatch := []byte(`{"level":"error","latency":100,"service":"api"}`)
+	results, err := p.RunAll(noMatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results")
+	}
+}
+
 // --- Output larger than input ---
 
 // type on a minimal object produces an 8-byte string from a 2-byte input.
