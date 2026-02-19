@@ -67,6 +67,11 @@ const (
 	opMinBy                        // min_by(f)
 	opMaxBy                        // max_by(f)
 	opURIEncode                    // @uri
+	opTry                          // try expr / try expr catch handler
+	opToJSON                       // tojson / @json
+	opFromJSON                     // fromjson
+	opToString                     // tostring
+	opToNumber                     // tonumber
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -361,6 +366,11 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opLiteral, literal: []byte("false")}, s[5:], nil
 	}
 
+	// try / try-catch
+	if strings.HasPrefix(s, "try") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return parseTry(s[3:])
+	}
+
 	// if-then-else
 	if strings.HasPrefix(s, "if") && (len(s) == 2 || !isIdentChar(s[2])) {
 		return parseIf(s)
@@ -554,6 +564,9 @@ func parseAtom(s string) (*op, string, error) {
 		if strings.HasPrefix(s, "@uri") && (len(s) == 4 || !isIdentChar(s[4])) {
 			return &op{typ: opURIEncode}, s[4:], nil
 		}
+		if strings.HasPrefix(s, "@json") && (len(s) == 5 || !isIdentChar(s[5])) {
+			return &op{typ: opToJSON}, s[5:], nil
+		}
 		return nil, s, fmt.Errorf("unsupported format string %q", s[:min(len(s), 16)])
 	}
 
@@ -610,6 +623,20 @@ func parseAtom(s string) (*op, string, error) {
 		iter := &op{typ: opIterator}
 		pipe := &op{typ: opPipe, left: iter, right: inner}
 		return &op{typ: opArrayConstruct, elems: []*op{pipe}}, rest, nil
+	}
+
+	// tojson / fromjson / tostring / tonumber
+	if strings.HasPrefix(s, "tojson") && (len(s) == 6 || !isIdentChar(s[6])) {
+		return &op{typ: opToJSON}, s[6:], nil
+	}
+	if strings.HasPrefix(s, "fromjson") && (len(s) == 8 || !isIdentChar(s[8])) {
+		return &op{typ: opFromJSON}, s[8:], nil
+	}
+	if strings.HasPrefix(s, "tostring") && (len(s) == 8 || !isIdentChar(s[8])) {
+		return &op{typ: opToString}, s[8:], nil
+	}
+	if strings.HasPrefix(s, "tonumber") && (len(s) == 8 || !isIdentChar(s[8])) {
+		return &op{typ: opToNumber}, s[8:], nil
 	}
 
 	// not builtin (with boundary check)
@@ -721,7 +748,7 @@ func parseFieldChain(s string) (*op, string, error) {
 
 // parseAnyAll parses any/all with an optional (expr) argument.
 // s is the text after "any"/"all" has been consumed.
-// any(g; cond) two-arg form is not supported and returns an error.
+// Supports both one-arg any(expr) and two-arg any(gen; cond) forms.
 func parseAnyAll(s string, typ opType) (*op, string, error) {
 	s = strings.TrimSpace(s)
 	if len(s) == 0 || s[0] != '(' {
@@ -733,7 +760,18 @@ func parseAnyAll(s string, typ opType) (*op, string, error) {
 	}
 	rest = strings.TrimSpace(rest)
 	if len(rest) > 0 && rest[0] == ';' {
-		return nil, rest, fmt.Errorf("any/all(generator; cond) two-arg form not yet supported; use any(expr) or any")
+		// Two-arg form: any(gen; cond)
+		rest = strings.TrimSpace(rest[1:])
+		cond, rest2, err := parsePipeExpr(rest)
+		if err != nil {
+			return nil, rest2, err
+		}
+		rest2 = strings.TrimSpace(rest2)
+		if len(rest2) == 0 || rest2[0] != ')' {
+			return nil, rest2, fmt.Errorf("expected ')' after any/all arguments")
+		}
+		// Use left=generator, child=condition; right=nil distinguishes from one-arg
+		return &op{typ: typ, left: inner, child: cond}, rest2[1:], nil
 	}
 	if len(rest) == 0 || rest[0] != ')' {
 		return nil, rest, fmt.Errorf("expected ')' after any/all argument")
@@ -858,7 +896,17 @@ func parseIf(s string) (*op, string, error) {
 	rest = strings.TrimSpace(rest)
 
 	var elseBranch *op
-	if strings.HasPrefix(rest, "else") && (len(rest) == 4 || !isIdentChar(rest[4])) {
+	elifConsumedEnd := false
+	if strings.HasPrefix(rest, "elif") && (len(rest) == 4 || !isIdentChar(rest[4])) {
+		// Desugar: elif C then ... end  →  else (if C then ... end)
+		elifNode, remaining, elifErr := parseIf("if" + rest[4:])
+		if elifErr != nil {
+			return nil, remaining, elifErr
+		}
+		elseBranch = elifNode
+		rest = remaining
+		elifConsumedEnd = true
+	} else if strings.HasPrefix(rest, "else") && (len(rest) == 4 || !isIdentChar(rest[4])) {
 		rest = strings.TrimSpace(rest[4:])
 		elseBranch, rest, err = parsePipeExpr(rest)
 		if err != nil {
@@ -867,10 +915,12 @@ func parseIf(s string) (*op, string, error) {
 		rest = strings.TrimSpace(rest)
 	}
 
-	if !strings.HasPrefix(rest, "end") || (len(rest) > 3 && isIdentChar(rest[3])) {
-		return nil, rest, fmt.Errorf("expected 'end' to close if expression")
+	if !elifConsumedEnd {
+		if !strings.HasPrefix(rest, "end") || (len(rest) > 3 && isIdentChar(rest[3])) {
+			return nil, rest, fmt.Errorf("expected 'end' to close if expression")
+		}
+		rest = rest[3:]
 	}
-	rest = rest[3:]
 
 	// left=cond, right=thenBranch, child=elseBranch (nil → identity)
 	return &op{typ: opIf, left: cond, right: thenBranch, child: elseBranch}, rest, nil
@@ -1234,6 +1284,28 @@ func isIdentChar(ch byte) bool {
 
 func isDigit(ch byte) bool {
 	return ch >= '0' && ch <= '9'
+}
+
+// parseTry parses: try expr [catch handler]
+// s is the text after "try" has been consumed.
+// The body is parsed with parseExpr (NOT parsePipeExpr), so:
+//   try .a | .b  →  (try .a) | .b
+func parseTry(s string) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	body, rest, err := parseExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	var handler *op
+	if strings.HasPrefix(rest, "catch") && (len(rest) == 5 || !isIdentChar(rest[5])) {
+		rest = strings.TrimSpace(rest[5:])
+		handler, rest, err = parseExpr(rest)
+		if err != nil {
+			return nil, rest, err
+		}
+	}
+	return &op{typ: opTry, left: body, right: handler}, rest, nil
 }
 
 // simplify optimizes the AST. Currently: removes identity from pipes.

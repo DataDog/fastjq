@@ -10,7 +10,7 @@
 
 ## Scope Constraints
 
-- **Supported operations**: identity (`.`), field access (`.foo`, `.foo.bar`), array indexing (`.[0]`, `.[-1]`), slicing (`.[n:m]`, `.[:m]`, `.[n:]`), deletion (`del(.foo)`, `del(.[0])`), iteration (`.[]`), object construction (`{name}`, `{a: .foo}`), array construction (`[.foo, .bar]`), `map(expr)`, `add`, `expr + expr`, `expr - expr`, `expr * expr`, `expr / expr`, `expr % expr`, `flatten`/`flatten(n)`, `split("s")`, `join("s")`, `min`/`max`, `min_by(f)`/`max_by(f)`, `to_entries`, `from_entries`, `keys_unsorted`, `any`/`any(expr)`, `all`/`all(expr)`, `first`/`first(expr)`, `last`/`last(expr)`, `limit(n; expr)`, pipe (`expr | expr`), grouping (`(expr)`), literals (`null`, `true`, `false`, `"string"`, `123`), comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), boolean (`and`, `or`, `not`), `has("key")`, `length`, `ascii_downcase`, `ascii_upcase`, `startswith("s")`, `endswith("s")`, `ltrimstr("s")`, `rtrimstr("s")`, `if-then-else-end`, `empty`, select (`select(cond)`), alternative (`//`), optional (`.foo?`), type (`type`), `@base64`, `@base64d`, `@uri`
+- **Supported operations**: identity (`.`), field access (`.foo`, `.foo.bar`), array indexing (`.[0]`, `.[-1]`), slicing (`.[n:m]`, `.[:m]`, `.[n:]`), deletion (`del(.foo)`, `del(.[0])`), iteration (`.[]`), object construction (`{name}`, `{a: .foo}`), array construction (`[.foo, .bar]`), `map(expr)`, `add`, `expr + expr` (including object merge), `expr - expr`, `expr * expr`, `expr / expr`, `expr % expr`, `flatten`/`flatten(n)`, `split("s")`, `join("s")`, `min`/`max`, `min_by(f)`/`max_by(f)`, `to_entries`, `from_entries`, `keys_unsorted`, `any`/`any(expr)`/`any(gen; cond)`, `all`/`all(expr)`/`all(gen; cond)`, `first`/`first(expr)`, `last`/`last(expr)`, `limit(n; expr)`, pipe (`expr | expr`), grouping (`(expr)`), literals (`null`, `true`, `false`, `"string"`, `123`), comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), boolean (`and`, `or`, `not`), `has("key")`, `length`, `ascii_downcase`, `ascii_upcase`, `startswith("s")`, `endswith("s")`, `ltrimstr("s")`, `rtrimstr("s")`, `if-then-elif-...-else-end`, `empty`, select (`select(cond)`), alternative (`//`), optional (`.foo?`), type (`type`), `try`/`try-catch`, `tojson`/`@json`, `fromjson`, `tostring`, `tonumber`, `@base64`, `@base64d`, `@uri`
 - **Input format**: valid JSON objects or arrays — no streaming, no JSONL
 - **No validation**: assumes well-formed JSON input; behavior on malformed input is undefined
 - **No pretty-printing**: output is compact JSON only
@@ -30,6 +30,11 @@
 - **isFalsy by first-byte check**: `n` = null, `f` = false — one branch, zero alloc
 - **Number comparison**: byte-identical fast path (zero-alloc), `parseFloat` slow path using `unsafe.String` to avoid string allocation
 - **Optional is a flag, not an op type**: `node.optional = true` keeps AST simple
+- **`try` propagates `errBreak`**: `errBreak` is a control signal (for `first`/`limit`), not an error — `opTry` in `execMulti` propagates it unchanged
+- **`objectContainsKey` uses manual scan loop**: no closure/callback to avoid heap allocation — same pattern as `arrayContainsElem`
+- **`elif` desugars at parse time**: `elif C then X` rewrites to `else (if C then X end)` — no new op type needed
+- **`try-catch` error message allocation**: only when an actual error occurs (exceptional path), so the `make([]byte, 0, 64)` is acceptable
+- **`execSingle` for `opTry` falls back to `exec`**: `try` may suppress errors so the single-result path cannot guarantee a value; uses `exec` fallback
 
 ## Testing Constraints
 

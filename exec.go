@@ -223,6 +223,45 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opTry:
+		err := execMulti(node.left, input, buf, fn)
+		if err == nil || err == errBreak {
+			return err
+		}
+		// Real error — suppress or run catch handler
+		if node.right == nil {
+			return nil
+		}
+		// Build error message as JSON string (errors are exceptional, small alloc is fine)
+		msg := make([]byte, 0, 64)
+		msg = append(msg, '"')
+		for _, b := range []byte(err.Error()) {
+			if b == '"' {
+				msg = append(msg, '\\', '"')
+			} else if b == '\\' {
+				msg = append(msg, '\\', '\\')
+			} else {
+				msg = append(msg, b)
+			}
+		}
+		msg = append(msg, '"')
+		return execMulti(node.right, msg, buf, fn)
+	case opToJSON:
+		return fn(execToJSON(input, buf))
+	case opFromJSON:
+		result, err := execFromJSON(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opToString:
+		return fn(execToString(input, buf))
+	case opToNumber:
+		result, err := execToNumber(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	default:
 		return fmt.Errorf("unknown op type: %d", node.typ)
 	}
@@ -386,6 +425,17 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execMinMax(input, buf, node, true)
 	case opURIEncode:
 		return execURIEncode(input, buf)
+	case opTry:
+		// Fall through to execMulti for try (handles errBreak propagation correctly)
+		return exec(node, input, buf)
+	case opToJSON:
+		return execToJSON(input, buf), nil
+	case opFromJSON:
+		return execFromJSON(input, buf)
+	case opToString:
+		return execToString(input, buf), nil
+	case opToNumber:
+		return execToNumber(input, buf)
 	default:
 		return exec(node, input, buf)
 	}
@@ -1620,6 +1670,40 @@ func execPlusSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			buf = append(buf, ']')
 			return buf, nil
 		}
+	case '{': // object merge (right wins for duplicate keys)
+		if rs.pos < len(rs.data) && rs.data[rs.pos] == '{' {
+			buf = append(buf, '{')
+			first := true
+			// Emit left keys not overridden by right
+			ls.objectIter(func(key []byte, vStart, vEnd int) bool {
+				if objectContainsKey(rightVal, key) {
+					return true // right wins, skip
+				}
+				if !first {
+					buf = append(buf, ',')
+				}
+				first = false
+				buf = append(buf, '"')
+				buf = append(buf, key...)
+				buf = append(buf, '"', ':')
+				buf = append(buf, leftVal[vStart:vEnd]...)
+				return true
+			})
+			// Emit all right keys
+			rs.objectIter(func(key []byte, vStart, vEnd int) bool {
+				if !first {
+					buf = append(buf, ',')
+				}
+				first = false
+				buf = append(buf, '"')
+				buf = append(buf, key...)
+				buf = append(buf, '"', ':')
+				buf = append(buf, rightVal[vStart:vEnd]...)
+				return true
+			})
+			buf = append(buf, '}')
+			return buf, nil
+		}
 	default: // numeric add
 		lf, lok := parseJSONFloat(leftVal)
 		rf, rok := parseJSONFloat(rightVal)
@@ -2019,6 +2103,34 @@ func execAnyAll(node *op, input []byte, buf []byte, fn func([]byte) error, wantA
 }
 
 func execAnyAllSingle(node *op, input []byte, buf []byte, wantAll bool) ([]byte, error) {
+	// Two-arg form: any(gen; cond) / all(gen; cond)
+	if node.left != nil {
+		breakFlag := false
+		var iterErr error
+		err := execMulti(node.left, input, nil, func(elem []byte) error {
+			condVal, _ := execSingle(node.child, elem, nil)
+			truthy := !isFalsy(condVal)
+			if (!wantAll && truthy) || (wantAll && !truthy) {
+				breakFlag = true
+				return errBreak
+			}
+			return nil
+		})
+		if err == errBreak {
+			err = nil
+		}
+		if iterErr != nil {
+			return nil, iterErr
+		}
+		if err != nil {
+			return nil, err
+		}
+		if wantAll {
+			return boolResult(buf, !breakFlag), nil
+		}
+		return boolResult(buf, breakFlag), nil
+	}
+
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) {
@@ -2521,6 +2633,131 @@ func jsonTypeOrderVal(b byte) int {
 		return 4 // boolean
 	default:
 		return 5 // null
+	}
+}
+
+// objectContainsKey reports whether JSON object obj has the given key.
+// Uses a manual scan loop (no closure/callback) to avoid heap allocation.
+func objectContainsKey(obj, key []byte) bool {
+	s := scanner{data: obj}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
+		return false
+	}
+	s.pos++ // skip '{'
+	for s.pos < len(s.data) && s.data[s.pos] != '}' {
+		s.skipWhitespace()
+		if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+			break
+		}
+		k := s.readString()
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ':' {
+			s.pos++
+		}
+		s.skipWhitespace()
+		s.skipValue()
+		if bytesEqual(k, key) {
+			return true
+		}
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ',' {
+			s.pos++
+		} else {
+			break
+		}
+	}
+	return false
+}
+
+// execToJSON wraps the input value as a JSON string, escaping " and \.
+func execToJSON(input []byte, buf []byte) []byte {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	start := s.pos
+	s.skipValue()
+	value := input[start:s.pos]
+	buf = append(buf, '"')
+	for _, b := range value {
+		if b == '"' {
+			buf = append(buf, '\\', '"')
+		} else if b == '\\' {
+			buf = append(buf, '\\', '\\')
+		} else {
+			buf = append(buf, b)
+		}
+	}
+	return append(buf, '"')
+}
+
+// execFromJSON parses a JSON string and returns its content as raw JSON bytes.
+// Only unescapes \" and \\ — all other bytes pass through as-is.
+func execFromJSON(input []byte, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return nil, fmt.Errorf("fromjson input must be a string")
+	}
+	s.pos++ // skip opening '"\'
+	for s.pos < len(s.data) && s.data[s.pos] != '"' {
+		if s.data[s.pos] == '\\' && s.pos+1 < len(s.data) {
+			next := s.data[s.pos+1]
+			if next == '"' || next == '\\' {
+				buf = append(buf, next)
+				s.pos += 2
+				continue
+			}
+		}
+		buf = append(buf, s.data[s.pos])
+		s.pos++
+	}
+	return buf, nil
+}
+
+// execToString returns the input unchanged if it is already a JSON string,
+// otherwise calls execToJSON to wrap it.
+func execToString(input []byte, buf []byte) []byte {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos < len(s.data) && s.data[s.pos] == '"' {
+		// Already a string — pass through (including quotes)
+		end := s.pos
+		s.skipValue()
+		if buf == nil {
+			return input[end:s.pos:s.pos]
+		}
+		return append(buf, input[end:s.pos]...)
+	}
+	return execToJSON(input[s.pos:], buf)
+}
+
+// execToNumber converts a JSON string or number to a JSON number.
+// Strings are parsed as floats and re-emitted. Numbers pass through unchanged.
+func execToNumber(input []byte, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return nil, fmt.Errorf("tonumber: expected number or string")
+	}
+	switch s.data[s.pos] {
+	case '"': // string → parse as number
+		content := s.readString()
+		f, ok := parseJSONFloat(content)
+		if !ok {
+			return nil, fmt.Errorf("tonumber: cannot parse %q as number", content)
+		}
+		return appendNumber(buf, f), nil
+	default:
+		if isNumberByte(s.data[s.pos]) {
+			// Already a number — pass through
+			start := s.pos
+			s.skipValue()
+			if buf == nil {
+				return input[start:s.pos:s.pos], nil
+			}
+			return append(buf, input[start:s.pos]...), nil
+		}
+		return nil, fmt.Errorf("tonumber: expected number or string, got %q", string(s.data[s.pos:s.pos+1]))
 	}
 }
 

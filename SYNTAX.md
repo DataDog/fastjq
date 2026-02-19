@@ -186,7 +186,18 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 |--------|-------------|---------------|----------------|
 | `if .f == "x" then .a else .b end` | Conditional | `{"f":"x","a":1,"b":2}` | `1` |
 | `if .f == "x" then .a end` | Without else — defaults to identity | `{"f":"y"}` | `{"f":"y"}` |
-| `if C then A elif C2 then B else D end` | Not supported — nest manually | — | — |
+| `if C then A elif C2 then B else D end` | elif chain — desugars to nested if-then-else | `{"x":2}` | `"two"` |
+
+`elif` is syntactic sugar: `elif C then X` rewrites to `else (if C then X end)` at parse time. Chains of any length are supported.
+
+### Error Handling
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `try expr` | Suppress errors from expr — produce no output on failure | `[1,2] \| try .foo` | *(no output)* |
+| `try expr catch handler` | Run handler with error message (as string) on failure | `[1,2] \| try .foo catch "err"` | `"err"` |
+
+`try` binds tightly: `try .a \| .b` = `(try .a) \| .b`. Wrap in parens to catch a full pipeline: `try (.a \| .b)`. The `errBreak` control signal (used by `first`/`limit`) propagates through `try` unchanged.
 
 ### Format Strings
 
@@ -195,6 +206,7 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 | `@base64` | Base64-encode a JSON string | `"hello"` | `"aGVsbG8="` |
 | `@base64d` | Base64-decode a JSON string | `"aGVsbG8="` | `"hello"` |
 | `@uri` | URL percent-encode a JSON string (RFC 3986 unreserved chars pass through) | `"hello world"` | `"hello%20world"` |
+| `@json` / `tojson` | Serialize any value as a JSON string | `{"a":1}` | `"{\"a\":1}"` |
 
 `@base64d` accepts standard (`+/`), URL-safe (`-_`), padded and unpadded input. Non-printable decoded bytes are escaped as `\uXXXX`.
 `@base64` and `@uri` operate on the raw bytes between JSON quotes. JSON escape sequences (e.g. `\n`) are encoded as their literal characters, not as the decoded byte. For strings containing `\uXXXX` escapes, decode first with a helper before encoding.
@@ -260,7 +272,7 @@ For strings, `index` and `rindex` search for raw byte sequences (escape sequence
 
 Slicing uses **logical characters** for strings: each escape sequence (`\n`, `\uXXXX`, etc.) counts as one character. Negative indices count from the end. Indices are clamped to valid range.
 
-`+` supports: strings (concat), arrays (concat), numbers (sum). Null is the identity element. Object merging with `+` is not yet supported.
+`+` supports: strings (concat), arrays (concat), numbers (sum), objects (merge). Null is the identity element. For object merge, right-hand keys win on conflict: `{"a":1} + {"a":2}` = `{"a":2}`.
 
 ### Arithmetic Operators
 
@@ -319,10 +331,12 @@ Numbers compared by value; strings lexicographically. Empty array → `null`.
 |--------|-------------|---------------|----------------|
 | `any` | True if any element is truthy | `[false,1,false]` | `true` |
 | `all` | True if all elements are truthy (vacuously true for `[]`) | `[1,"x",true]` | `true` |
-| `any(expr)` | True if expr is truthy for any element | `[1,2,3]` | — |
-| `all(expr)` | True if expr is truthy for all elements | `[1,2,3]` | — |
+| `any(expr)` | True if expr is truthy for any element of input array | `[1,2,3]` with `any(. > 2)` | `true` |
+| `all(expr)` | True if expr is truthy for all elements of input array | `[1,2,3]` with `all(. > 0)` | `true` |
+| `any(gen; cond)` | True if `gen \| cond` is truthy for any output of gen | `any(.[]; .active)` | — |
+| `all(gen; cond)` | True if `gen \| cond` is truthy for all outputs of gen | `all(.[]; .n > 0)` | — |
 
-`any(generator; cond)` two-arg form is not supported.
+All forms short-circuit. `any(gen; cond)` is equivalent to `first(gen \| select(cond)) \| true` but with a false default.
 
 ### String Operations
 
@@ -336,6 +350,17 @@ Numbers compared by value; strings lexicographically. Empty array → `null`.
 | `rtrimstr("s")` | Remove suffix if present | `"app.log"` | `"app"` |
 
 Escape sequences in strings are preserved by case conversion. All string operations work on raw JSON string bytes — no Unicode-aware processing.
+
+### Type Conversion
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `tojson` / `@json` | Serialize any value as a JSON string | `{"a":1}` | `"{\"a\":1}"` |
+| `fromjson` | Parse a JSON string to its value | `"{\"a\":1}"` | `{"a":1}` |
+| `tostring` | Strings pass through; non-strings serialized via `tojson` | `42` | `"42"` |
+| `tonumber` | Numbers pass through; strings parsed as floats | `"3.14"` | `3.14` |
+
+`tojson \| fromjson` is an identity round-trip. `tostring \| tonumber` round-trips numbers.
 
 ### Object Transforms
 
@@ -372,7 +397,6 @@ These operations are implementable at zero allocation but involve more complexit
 
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
-| `+` (objects) | Object merge | `{a:1} + {b:2}` = `{a:1,b:2}`. Must handle key conflicts (last wins). Scan right for all keys, iterate left skipping overrides, then append right. Complex but zero-alloc. |
 | `*` (objects) | Recursive merge | Deep merge two objects. Recursive descent and reconstruction. Zero-alloc possible but recursion depth can be problematic. |
 | `try-catch` | Error handling | Capture errors from sub-expressions and redirect. The callback pattern makes this viable. |
 | `as $x \| expr` | Variable binding | Store `(start, end)` offsets into original input. **Zero-alloc only if bound values reference input, not constructed output.** Binding a constructed value (e.g., `{a:1} as $x`) would need to store bytes somewhere. |

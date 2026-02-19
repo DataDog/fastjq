@@ -590,3 +590,54 @@ func BenchmarkFastjq_Small_ArrayDiff(b *testing.B) {
 func BenchmarkGojq_Small_ArrayDiff(b *testing.B) {
 	benchGojqObj(b, `.a - .b`, []byte(`{"a":[1,2,3,4,5],"b":[2,4]}`))
 }
+
+func BenchmarkFastjq_Small_TryNoError(b *testing.B) {
+	benchFastjqObj(b, `try .field_2`, smallJSON)
+}
+func BenchmarkFastjq_Small_TryCatchNoError(b *testing.B) {
+	benchFastjqObj(b, `try .field_2 catch "err"`, smallJSON)
+}
+func BenchmarkGojq_Small_TryNoError(b *testing.B) {
+	benchGojqObj(b, `try .field_2`, smallJSON)
+}
+
+func BenchmarkFastjq_Small_ObjectMerge(b *testing.B) {
+	benchFastjqObj(b, `.a + .b`, []byte(`{"a":{"x":1,"y":2},"b":{"y":3,"z":4}}`))
+}
+func BenchmarkGojq_Small_ObjectMerge(b *testing.B) {
+	benchGojqObj(b, `.a + .b`, []byte(`{"a":{"x":1,"y":2},"b":{"y":3,"z":4}}`))
+}
+
+func BenchmarkFastjq_Small_ToJSON(b *testing.B) {
+	benchFastjqObj(b, `tojson`, smallJSON)
+}
+func BenchmarkGojq_Small_ToJSON(b *testing.B) {
+	benchGojqObj(b, `tojson`, smallJSON)
+}
+
+func BenchmarkFastjq_Small_FromJSON(b *testing.B) {
+	// pre-encoded small JSON as a string input
+	input := []byte(`"{\"field_0\":\"xxxxxxxxxx\",\"field_1\":\"xxxxxxxxxx\"}"`)
+	benchFastjqObj(b, `fromjson`, input)
+}
+func BenchmarkGojq_Small_FromJSON(b *testing.B) {
+	input := []byte(`"{\"field_0\":\"xxxxxxxxxx\",\"field_1\":\"xxxxxxxxxx\"}"`)
+	benchGojqObj(b, `fromjson`, input)
+}
+
+func BenchmarkFastjq_Small_ToString(b *testing.B) {
+	benchFastjqObj(b, `tostring`, smallJSON)
+}
+func BenchmarkFastjq_Small_ToNumber(b *testing.B) {
+	benchFastjqObj(b, `tonumber`, []byte(`"42"`))
+}
+func BenchmarkGojq_Small_ToNumber(b *testing.B) {
+	benchGojqObj(b, `tonumber`, []byte(`"42"`))
+}
+
+func BenchmarkFastjq_Small_AnyTwoArg(b *testing.B) {
+	benchFastjqObj(b, `any(.[]; . > 100)`, largeIntArr)
+}
+func BenchmarkGojq_Small_AnyTwoArg(b *testing.B) {
+	benchGojqObj(b, `any(.[]; . > 100)`, largeIntArr)
+}

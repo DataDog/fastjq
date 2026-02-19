@@ -49,6 +49,14 @@ fastjq is a fast, minimal JQ engine for Go that avoids the expensive marshal/unm
 - `.foo // "default"` (alternative — use right if left is null/false)
 - `.foo?`, `.[0]?`, `.[]?` (optional — suppress errors, produce nothing)
 - `type` (type name builtin — returns `"string"`, `"number"`, etc.)
+- `try expr` / `try expr catch handler` (error suppression; handler receives error message as JSON string)
+- `elif` branches in `if-then-elif-...-else-end` (desugars to nested if-then-else)
+- `. + .` object merge (`expr + expr` on two objects; right wins for duplicate keys)
+- `tojson` / `@json` (wrap value as a JSON string, escaping `"` and `\`)
+- `fromjson` (parse a JSON string to its contained value; unescapes `\"` and `\\`)
+- `tostring` (pass strings through unchanged; wrap non-strings with `tojson`)
+- `tonumber` (numbers pass through; strings are parsed as floats)
+- `any(gen; cond)` / `all(gen; cond)` (two-arg forms: generator + condition)
 
 ## Key Design Decisions
 
@@ -105,7 +113,7 @@ Literals like `"error"`, `42`, `null` store raw JSON bytes (`[]byte`) at compile
 ```
 fastjq.go                  — Public API: Compile(), Run(), RunWithBuffer(), RunAll(), RunFunc()
 scanner.go                 — Zero-alloc JSON scanner (skipValue, readString, object/array iteration, jsonEqual, isFalsy)
-query.go                   — Query parser + AST types (13 op types)
+query.go                   — Query parser + AST types (18 op types: adds opTry, opToJSON, opFromJSON, opToString, opToNumber)
 exec.go                    — Executor: field access, indexing, deletion, iteration, construction, pipe, compare, select, alternative, type
 float.go                   — Zero-alloc float parsing via unsafe.String
 fastjq_test.go             — Unit + integration tests (97 tests)

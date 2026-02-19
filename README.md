@@ -156,7 +156,12 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `@uri` | URL percent-encode a string (RFC 3986 unreserved chars pass through) |
 | `to_entries` | `{"a":1}` → `[{"key":"a","value":1}]` |
 | `from_entries` | `[{"key":"a","value":1}]` → `{"a":1}` (also accepts `"name"` for key) |
-| `if cond then expr else expr end` | Conditional — else is optional (defaults to identity) |
+| `tojson` / `@json` | Serialize any value as a JSON string |
+| `fromjson` | Parse a JSON string to its value |
+| `tostring` | Strings pass through; others serialized via `tojson` |
+| `tonumber` | Numbers pass through; strings parsed as floats |
+| `if cond then expr [elif cond then expr]* else expr end` | Conditional — elif chains and else are optional |
+| `try expr` / `try expr catch handler` | Suppress errors; handler receives error message as string |
 | `empty` | Produce zero outputs — use as else branch to drop records |
 | `select(.level == "error")` | Filter — pass through or drop |
 | `.foo // "default"` | Alternative — use right if left is null/false |
@@ -209,7 +214,7 @@ In jq, `null | .field` returns `null`. In fastjq it errors. This affects chained
 
 **No recursive descent** (`..|..`).
 
-**No try-catch** (beyond `?` optional suppression).
+**No `try-catch` propagation of `errBreak`** — `errBreak` is a control signal (for `first`/`limit`), not an error, and propagates through `try` unchanged. This is correct behavior.
 
 **Output is always compact JSON.** Input can be pretty-printed or compact. Behavior on malformed input is undefined.
 
