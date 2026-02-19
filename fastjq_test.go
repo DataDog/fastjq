@@ -1703,3 +1703,392 @@ func TestConstructWithAlternative(t *testing.T) {
 		t.Errorf("got %s", got)
 	}
 }
+
+// --- Output larger than input ---
+
+// type on a minimal object produces an 8-byte string from a 2-byte input.
+func TestOutputLargerType(t *testing.T) {
+	p, _ := Compile("type")
+	input := []byte(`{}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"object"` {
+		t.Errorf("got %s, want \"object\"", got)
+	}
+	if len(got) <= len(input) {
+		t.Errorf("expected output (%d bytes) to be larger than input (%d bytes)", len(got), len(input))
+	}
+}
+
+// Alternative fallback to a literal larger than the input.
+func TestOutputLargerAlternative(t *testing.T) {
+	p, _ := Compile(`.x // "this fallback is much longer than the input"`)
+	input := []byte(`{}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `"this fallback is much longer than the input"`
+	if string(got) != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+	if len(got) <= len(input) {
+		t.Errorf("expected output (%d bytes) to be larger than input (%d bytes)", len(got), len(input))
+	}
+}
+
+// Construction with literal values larger than the whole input.
+func TestOutputLargerConstruct(t *testing.T) {
+	p, _ := Compile(`{status: "operational", region: "us-east-1", env: "production"}`)
+	input := []byte(`{}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"status":"operational","region":"us-east-1","env":"production"}`
+	if string(got) != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+	if len(got) <= len(input) {
+		t.Errorf("expected output (%d bytes) to be larger than input (%d bytes)", len(got), len(input))
+	}
+}
+
+// RunWithBuffer grows correctly when output > initial buffer capacity,
+// and stabilises (no realloc) on subsequent calls with the grown buffer.
+func TestOutputLargerRunWithBuffer(t *testing.T) {
+	p, _ := Compile(`{status: "operational", region: "us-east-1", env: "production"}`)
+	input := []byte(`{}`)
+	want := `{"status":"operational","region":"us-east-1","env":"production"}`
+
+	// Start with a 1-byte buffer — well under the output size.
+	buf := make([]byte, 0, 1)
+
+	got, err := p.RunWithBuffer(input, buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Errorf("first call: got %s, want %s", got, want)
+	}
+
+	// Reuse the (now-grown) buffer for a second call.
+	got2, err := p.RunWithBuffer(input, got[:0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got2) != want {
+		t.Errorf("second call: got %s, want %s", got2, want)
+	}
+}
+
+// --- Pretty-printed input ---
+
+func TestPrettyPrintedFieldAccess(t *testing.T) {
+	p, _ := Compile(".name")
+	input := []byte("{\n  \"name\": \"alice\",\n  \"age\": 30\n}")
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"alice"` {
+		t.Errorf("got %s, want \"alice\"", got)
+	}
+}
+
+func TestPrettyPrintedIterator(t *testing.T) {
+	p, _ := Compile(".[]")
+	input := []byte("[\n  1,\n  2,\n  3\n]")
+	results, err := p.RunAll(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+}
+
+func TestPrettyPrintedSelect(t *testing.T) {
+	p, _ := Compile(`select(.level == "error")`)
+	input := []byte("{\n  \"level\": \"error\",\n  \"msg\": \"boom\"\n}")
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("select on pretty-printed input should return input verbatim")
+	}
+}
+
+func TestPrettyPrintedDelete(t *testing.T) {
+	p, _ := Compile("del(.age)")
+	input := []byte("{\n  \"name\": \"alice\",\n  \"age\": 30\n}")
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"name":"alice"}` {
+		t.Errorf("got %s, want {\"name\":\"alice\"}", got)
+	}
+}
+
+// --- Del edge cases ---
+
+func TestDeleteNestedFieldMissingParent(t *testing.T) {
+	// del(.foo.bar) when .foo doesn't exist — should be a no-op
+	p, _ := Compile("del(.foo.bar)")
+	input := []byte(`{"a":1,"b":2}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"a":1,"b":2}` {
+		t.Errorf("got %s, want no-op result", got)
+	}
+}
+
+func TestDeleteOnlyField(t *testing.T) {
+	p, _ := Compile("del(.x)")
+	input := []byte(`{"x":1}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{}` {
+		t.Errorf("got %s, want {}", got)
+	}
+}
+
+func TestDeleteArrayOutOfBounds(t *testing.T) {
+	// del(.[5]) on a 3-element array — should be a no-op
+	p, _ := Compile("del(.[5])")
+	input := []byte(`[1,2,3]`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `[1,2,3]` {
+		t.Errorf("got %s, want [1,2,3]", got)
+	}
+}
+
+func TestDeleteFieldWithSpecialChars(t *testing.T) {
+	// Field value contains chars that look like JSON structure
+	p, _ := Compile("del(.noise)")
+	input := []byte(`{"keep":"{\"nested\":true}","noise":"drop"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"keep":"{\"nested\":true}"}` {
+		t.Errorf("got %s", got)
+	}
+}
+
+// --- Alternative edge cases ---
+
+func TestAlternativeBothFalsy(t *testing.T) {
+	// false // null — left is falsy, evaluates right (null)
+	p, _ := Compile(`false // null`)
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "null" {
+		t.Errorf("got %s, want null", got)
+	}
+}
+
+func TestAlternativeNullFallsToFalse(t *testing.T) {
+	// null // false — left is falsy, evaluates right (false)
+	p, _ := Compile(`null // false`)
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestAlternativeZeroIsNotFalsy(t *testing.T) {
+	// 0 is truthy in jq (only null and false are falsy)
+	p, _ := Compile(`.count // 99`)
+	got, err := p.Run([]byte(`{"count":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "0" {
+		t.Errorf("got %s, want 0 (zero is truthy)", got)
+	}
+}
+
+func TestAlternativeEmptyStringIsNotFalsy(t *testing.T) {
+	p, _ := Compile(`.name // "default"`)
+	got, err := p.Run([]byte(`{"name":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `""` {
+		t.Errorf("got %s, want empty string (truthy)", got)
+	}
+}
+
+// --- Select edge cases ---
+
+func TestSelectNull(t *testing.T) {
+	p, _ := Compile("select(null)")
+	results, err := p.RunAll([]byte(`{"a":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, null is falsy")
+	}
+}
+
+func TestSelectZeroIsTruthy(t *testing.T) {
+	// 0 is truthy — select(0) should pass through
+	p, _ := Compile("select(.count)")
+	got, err := p.Run([]byte(`{"count":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"count":0}` {
+		t.Errorf("got %s, want input (0 is truthy)", got)
+	}
+}
+
+func TestSelectNotEqual(t *testing.T) {
+	p, _ := Compile(`select(.level != "debug")`)
+	input := []byte(`{"level":"error","msg":"boom"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+	results, err := p.RunAll([]byte(`{"level":"debug","msg":"noise"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for debug level")
+	}
+}
+
+// --- Comparison edge cases ---
+
+func TestCompareBoolTrue(t *testing.T) {
+	p, _ := Compile(`.active == true`)
+	got, err := p.Run([]byte(`{"active":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestCompareBoolFalse(t *testing.T) {
+	p, _ := Compile(`.active == false`)
+	got, err := p.Run([]byte(`{"active":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestCompareNullField(t *testing.T) {
+	p, _ := Compile(`.v == null`)
+	// explicit null value
+	got, err := p.Run([]byte(`{"v":null}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true for explicit null", got)
+	}
+	// missing field also returns null
+	got2, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got2) != "true" {
+		t.Errorf("got %s, want true for missing field", got2)
+	}
+}
+
+func TestCompareCrossTypeFalse(t *testing.T) {
+	// string vs number — never equal
+	p, _ := Compile(`.x == 1`)
+	got, err := p.Run([]byte(`{"x":"1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false (string != number)", got)
+	}
+}
+
+func TestCompareNegativeNumber(t *testing.T) {
+	p, _ := Compile(`.x == -1`)
+	got, err := p.Run([]byte(`{"x":-1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+// --- Constructor edge cases ---
+
+func TestConstructWithLiteralLargerThanInput(t *testing.T) {
+	// Explicit test that construction can exceed input size
+	p, _ := Compile(`{tag: "this-is-a-long-tag-value", src: .id}`)
+	input := []byte(`{"id":1}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"tag":"this-is-a-long-tag-value","src":1}`
+	if string(got) != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+	if len(got) <= len(input) {
+		t.Errorf("expected output (%d) larger than input (%d)", len(got), len(input))
+	}
+}
+
+func TestConstructMissingExprField(t *testing.T) {
+	// {a: .missing} — missing field expression yields null
+	p, _ := Compile(`{a: .missing, b: .present}`)
+	got, err := p.Run([]byte(`{"present":42}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"a":null,"b":42}` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestArrayConstructWithLiterals(t *testing.T) {
+	p, _ := Compile(`[.name, "active", true]`)
+	input := []byte(`{"name":"alice"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `["alice","active",true]` {
+		t.Errorf("got %s", got)
+	}
+	if len(got) <= len(input) {
+		t.Errorf("expected output larger than input")
+	}
+}
