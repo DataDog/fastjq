@@ -33,7 +33,6 @@ const (
 	opFromEntries                  // from_entries
 	opWithEntries                  // with_entries(f) — dedicated single-pass executor
 	opAdd                          // add
-	opRange                        // range(n) / range(from;to) / range(from;to;step)
 	opFlatten                      // flatten / flatten(n)
 	opSplit                        // split("s")
 	opJoin                         // join("s")
@@ -371,11 +370,6 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opAdd}, s[3:], nil
 	}
 
-	// range(n) / range(from; to) / range(from; to; step)
-	if strings.HasPrefix(s, "range(") {
-		return parseRange(s[6:])
-	}
-
 	// flatten / flatten(n)
 	if strings.HasPrefix(s, "flatten") && (len(s) == 7 || !isIdentChar(s[7])) {
 		rest := strings.TrimSpace(s[7:])
@@ -566,52 +560,6 @@ func parseFieldChain(s string) (*op, string, error) {
 	return node, rest, nil
 }
 
-// parseRange parses range(n), range(from; to), or range(from; to; step).
-// s starts after the opening '(' has been consumed.
-func parseRange(s string) (*op, string, error) {
-	arg1, rest, err := parsePipeExpr(s)
-	if err != nil {
-		return nil, rest, err
-	}
-	rest = strings.TrimSpace(rest)
-
-	if len(rest) == 0 || rest[0] == ')' {
-		// range(n) — from=0, to=n, step=1 (stored as left=to only; executor special-cases)
-		if len(rest) > 0 {
-			rest = rest[1:]
-		}
-		return &op{typ: opRange, left: arg1}, rest, nil
-	}
-	if rest[0] != ';' {
-		return nil, rest, fmt.Errorf("expected ';' or ')' in range()")
-	}
-	arg2, rest, err := parsePipeExpr(strings.TrimSpace(rest[1:]))
-	if err != nil {
-		return nil, rest, err
-	}
-	rest = strings.TrimSpace(rest)
-
-	if len(rest) == 0 || rest[0] == ')' {
-		// range(from; to)
-		if len(rest) > 0 {
-			rest = rest[1:]
-		}
-		return &op{typ: opRange, left: arg1, right: arg2}, rest, nil
-	}
-	if rest[0] != ';' {
-		return nil, rest, fmt.Errorf("expected ';' or ')' in range()")
-	}
-	arg3, rest, err := parsePipeExpr(strings.TrimSpace(rest[1:]))
-	if err != nil {
-		return nil, rest, err
-	}
-	rest = strings.TrimSpace(rest)
-	if len(rest) == 0 || rest[0] != ')' {
-		return nil, rest, fmt.Errorf("expected ')' after range() arguments")
-	}
-	// range(from; to; step)
-	return &op{typ: opRange, left: arg1, right: arg2, child: arg3}, rest[1:], nil
-}
 
 // parseAnyAll parses any/all with an optional (expr) argument.
 // s is the text after "any"/"all" has been consumed.

@@ -301,9 +301,6 @@ func BenchmarkFastjq_Small_Add(b *testing.B) {
 func BenchmarkFastjq_Small_AddStrings(b *testing.B) {
 	benchFastjqObj(b, `add`, []byte(`["field_0","field_1","field_2","field_3","field_4"]`))
 }
-func BenchmarkFastjq_Small_Range(b *testing.B) {
-	benchFastjqFunc(b, `range(100)`, []byte(`null`))
-}
 func BenchmarkFastjq_Small_Flatten(b *testing.B) {
 	benchFastjqObj(b, `flatten`, []byte(`[[1,2],[3,[4,5]],[6]]`))
 }
@@ -440,9 +437,6 @@ func BenchmarkGojq_Small_Add(b *testing.B) {
 }
 func BenchmarkGojq_Small_AddStrings(b *testing.B) {
 	benchGojqObj(b, `add`, []byte(`["field_0","field_1","field_2","field_3","field_4"]`))
-}
-func BenchmarkGojq_Small_Range(b *testing.B) {
-	benchGojqIter(b, `range(100)`, []byte(`null`))
 }
 func BenchmarkGojq_Small_Flatten(b *testing.B) {
 	benchGojqObj(b, `flatten`, []byte(`[[1,2],[3,[4,5]],[6]]`))

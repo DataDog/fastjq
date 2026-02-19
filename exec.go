@@ -113,8 +113,6 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execAnyAll(node, input, buf, fn, true)
 	case opAdd:
 		return execAdd(input, buf, fn)
-	case opRange:
-		return execRange(node, input, buf, fn)
 	case opFlatten:
 		result, err := execFlattenInto(input, buf, node)
 		if err != nil {
@@ -261,7 +259,7 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opAll:
 		return execAnyAllSingle(node, input, buf, true)
 	case opAdd:
-		return exec(node, input, buf) // add is single-output via execMulti
+		return exec(node, input, buf)
 	case opFlatten:
 		return execFlattenInto(input, buf, node)
 	case opSplit:
@@ -1236,72 +1234,6 @@ func execAdd(input []byte, buf []byte, fn func([]byte) error) error {
 	return fn(buf)
 }
 
-// execRange emits integers (or floats) from from..to-1 by step.
-// node.left = to (if right==nil), or from; node.right = to; node.child = step.
-func execRange(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	from, to, step := 0.0, 0.0, 1.0
-
-	if node.right == nil {
-		// range(n): 0..n-1
-		toVal, err := execSingle(node.left, input, nil)
-		if err != nil {
-			return err
-		}
-		n, ok := parseJSONFloat(toVal)
-		if !ok {
-			return fmt.Errorf("range: argument must be a number")
-		}
-		to = n
-	} else {
-		fromVal, err := execSingle(node.left, input, nil)
-		if err != nil {
-			return err
-		}
-		f, ok := parseJSONFloat(fromVal)
-		if !ok {
-			return fmt.Errorf("range: 'from' must be a number")
-		}
-		from = f
-
-		toVal, err := execSingle(node.right, input, nil)
-		if err != nil {
-			return err
-		}
-		t, ok := parseJSONFloat(toVal)
-		if !ok {
-			return fmt.Errorf("range: 'to' must be a number")
-		}
-		to = t
-
-		if node.child != nil {
-			stepVal, err := execSingle(node.child, input, nil)
-			if err != nil {
-				return err
-			}
-			s, ok := parseJSONFloat(stepVal)
-			if !ok || s == 0 {
-				return fmt.Errorf("range: 'step' must be a non-zero number")
-			}
-			step = s
-		}
-	}
-
-	// Use a fixed-size stack buffer for formatting each number so we never
-	// allocate for the intermediate result (avoids alloc when buf is nil).
-	var numBuf [64]byte
-	for v := from; (step > 0 && v < to) || (step < 0 && v > to); v += step {
-		var result []byte
-		if v == float64(int64(v)) && v >= -1e15 && v <= 1e15 {
-			result = appendInt(numBuf[:0], int(v))
-		} else {
-			result = strconv.AppendFloat(numBuf[:0], v, 'f', -1, 64)
-		}
-		if err := fn(result); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
 // execFlattenInto flattens a nested array into a single-level array.
 // node.index = -1 means unlimited depth; >= 0 means flatten that many levels.

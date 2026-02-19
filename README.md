@@ -171,7 +171,6 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `any` / `any(expr)` | True if any element/result is truthy (short-circuit) |
 | `all` / `all(expr)` | True if all elements/results are truthy (short-circuit) |
 | `add` | Sum numbers, concatenate strings/arrays, merge objects |
-| `range(n)`, `range(from; to)`, `range(from; to; step)` | Integer/float generator |
 | `flatten`, `flatten(n)` | Recursively flatten nested arrays (n = max depth) |
 | `split("s")` | Split string by separator → array |
 | `join("s")` | Join array elements with separator → string |

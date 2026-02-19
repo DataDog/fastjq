@@ -1892,57 +1892,6 @@ func TestAddInPipe(t *testing.T) {
 	assertQuery(t, `[.[] | .x] | add`, `[{"x":1},{"x":2},{"x":3}]`, `6`)
 }
 
-// --- range ---
-
-func TestRangeN(t *testing.T) {
-	p, _ := Compile(`range(3)`)
-	results, err := p.RunAll([]byte(`null`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 3 || string(results[0]) != "0" || string(results[2]) != "2" {
-		t.Errorf("got %v", results)
-	}
-}
-func TestRangeFromTo(t *testing.T) {
-	p, _ := Compile(`range(2; 5)`)
-	results, err := p.RunAll([]byte(`null`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := []string{"2", "3", "4"}
-	for i, r := range results {
-		if string(r) != expected[i] {
-			t.Errorf("result[%d] = %s, want %s", i, r, expected[i])
-		}
-	}
-}
-func TestRangeWithStep(t *testing.T) {
-	p, _ := Compile(`range(0; 10; 3)`)
-	results, err := p.RunAll([]byte(`null`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected := []string{"0", "3", "6", "9"}
-	if len(results) != len(expected) {
-		t.Fatalf("got %d results, want %d", len(results), len(expected))
-	}
-	for i, r := range results {
-		if string(r) != expected[i] {
-			t.Errorf("result[%d] = %s, want %s", i, r, expected[i])
-		}
-	}
-}
-func TestRangeEmpty(t *testing.T) {
-	assertNoOutput(t, `range(0)`, `null`)
-}
-func TestRangeCollected(t *testing.T) {
-	assertQuery(t, `[range(5)]`, `null`, `[0,1,2,3,4]`)
-}
-func TestRangeFromField(t *testing.T) {
-	assertQuery(t, `[range(.n)]`, `{"n":3}`, `[0,1,2]`)
-}
-
 // --- flatten ---
 
 func TestFlattenOnce(t *testing.T) {

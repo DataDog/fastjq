@@ -34,7 +34,7 @@ Check that no existing benchmark has regressed meaningfully. For new features th
 **Any non-zero `allocs/op` in a fastjq benchmark is a failure.** Stop and check in with the user before proceeding. The options are:
 - Fix the allocation (preferred)
 - Reject the feature as incompatible with the zero-alloc constraint
-- Document it explicitly as a known edge case (e.g. `with_entries` uses a single recycled 64-byte scratch buffer; `range(n)` uses a 64-byte stack buffer that escapes — both show 1 alloc/call but recycled in steady state)
+- Document it explicitly as a known edge case (e.g. `with_entries` uses a single recycled 64-byte scratch buffer — 0 allocs in steady state). Only accept this if the feature is genuinely useful and the alloc is truly unavoidable and recycled. Reject otherwise (see `range` in SYNTAX.md for the rejection rationale).
 
 ### 5. Update ALL the docs
 Every code change that affects the public surface, supported operations, or performance characteristics must update:

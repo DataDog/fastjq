@@ -10,10 +10,12 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 Five new zero-alloc operations:
 
 - **`add`** — reduces an array by summing numbers, concatenating strings/arrays, or merging object key-value pairs. Empty/null → `null`. Uses float accumulation with integer output when result is a whole number.
-- **`range(n)` / `range(from; to)` / `range(from; to; step)`** — emits integers (or floats for non-integer steps) via callback. Zero-alloc: writes directly into buf. Common use: `[range(5)]` = `[0,1,2,3,4]`.
 - **`flatten` / `flatten(n)`** — recursively flattens nested arrays. `flatten` = unlimited depth; `flatten(n)` = at most n levels. Zero-alloc recursive scanner. Fixed off-by-one (`curDepth > maxDepth` not `>=`).
 - **`split("s")`** — splits a JSON string by separator → array of strings. Zero-alloc scan for separator in raw string content.
 - **`join("s")`** — joins array elements with separator → JSON string. Numbers converted to their string form; nulls → empty.
+
+### Rejected
+- **`range(n)`** — evaluated and removed. `range` synthesises new integer data from scratch, unlike all other operations which transform existing input bytes. Any temporary buffer passed to the result callback (`fn func([]byte) error`) escapes to the heap because Go cannot prove the function interface won't capture it. This results in an unavoidable 1 heap allocation per call. Additionally, the fixed-size buffer approach silently overflows for extreme float step values. Zero-alloc cannot be achieved without architectural changes (sync.Pool, etc.) that add complexity and don't fit the library's model. Documented in SYNTAX.md as "Rejected".
 
 33 new tests, 397 total.
 

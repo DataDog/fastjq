@@ -204,15 +204,11 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 | `add` | String concatenation | `["a","b","c"]` | `"abc"` |
 | `add` | Array concatenation | `[[1,2],[3,4]]` | `[1,2,3,4]` |
 | `add` | Empty/null array → null | `[]` | `null` |
-| `range(n)` | Emit 0, 1, …, n-1 | any (with `[range(3)]`) | `[0,1,2]` |
-| `range(from; to)` | Emit from, …, to-1 | any (with `[range(2;5)]`) | `[2,3,4]` |
-| `range(from; to; step)` | Emit with step | any (with `[range(0;10;3)]`) | `[0,3,6,9]` |
 | `flatten` | Fully flatten nested arrays | `[[1,[2]],3]` | `[1,2,3]` |
 | `flatten(n)` | Flatten at most n levels | `[[1,[2]],3]` with `flatten(1)` | `[1,[2],3]` |
 | `split("s")` | Split string by separator | `"a,b,c"` with `split(",")` | `["a","b","c"]` |
 | `join("s")` | Join array with separator | `["a","b","c"]` with `join(",")` | `"a,b,c"` |
 
-`range` is a generator — use `[range(n)]` to collect into an array.
 `join` converts numbers to their string representation; nulls become empty strings.
 
 ### Stream Control
@@ -316,6 +312,14 @@ These operations are implementable at zero allocation but involve more complexit
 | `walk(f)` | Recursive transform | Apply f to every value bottom-up. Reconstruct entire tree with transformed values. Intermediate results from inner expressions may need temp storage. |
 | `min`, `max` | Array extrema (simple types) | Keep one "best" offset, compare each element. Zero-alloc for numbers/strings. |
 | `min_by(f)`, `max_by(f)` | Array extrema by key | Must evaluate `f` per element and compare keys. Needs temp storage for "best key so far." |
+
+### Rejected — structurally incompatible with zero-alloc constraint
+
+These operations were evaluated and explicitly rejected because they cannot be implemented without violating the zero-alloc guarantee, even in steady state.
+
+| Syntax | Reason |
+|--------|--------|
+| `range(n)` / `range(from; to; step)` | **Synthesizes new data not present in the input.** Every other fastjq operation transforms or extracts bytes that already exist in the input. `range` must generate integer values from scratch. Formatting each integer into bytes requires a temporary buffer. Any buffer that is passed to the result callback (`fn func([]byte) error`) is conservatively considered to escape to the heap by Go's escape analysis, because `fn` is a function interface value. This results in 1 heap allocation per `execRange` call. Additionally, the fixed-size buffer approach (`[64]byte`) silently overflows for extreme float step values (e.g. `range(0; 1e200; 1e190)` formats numbers with 200+ digits), causing extra hidden allocations. Rejected: out of scope. |
 
 ### Challenging — likely require allocation
 
