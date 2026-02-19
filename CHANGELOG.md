@@ -4,6 +4,58 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — benchmarks for new operations
+
+### Added
+Added fastjq vs gojq benchmarks for all operations added since the last benchmark update:
+`SelectAnd`, `SelectOr`, `Has`, `IfThenElse`, `Length`, `Map`, `ToEntries`, `WithEntries`.
+Also added `generateObjectArray(n)` helper and `smallArray` (20-element array, ~600B) for array-based benchmarks.
+
+### Notable results (Apple M4 Max, Go 1.25)
+
+| Operation | fastjq | gojq | Speedup | fastjq allocs |
+|-----------|--------|------|---------|---------------|
+| `select(a and b)` | 10.9 ns | 607 ns | **56x** | 0 |
+| `select(a or b)` | 10.9 ns | 653 ns | **60x** | 0 |
+| `select(has("key"))` | 11.5 ns | 554 ns | **48x** | 0 |
+| `if-then-else` | 9.8 ns | 446 ns | **46x** | 0 |
+| `length` | 6.4 ns | 363 ns | **56x** | 0 |
+| `map(.name)` (20 elems) | 1,872 ns | 10,116 ns | **5.4x** | 20 |
+| `to_entries` | 6.3 ns | 369 ns | **59x** | 0 |
+| `with_entries(select(...))` | 39 ns | 482 ns | **12x** | 2 |
+
+`map` shows 20 allocs (one per element) due to nil scratch in `execArrayConstruct` — see length/map CHANGELOG entry. All other new operations are 0-alloc.
+
+---
+
+## [Unreleased] — to_entries, from_entries, with_entries
+
+### Added
+- `to_entries` — converts `{"a":1,"b":2}` to `[{"key":"a","value":1},{"key":"b","value":2}]`. Zero-alloc: writes directly into output buffer via objectIter. Non-object input returns `[]`.
+- `from_entries` — converts `[{"key":"a","value":1}]` back to `{"a":1}`. Accepts both `"key"` and `"name"` as the key field name. Zero-alloc: reads entry fields via objectIter, writes output directly.
+- `with_entries(expr)` — desugars to `to_entries | map(expr) | from_entries` at parse time. No new op type. Enables patterns like `with_entries(select(.value != null))` to filter null fields and `with_entries(select(.key != "secret"))` to redact keys.
+
+### Tradeoffs
+- `to_entries` on non-object input silently returns `[]` rather than erroring. This is a graceful degradation for mixed-type streams.
+- `from_entries` skips malformed entries (missing key or value field) rather than erroring. Consistent with jq's behavior.
+- Array indexing in `to_entries` (where key would be an integer index) is not implemented — objects only. Sufficient for log processing.
+
+---
+
+## [Unreleased] — length, map
+
+### Added
+- `length` — string → character count (escape sequences count as one character), array/object → element/key count, null → 0. Zero-alloc scanner counting pass. Works naturally in pipes: `select(.tags | length >= 2)`.
+- `map(expr)` — apply expr to every array element and collect results. Desugars to `[.[] | expr]` at parse time — no new op type needed. `map(select(...))` correctly filters elements (empty outputs are not collected).
+
+### Fixed
+- `execArrayConstruct` previously used `exec` (single-result) per element, meaning `[.items[]]` only returned the first item. Now uses `execMulti` to correctly collect all outputs from each element expression.
+
+### Tradeoffs
+- `execArrayConstruct` now passes `nil` scratch to `execMulti` to avoid buffer aliasing when multiple outputs from a single element are written into the accumulation buffer. For elements returning input sub-slices (field access, iterator), this is still zero-alloc. For elements that write to a scratch buffer (compare, type, not), a small per-result allocation occurs. This is acceptable — array collection inherently produces variable-sized output.
+
+---
+
 ## [Unreleased] — has, empty, if-then-else, parenthesized grouping
 
 ### Added

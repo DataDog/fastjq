@@ -117,6 +117,11 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `expr and expr`, `expr or expr` | Boolean — short-circuit, always return true/false |
 | `.foo \| not` | Boolean negation |
 | `has("key")` | True if object contains field (even if value is null) |
+| `length` | Length: string → char count, array/object → element count, null → 0 |
+| `map(expr)` | Apply expr to every array element, collect results |
+| `to_entries` | `{"a":1}` → `[{"key":"a","value":1}]` |
+| `from_entries` | `[{"key":"a","value":1}]` → `{"a":1}` (also accepts `"name"` for key) |
+| `with_entries(expr)` | `to_entries \| map(expr) \| from_entries` — transform or filter object entries |
 | `if cond then expr else expr end` | Conditional — else is optional (defaults to identity) |
 | `empty` | Produce zero outputs — use as else branch to drop records |
 | `select(.level == "error")` | Filter — pass through or drop |

@@ -28,6 +28,9 @@ const (
 	opEmpty                        // empty — produce zero outputs
 	opHas                          // has("key")
 	opIf                           // if cond then expr else expr end
+	opLength                       // length
+	opToEntries                    // to_entries
+	opFromEntries                  // from_entries
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -271,6 +274,52 @@ func parseAtom(s string) (*op, string, error) {
 	// has("key")
 	if strings.HasPrefix(s, "has(") {
 		return parseHas(s)
+	}
+
+	// length builtin
+	if strings.HasPrefix(s, "length") && (len(s) == 6 || !isIdentChar(s[6])) {
+		return &op{typ: opLength}, s[6:], nil
+	}
+
+	// to_entries / from_entries / with_entries
+	if strings.HasPrefix(s, "to_entries") && (len(s) == 10 || !isIdentChar(s[10])) {
+		return &op{typ: opToEntries}, s[10:], nil
+	}
+	if strings.HasPrefix(s, "from_entries") && (len(s) == 12 || !isIdentChar(s[12])) {
+		return &op{typ: opFromEntries}, s[12:], nil
+	}
+	if strings.HasPrefix(s, "with_entries(") {
+		inner, rest, err := parsePipeExpr(s[13:])
+		if err != nil {
+			return nil, rest, fmt.Errorf("in with_entries(): %w", err)
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after with_entries() expression")
+		}
+		rest = rest[1:]
+		// Desugar: to_entries | map(inner) | from_entries
+		iterPipe := &op{typ: opPipe, left: &op{typ: opIterator}, right: inner}
+		mapArr := &op{typ: opArrayConstruct, elems: []*op{iterPipe}}
+		pipe1 := &op{typ: opPipe, left: &op{typ: opToEntries}, right: mapArr}
+		return &op{typ: opPipe, left: pipe1, right: &op{typ: opFromEntries}}, rest, nil
+	}
+
+	// map(expr) — desugars to [.[] | expr] at parse time
+	if strings.HasPrefix(s, "map(") {
+		inner, rest, err := parsePipeExpr(s[4:])
+		if err != nil {
+			return nil, rest, fmt.Errorf("in map(): %w", err)
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after map() expression")
+		}
+		rest = rest[1:]
+		// Desugar: [.[] | inner]
+		iter := &op{typ: opIterator}
+		pipe := &op{typ: opPipe, left: iter, right: inner}
+		return &op{typ: opArrayConstruct, elems: []*op{pipe}}, rest, nil
 	}
 
 	// not builtin (with boundary check)

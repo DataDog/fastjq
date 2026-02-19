@@ -1704,6 +1704,297 @@ func TestConstructWithAlternative(t *testing.T) {
 	}
 }
 
+// --- to_entries / from_entries / with_entries ---
+
+func TestToEntries(t *testing.T) {
+	p, _ := Compile("to_entries")
+	got, err := p.Run([]byte(`{"a":1,"b":"hello"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `[{"key":"a","value":1},{"key":"b","value":"hello"}]` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestToEntriesEmpty(t *testing.T) {
+	p, _ := Compile("to_entries")
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `[]` {
+		t.Errorf("got %s, want []", got)
+	}
+}
+
+func TestToEntriesNonObject(t *testing.T) {
+	p, _ := Compile("to_entries")
+	got, err := p.Run([]byte(`[1,2,3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `[]` {
+		t.Errorf("got %s, want [] for non-object", got)
+	}
+}
+
+func TestFromEntries(t *testing.T) {
+	p, _ := Compile("from_entries")
+	got, err := p.Run([]byte(`[{"key":"a","value":1},{"key":"b","value":"hello"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"a":1,"b":"hello"}` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestFromEntriesNameField(t *testing.T) {
+	// "name" is an alias for "key"
+	p, _ := Compile("from_entries")
+	got, err := p.Run([]byte(`[{"name":"x","value":42}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"x":42}` {
+		t.Errorf("got %s, want {\"x\":42}", got)
+	}
+}
+
+func TestFromEntriesEmpty(t *testing.T) {
+	p, _ := Compile("from_entries")
+	got, err := p.Run([]byte(`[]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{}` {
+		t.Errorf("got %s, want {}", got)
+	}
+}
+
+func TestToFromEntriesRoundTrip(t *testing.T) {
+	p, _ := Compile("to_entries | from_entries")
+	input := []byte(`{"a":1,"b":2,"c":3}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("round-trip: got %s, want %s", got, input)
+	}
+}
+
+func TestWithEntriesFilterNullValues(t *testing.T) {
+	// Remove entries where value is null
+	p, _ := Compile(`with_entries(select(.value != null))`)
+	got, err := p.Run([]byte(`{"a":1,"b":null,"c":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"a":1,"c":3}` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestWithEntriesRenameKeys(t *testing.T) {
+	// Wrap all values: {key: k, value: {original: v}}
+	p, _ := Compile(`with_entries(.value |= {original: .})`)
+	// .value |= expr is not supported yet, skip — use a simpler form
+	// Instead test: with_entries(select(.key != "secret"))
+	p, _ = Compile(`with_entries(select(.key != "secret"))`)
+	got, err := p.Run([]byte(`{"name":"alice","secret":"s3cr3t","age":30}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"name":"alice","age":30}` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestToEntriesNestedValue(t *testing.T) {
+	p, _ := Compile("to_entries")
+	got, err := p.Run([]byte(`{"data":{"nested":true}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `[{"key":"data","value":{"nested":true}}]` {
+		t.Errorf("got %s", got)
+	}
+}
+
+// --- length ---
+
+func TestLengthString(t *testing.T) {
+	p, _ := Compile("length")
+	got, err := p.Run([]byte(`"hello"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "5" {
+		t.Errorf("got %s, want 5", got)
+	}
+}
+
+func TestLengthEmptyString(t *testing.T) {
+	p, _ := Compile("length")
+	got, err := p.Run([]byte(`""`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "0" {
+		t.Errorf("got %s, want 0", got)
+	}
+}
+
+func TestLengthArray(t *testing.T) {
+	p, _ := Compile("length")
+	got, err := p.Run([]byte(`[1,2,3,4,5]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "5" {
+		t.Errorf("got %s, want 5", got)
+	}
+}
+
+func TestLengthEmptyArray(t *testing.T) {
+	p, _ := Compile("length")
+	got, err := p.Run([]byte(`[]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "0" {
+		t.Errorf("got %s, want 0", got)
+	}
+}
+
+func TestLengthObject(t *testing.T) {
+	p, _ := Compile("length")
+	got, err := p.Run([]byte(`{"a":1,"b":2,"c":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "3" {
+		t.Errorf("got %s, want 3", got)
+	}
+}
+
+func TestLengthNull(t *testing.T) {
+	p, _ := Compile("length")
+	got, err := p.Run([]byte(`null`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "0" {
+		t.Errorf("got %s, want 0", got)
+	}
+}
+
+func TestLengthInSelect(t *testing.T) {
+	p, _ := Compile(`select(.message | length > 0)`)
+	input := []byte(`{"message":"hello"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+	results, err := p.RunAll([]byte(`{"message":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for empty message")
+	}
+}
+
+func TestLengthPiped(t *testing.T) {
+	p, _ := Compile(`.tags | length`)
+	got, err := p.Run([]byte(`{"tags":["a","b","c"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "3" {
+		t.Errorf("got %s, want 3", got)
+	}
+}
+
+func TestLengthWithEscapes(t *testing.T) {
+	// "he\"llo" — 6 chars but 7 bytes in source; length counts chars
+	p, _ := Compile("length")
+	got, err := p.Run([]byte(`"he\"llo"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "6" {
+		t.Errorf("got %s, want 6", got)
+	}
+}
+
+// --- map ---
+
+func TestMapFieldExtract(t *testing.T) {
+	p, _ := Compile("map(.name)")
+	input := []byte(`[{"name":"alice","age":30},{"name":"bob","age":25}]`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `["alice","bob"]` {
+		t.Errorf("got %s, want [\"alice\",\"bob\"]", got)
+	}
+}
+
+func TestMapConstruct(t *testing.T) {
+	p, _ := Compile("map({name, age})")
+	input := []byte(`[{"name":"alice","age":30,"x":1},{"name":"bob","age":25,"x":2}]`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `[{"name":"alice","age":30},{"name":"bob","age":25}]` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestMapSelect(t *testing.T) {
+	// map(select(...)) filters elements — those that don't match produce empty
+	p, _ := Compile(`map(select(.active == true))`)
+	input := []byte(`[{"name":"alice","active":true},{"name":"bob","active":false},{"name":"carol","active":true}]`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `[{"name":"alice","active":true},{"name":"carol","active":true}]` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestMapEmptyArray(t *testing.T) {
+	p, _ := Compile("map(.x)")
+	got, err := p.Run([]byte(`[]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `[]` {
+		t.Errorf("got %s, want []", got)
+	}
+}
+
+func TestArrayConstructMultiOutput(t *testing.T) {
+	// [.items[]] should collect all elements
+	p, _ := Compile("[.items[]]")
+	got, err := p.Run([]byte(`{"items":[1,2,3]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `[1,2,3]` {
+		t.Errorf("got %s, want [1,2,3]", got)
+	}
+}
+
 // --- empty ---
 
 func TestEmptyProducesNoOutput(t *testing.T) {

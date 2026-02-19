@@ -49,10 +49,29 @@ func generateNestedJSON(topKeys, nestedKeys, valueSize int) []byte {
 	return []byte(b.String())
 }
 
+// generateObjectArray creates a JSON array of n objects, each with name/value/active fields.
+func generateObjectArray(n int) []byte {
+	var b strings.Builder
+	b.WriteString("[")
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		active := "true"
+		if i%2 != 0 {
+			active = "false"
+		}
+		fmt.Fprintf(&b, `{"name":"item_%d","value":%d,"active":%s}`, i, i*10, active)
+	}
+	b.WriteString("]")
+	return []byte(b.String())
+}
+
 var (
 	smallJSON  = generateJSON(5, 10)              // ~100B
 	mediumJSON = generateNestedJSON(20, 5, 30)    // ~2KB
 	largeJSON  = generateNestedJSON(200, 10, 200) // ~100KB+
+	smallArray = generateObjectArray(20)          // ~600B, 20 objects
 )
 
 // benchSink prevents the compiler from eliminating json.Marshal calls via dead-code
@@ -207,6 +226,78 @@ func BenchmarkFastjq_Large_Select(b *testing.B) {
 func BenchmarkFastjq_Small_Alternative(b *testing.B) {
 	p, _ := Compile(`.field_2 // "default"`)
 	buf := make([]byte, 0, 64)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_SelectAnd(b *testing.B) {
+	p, _ := Compile(`select(.field_0 == "xxxxxxxxxx" and .field_1 == "xxxxxxxxxx")`)
+	buf := make([]byte, 0, len(smallJSON))
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_SelectOr(b *testing.B) {
+	p, _ := Compile(`select(.field_0 == "xxxxxxxxxx" or .field_4 == "xxxxxxxxxx")`)
+	buf := make([]byte, 0, len(smallJSON))
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_Has(b *testing.B) {
+	p, _ := Compile(`select(has("field_2"))`)
+	buf := make([]byte, 0, len(smallJSON))
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_IfThenElse(b *testing.B) {
+	p, _ := Compile(`if .field_0 == "xxxxxxxxxx" then .field_0 else "default" end`)
+	buf := make([]byte, 0, 64)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_Length(b *testing.B) {
+	p, _ := Compile(`.field_0 | length`)
+	buf := make([]byte, 0, 8)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_Map(b *testing.B) {
+	p, _ := Compile(`map(.name)`)
+	buf := make([]byte, 0, 256)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallArray, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_ToEntries(b *testing.B) {
+	p, _ := Compile(`to_entries`)
+	buf := make([]byte, 0, 256)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_WithEntries(b *testing.B) {
+	p, _ := Compile(`with_entries(select(.value != null))`)
+	buf := make([]byte, 0, len(smallJSON))
 	b.ReportAllocs()
 	for b.Loop() {
 		buf, _ = p.RunWithBuffer(smallJSON, buf)
@@ -438,6 +529,110 @@ func BenchmarkGojq_Large_Select(b *testing.B) {
 
 func BenchmarkGojq_Small_Alternative(b *testing.B) {
 	query, _ := gojq.Parse(`.field_2 // "default"`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_SelectAnd(b *testing.B) {
+	query, _ := gojq.Parse(`select(.field_0 == "xxxxxxxxxx" and .field_1 == "xxxxxxxxxx")`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_SelectOr(b *testing.B) {
+	query, _ := gojq.Parse(`select(.field_0 == "xxxxxxxxxx" or .field_4 == "xxxxxxxxxx")`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_Has(b *testing.B) {
+	query, _ := gojq.Parse(`select(has("field_2"))`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_IfThenElse(b *testing.B) {
+	query, _ := gojq.Parse(`if .field_0 == "xxxxxxxxxx" then .field_0 else "default" end`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_Length(b *testing.B) {
+	query, _ := gojq.Parse(`.field_0 | length`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_Map(b *testing.B) {
+	query, _ := gojq.Parse(`map(.name)`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallArray, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_ToEntries(b *testing.B) {
+	query, _ := gojq.Parse(`to_entries`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_WithEntries(b *testing.B) {
+	query, _ := gojq.Parse(`with_entries(select(.value != null))`)
 	code, _ := gojq.Compile(query)
 	b.ReportAllocs()
 	for b.Loop() {

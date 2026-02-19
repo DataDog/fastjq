@@ -63,6 +63,20 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return fn(append(buf, "true"...))
 		}
 		return fn(append(buf, "false"...))
+	case opLength:
+		return execLength(input, buf, fn)
+	case opToEntries:
+		result, err := execToEntries(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opFromEntries:
+		result, err := execFromEntries(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opEmpty:
 		return nil // produce zero outputs — never call fn
 	case opHas:
@@ -132,6 +146,12 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			return append(buf, "true"...), nil
 		}
 		return append(buf, "false"...), nil
+	case opLength:
+		return execLengthSingle(input, buf)
+	case opToEntries:
+		return execToEntries(input, buf)
+	case opFromEntries:
+		return execFromEntries(input, buf)
 	default:
 		return exec(node, input, buf)
 	}
@@ -479,17 +499,25 @@ func execConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 }
 
 // execArrayConstruct builds a JSON array from expressions.
+// Each element expression may produce multiple outputs (e.g. .items[]),
+// all of which are collected into the array.
 func execArrayConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 	buf = append(buf, '[')
-	for i, elem := range node.elems {
-		if i > 0 {
-			buf = append(buf, ',')
-		}
-		val, err := exec(elem, input, buf[len(buf):len(buf):cap(buf)])
+	first := true
+	for _, elem := range node.elems {
+		// nil scratch avoids aliasing when multiple outputs are collected
+		// into buf within a single execMulti call.
+		err := execMulti(elem, input, nil, func(val []byte) error {
+			if !first {
+				buf = append(buf, ',')
+			}
+			first = false
+			buf = append(buf, val...)
+			return nil
+		})
 		if err != nil {
 			return nil, fmt.Errorf("in array construction: %w", err)
 		}
-		buf = append(buf, val...)
 	}
 	buf = append(buf, ']')
 	return buf, nil
@@ -626,6 +654,152 @@ func execSelect(node *op, input []byte, buf []byte, fn func([]byte) error) error
 		return nil // zero outputs
 	}
 	return fn(input)
+}
+
+// execLength returns the length of a JSON value:
+// string → number of bytes between quotes, array → element count,
+// object → key count, null → 0.
+func execLength(input []byte, buf []byte, fn func([]byte) error) error {
+	n, err := execLengthSingle(input, buf)
+	if err != nil {
+		return err
+	}
+	return fn(n)
+}
+
+func execLengthSingle(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return appendInt(buf, 0), nil
+	}
+	switch s.data[s.pos] {
+	case '"':
+		// String length: count bytes between quotes (not Unicode codepoints,
+		// but consistent with how jq counts — bytes of the unquoted content).
+		s.pos++ // skip opening quote
+		n := 0
+		for s.pos < len(s.data) {
+			ch := s.data[s.pos]
+			if ch == '\\' {
+				s.pos += 2
+				n++
+				continue
+			}
+			if ch == '"' {
+				break
+			}
+			s.pos++
+			n++
+		}
+		return appendInt(buf, n), nil
+	case '[':
+		count := 0
+		s.arrayIter(func(i, _, _ int) bool { count++; return true })
+		return appendInt(buf, count), nil
+	case '{':
+		count := 0
+		s.objectIter(func(_ []byte, _, _ int) bool { count++; return true })
+		return appendInt(buf, count), nil
+	case 'n': // null
+		return appendInt(buf, 0), nil
+	default:
+		return appendInt(buf, 0), nil
+	}
+}
+
+// appendInt appends a non-negative integer to buf without allocation.
+func appendInt(buf []byte, n int) []byte {
+	if n == 0 {
+		return append(buf, '0')
+	}
+	// Write digits in reverse then flip.
+	start := len(buf)
+	for n > 0 {
+		buf = append(buf, byte('0'+n%10))
+		n /= 10
+	}
+	// Reverse the digits we just appended.
+	end := len(buf) - 1
+	for i := start; i < end; i, end = i+1, end-1 {
+		buf[i], buf[end] = buf[end], buf[i]
+	}
+	return buf
+}
+
+// execToEntries converts a JSON object to [{key, value}] array.
+// Non-object input produces an empty array.
+func execToEntries(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
+		return append(buf, "[]"...), nil
+	}
+	buf = append(buf, '[')
+	first := true
+	s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = append(buf, `{"key":"`...)
+		buf = append(buf, key...)
+		buf = append(buf, `","value":`...)
+		buf = append(buf, input[valueStart:valueEnd]...)
+		buf = append(buf, '}')
+		return true
+	})
+	buf = append(buf, ']')
+	return buf, nil
+}
+
+// execFromEntries converts a [{key,value}] array back to a JSON object.
+// Each entry may use "key" or "name" as the key field.
+// Non-array input produces an empty object.
+func execFromEntries(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return append(buf, "{}"...), nil
+	}
+	buf = append(buf, '{')
+	first := true
+	s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
+		elem := input[elemStart:elemEnd]
+		es := &scanner{data: elem}
+
+		var keyContent []byte // unquoted key string
+		var valStart, valEnd int = -1, -1
+
+		es.objectIter(func(k []byte, vs, ve int) bool {
+			if bytesEqualStr(k, "key") || bytesEqualStr(k, "name") {
+				// Extract unquoted string content of the key field value
+				inner := &scanner{data: elem[vs:ve]}
+				inner.skipWhitespace()
+				if inner.pos < len(inner.data) && inner.data[inner.pos] == '"' {
+					keyContent = inner.readString()
+				}
+			} else if bytesEqualStr(k, "value") {
+				valStart, valEnd = vs, ve
+			}
+			return true
+		})
+
+		if keyContent == nil || valStart == -1 {
+			return true // skip malformed entry
+		}
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = append(buf, '"')
+		buf = append(buf, keyContent...)
+		buf = append(buf, '"', ':')
+		buf = append(buf, elem[valStart:valEnd]...)
+		return true
+	})
+	buf = append(buf, '}')
+	return buf, nil
 }
 
 // execHas checks whether the input object contains a field.
