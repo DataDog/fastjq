@@ -4,6 +4,19 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — ascii_downcase/upcase, startswith/endswith, ltrimstr/rtrimstr
+
+### Added
+Six string operations for case-insensitive matching and string normalization in log pipelines:
+
+- `ascii_downcase` / `ascii_upcase` — byte-by-byte case conversion. Escape sequences pass through unchanged. Error on non-string input.
+- `startswith("s")` / `endswith("s")` — prefix/suffix predicates. Return `true`/`false`. Use `bTrue`/`bFalse` global literals when `buf == nil` (zero-alloc in condition context). Common use: `select(.path | startswith("/api/"))`.
+- `ltrimstr("s")` / `rtrimstr("s")` — strip prefix/suffix. No-match returns input as a cap-limited sub-slice (zero-alloc). Match returns trimmed string written to buf.
+
+All zero-alloc. `buf == nil` fast-paths added to predicates (return global literals) and trim ops (return cap-limited input sub-slices on no-match). 20 new tests, 218 total.
+
+---
+
 ## [Unreleased] — zero-alloc fixes for map and with_entries
 
 ### Fixed

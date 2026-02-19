@@ -32,6 +32,12 @@ const (
 	opToEntries                    // to_entries
 	opFromEntries                  // from_entries
 	opWithEntries                  // with_entries(f) — dedicated single-pass executor
+	opAsciiDowncase                // ascii_downcase
+	opAsciiUpcase                  // ascii_upcase
+	opStartsWith                   // startswith("s")
+	opEndsWith                     // endswith("s")
+	opLtrimStr                     // ltrimstr("s")
+	opRtrimStr                     // rtrimstr("s")
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -282,6 +288,28 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opLength}, s[6:], nil
 	}
 
+	// ascii_downcase / ascii_upcase
+	if strings.HasPrefix(s, "ascii_downcase") && (len(s) == 14 || !isIdentChar(s[14])) {
+		return &op{typ: opAsciiDowncase}, s[14:], nil
+	}
+	if strings.HasPrefix(s, "ascii_upcase") && (len(s) == 12 || !isIdentChar(s[12])) {
+		return &op{typ: opAsciiUpcase}, s[12:], nil
+	}
+
+	// startswith(s) / endswith(s) / ltrimstr(s) / rtrimstr(s)
+	if strings.HasPrefix(s, "startswith(") {
+		return parseStringArgBuiltin(s[11:], opStartsWith)
+	}
+	if strings.HasPrefix(s, "endswith(") {
+		return parseStringArgBuiltin(s[9:], opEndsWith)
+	}
+	if strings.HasPrefix(s, "ltrimstr(") {
+		return parseStringArgBuiltin(s[9:], opLtrimStr)
+	}
+	if strings.HasPrefix(s, "rtrimstr(") {
+		return parseStringArgBuiltin(s[9:], opRtrimStr)
+	}
+
 	// to_entries / from_entries / with_entries
 	if strings.HasPrefix(s, "to_entries") && (len(s) == 10 || !isIdentChar(s[10])) {
 		return &op{typ: opToEntries}, s[10:], nil
@@ -423,6 +451,36 @@ func parseFieldChain(s string) (*op, string, error) {
 	}
 
 	return node, rest, nil
+}
+
+// parseStringArgBuiltin parses builtins of the form name("literal_string").
+// s should start just after the opening '(' has been consumed.
+// The unquoted string content is stored in op.field.
+func parseStringArgBuiltin(s string, typ opType) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 || s[0] != '"' {
+		return nil, s, fmt.Errorf("expected string argument")
+	}
+	i := 1
+	for i < len(s) {
+		if s[i] == '\\' {
+			i += 2
+			continue
+		}
+		if s[i] == '"' {
+			break
+		}
+		i++
+	}
+	if i >= len(s) {
+		return nil, s, fmt.Errorf("unterminated string argument")
+	}
+	key := s[1:i]
+	rest := strings.TrimSpace(s[i+1:])
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after string argument")
+	}
+	return &op{typ: typ, field: key}, rest[1:], nil
 }
 
 // parseHas parses has("key") — checks whether an object contains a field.

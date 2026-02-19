@@ -37,6 +37,11 @@ All times in µs. Small/Medium values are sub-microsecond but shown with enough 
 | `map(.name)` | 20-elem array (~600B) | 1.99 | 9.98 | **5.0x** | 0 | 251 |
 | `to_entries` | Small (~100B) | 0.0062 | 0.359 | **58x** | 0 | 14 |
 | `with_entries(select(...))` | Small (~100B) | 0.0054 | 0.491 | **91x** | 0 | 19 |
+| `ascii_downcase` in select | Small (~100B) | 0.011 | 0.565 | **54x** | 0 | 21 |
+| `startswith("s")` in select | Small (~100B) | 0.011 | 0.567 | **52x** | 0 | 21 |
+| `endswith("s")` in select | Small (~100B) | 0.011 | 0.567 | **52x** | 0 | 21 |
+| `ltrimstr("s")` | Small (~100B) | 0.0060 | 0.408 | **68x** | 0 | 16 |
+| `rtrimstr("s")` | Small (~100B) | 0.0061 | 0.412 | **68x** | 0 | 16 |
 | Alternative `.f // "default"` | Small (~100B) | 0.0072 | 0.456 | **63x** | 0 | 17 |
 
 ## Key Takeaways
@@ -95,6 +100,16 @@ BenchmarkGojq_Small_Length-16           	 3338461	       363.0 ns/op	    1177 B/
 BenchmarkGojq_Small_Map-16              	  117776	     10116 ns/op	   13653 B/op	     251 allocs/op
 BenchmarkGojq_Small_ToEntries-16        	 3356006	       359.4 ns/op	    1209 B/op	      14 allocs/op
 BenchmarkGojq_Small_WithEntries-16      	 2439589	       490.9 ns/op	    1529 B/op	      19 allocs/op
+BenchmarkFastjq_Small_AsciiDowncase-16  	100000000	        10.55 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Startswith-16     	100000000	        10.52 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Endswith-16       	100000000	        10.58 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Ltrimstr-16       	197886992	         6.044 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Rtrimstr-16       	198682116	         6.061 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_AsciiDowncase-16    	 2136060	       565.1 ns/op	    1785 B/op	      21 allocs/op
+BenchmarkGojq_Small_Startswith-16       	 2127511	       566.5 ns/op	    1801 B/op	      21 allocs/op
+BenchmarkGojq_Small_Endswith-16         	 2098352	       567.3 ns/op	    1801 B/op	      21 allocs/op
+BenchmarkGojq_Small_Ltrimstr-16         	 2939564	       407.9 ns/op	    1305 B/op	      16 allocs/op
+BenchmarkGojq_Small_Rtrimstr-16         	 2907825	       412.4 ns/op	    1305 B/op	      16 allocs/op
 ```
 
 ## CLI Throughput: fastjq vs jq

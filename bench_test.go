@@ -304,6 +304,52 @@ func BenchmarkFastjq_Small_WithEntries(b *testing.B) {
 	}
 }
 
+func BenchmarkFastjq_Small_AsciiDowncase(b *testing.B) {
+	// select with case-insensitive match — most common use case
+	p, _ := Compile(`select(.field_2 | ascii_downcase == "xxxxxxxxxx")`)
+	buf := make([]byte, 0, len(smallJSON))
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_Startswith(b *testing.B) {
+	p, _ := Compile(`select(.field_2 | startswith("xxx"))`)
+	buf := make([]byte, 0, len(smallJSON))
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_Endswith(b *testing.B) {
+	p, _ := Compile(`select(.field_2 | endswith("xxx"))`)
+	buf := make([]byte, 0, len(smallJSON))
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_Ltrimstr(b *testing.B) {
+	p, _ := Compile(`.field_2 | ltrimstr("xxx")`)
+	buf := make([]byte, 0, 32)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_Rtrimstr(b *testing.B) {
+	p, _ := Compile(`.field_2 | rtrimstr("xxx")`)
+	buf := make([]byte, 0, 32)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
 // --- gojq benchmarks ---
 
 func BenchmarkGojq_Small_Del(b *testing.B) {
@@ -633,6 +679,71 @@ func BenchmarkGojq_Small_ToEntries(b *testing.B) {
 
 func BenchmarkGojq_Small_WithEntries(b *testing.B) {
 	query, _ := gojq.Parse(`with_entries(select(.value != null))`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_AsciiDowncase(b *testing.B) {
+	query, _ := gojq.Parse(`select(.field_2 | ascii_downcase == "xxxxxxxxxx")`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_Startswith(b *testing.B) {
+	query, _ := gojq.Parse(`select(.field_2 | startswith("xxx"))`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_Endswith(b *testing.B) {
+	query, _ := gojq.Parse(`select(.field_2 | endswith("xxx"))`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_Ltrimstr(b *testing.B) {
+	query, _ := gojq.Parse(`.field_2 | ltrimstr("xxx")`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_Rtrimstr(b *testing.B) {
+	query, _ := gojq.Parse(`.field_2 | rtrimstr("xxx")`)
 	code, _ := gojq.Compile(query)
 	b.ReportAllocs()
 	for b.Loop() {

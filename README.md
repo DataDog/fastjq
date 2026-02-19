@@ -126,6 +126,9 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `empty` | Produce zero outputs — use as else branch to drop records |
 | `select(.level == "error")` | Filter — pass through or drop |
 | `.foo // "default"` | Alternative — use right if left is null/false |
+| `ascii_downcase`, `ascii_upcase` | Convert string to lower/upper case |
+| `startswith("s")`, `endswith("s")` | String prefix/suffix test |
+| `ltrimstr("s")`, `rtrimstr("s")` | Strip prefix/suffix from string |
 | `.foo?`, `.[0]?`, `.[]?` | Optional — suppress errors |
 | `type` | Type name: `"string"`, `"number"`, `"object"`, etc. |
 

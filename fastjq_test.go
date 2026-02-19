@@ -1704,6 +1704,251 @@ func TestConstructWithAlternative(t *testing.T) {
 	}
 }
 
+// --- ascii_downcase / ascii_upcase ---
+
+func TestAsciiDowncase(t *testing.T) {
+	p, _ := Compile("ascii_downcase")
+	got, err := p.Run([]byte(`"Hello World"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"hello world"` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestAsciiUpcase(t *testing.T) {
+	p, _ := Compile("ascii_upcase")
+	got, err := p.Run([]byte(`"hello world"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"HELLO WORLD"` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestAsciiDowncaseAlreadyLower(t *testing.T) {
+	p, _ := Compile("ascii_downcase")
+	got, err := p.Run([]byte(`"already lower"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"already lower"` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestAsciiDowncasePreservesEscapes(t *testing.T) {
+	p, _ := Compile("ascii_downcase")
+	got, err := p.Run([]byte(`"Hello\nWorld"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"hello\nworld"` {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestAsciiDowncaseInSelect(t *testing.T) {
+	p, _ := Compile(`select(.level | ascii_downcase == "error")`)
+	input := []byte(`{"level":"ERROR","msg":"boom"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+	results, err := p.RunAll([]byte(`{"level":"INFO","msg":"ok"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results")
+	}
+}
+
+func TestAsciiDowncasePiped(t *testing.T) {
+	p, _ := Compile(`.level | ascii_downcase`)
+	got, err := p.Run([]byte(`{"level":"WARNING"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"warning"` {
+		t.Errorf("got %s", got)
+	}
+}
+
+// --- startswith / endswith ---
+
+func TestStartsWithTrue(t *testing.T) {
+	p, _ := Compile(`startswith("foo")`)
+	got, err := p.Run([]byte(`"foobar"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestStartsWithFalse(t *testing.T) {
+	p, _ := Compile(`startswith("foo")`)
+	got, err := p.Run([]byte(`"barfoo"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestStartsWithExactMatch(t *testing.T) {
+	p, _ := Compile(`startswith("foo")`)
+	got, err := p.Run([]byte(`"foo"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestStartsWithTooShort(t *testing.T) {
+	p, _ := Compile(`startswith("foobar")`)
+	got, err := p.Run([]byte(`"foo"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestEndsWithTrue(t *testing.T) {
+	p, _ := Compile(`endswith("bar")`)
+	got, err := p.Run([]byte(`"foobar"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestEndsWithFalse(t *testing.T) {
+	p, _ := Compile(`endswith("bar")`)
+	got, err := p.Run([]byte(`"barfoo"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestStartsWithInSelect(t *testing.T) {
+	p, _ := Compile(`select(.path | startswith("/api/"))`)
+	input := []byte(`{"path":"/api/users","status":200}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+	results, err := p.RunAll([]byte(`{"path":"/health","status":200}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for non-/api path")
+	}
+}
+
+// --- ltrimstr / rtrimstr ---
+
+func TestLtrimStrMatch(t *testing.T) {
+	p, _ := Compile(`ltrimstr("prod-")`)
+	got, err := p.Run([]byte(`"prod-auth"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"auth"` {
+		t.Errorf("got %s, want \"auth\"", got)
+	}
+}
+
+func TestLtrimStrNoMatch(t *testing.T) {
+	p, _ := Compile(`ltrimstr("prod-")`)
+	got, err := p.Run([]byte(`"staging-auth"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"staging-auth"` {
+		t.Errorf("got %s, want unchanged", got)
+	}
+}
+
+func TestLtrimStrFullMatch(t *testing.T) {
+	p, _ := Compile(`ltrimstr("foo")`)
+	got, err := p.Run([]byte(`"foo"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `""` {
+		t.Errorf("got %s, want empty string", got)
+	}
+}
+
+func TestRtrimStrMatch(t *testing.T) {
+	p, _ := Compile(`rtrimstr(".log")`)
+	got, err := p.Run([]byte(`"app.log"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"app"` {
+		t.Errorf("got %s, want \"app\"", got)
+	}
+}
+
+func TestRtrimStrNoMatch(t *testing.T) {
+	p, _ := Compile(`rtrimstr(".log")`)
+	got, err := p.Run([]byte(`"app.txt"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"app.txt"` {
+		t.Errorf("got %s, want unchanged", got)
+	}
+}
+
+func TestLtrimStrInSelect(t *testing.T) {
+	p, _ := Compile(`select(.service | ltrimstr("prod-") == "auth")`)
+	input := []byte(`{"service":"prod-auth","level":"error"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+}
+
+func TestStringOpsComposed(t *testing.T) {
+	// Normalize, trim prefix, check suffix
+	p, _ := Compile(`select(.path | ascii_downcase | ltrimstr("/api") | startswith("/users"))`)
+	input := []byte(`{"path":"/API/users/123"}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+}
+
 // --- to_entries / from_entries / with_entries ---
 
 func TestToEntries(t *testing.T) {

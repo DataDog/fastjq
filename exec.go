@@ -84,6 +84,26 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(result)
 	case opWithEntries:
 		return execWithEntries(node, input, buf, fn)
+	case opAsciiDowncase:
+		result, err := execAsciiCase(input, buf, false)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opAsciiUpcase:
+		result, err := execAsciiCase(input, buf, true)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opStartsWith:
+		return fn(execStringPredicate(input, buf, node.field, true, false))
+	case opEndsWith:
+		return fn(execStringPredicate(input, buf, node.field, false, true))
+	case opLtrimStr:
+		return fn(execTrimStr(input, buf, node.field, true))
+	case opRtrimStr:
+		return fn(execTrimStr(input, buf, node.field, false))
 	case opEmpty:
 		return nil // produce zero outputs — never call fn
 	case opHas:
@@ -188,6 +208,18 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execToEntries(input, buf)
 	case opFromEntries:
 		return execFromEntries(input, buf)
+	case opAsciiDowncase:
+		return execAsciiCase(input, buf, false)
+	case opAsciiUpcase:
+		return execAsciiCase(input, buf, true)
+	case opStartsWith:
+		return execStringPredicate(input, buf, node.field, true, false), nil
+	case opEndsWith:
+		return execStringPredicate(input, buf, node.field, false, true), nil
+	case opLtrimStr:
+		return execTrimStr(input, buf, node.field, true), nil
+	case opRtrimStr:
+		return execTrimStr(input, buf, node.field, false), nil
 	default:
 		return exec(node, input, buf)
 	}
@@ -967,6 +999,122 @@ func execWithEntries(node *op, input []byte, buf []byte, fn func([]byte) error) 
 
 	buf = append(buf, '}')
 	return fn(buf)
+}
+
+// execAsciiCase converts a JSON string to lower (upcase=false) or upper (upcase=true) case.
+// Escape sequences are copied unchanged. Non-string input returns an error.
+func execAsciiCase(input []byte, buf []byte, upcase bool) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		if upcase {
+			return nil, fmt.Errorf("ascii_upcase input must be a string")
+		}
+		return nil, fmt.Errorf("ascii_downcase input must be a string")
+	}
+	buf = append(buf, '"')
+	s.pos++ // skip opening '"'
+	for s.pos < len(s.data) {
+		ch := s.data[s.pos]
+		if ch == '\\' {
+			if s.pos+1 < len(s.data) {
+				buf = append(buf, ch, s.data[s.pos+1])
+				s.pos += 2
+			}
+			continue
+		}
+		if ch == '"' {
+			s.pos++
+			break
+		}
+		if upcase {
+			if ch >= 'a' && ch <= 'z' {
+				ch -= 32
+			}
+		} else {
+			if ch >= 'A' && ch <= 'Z' {
+				ch += 32
+			}
+		}
+		buf = append(buf, ch)
+		s.pos++
+	}
+	buf = append(buf, '"')
+	return buf, nil
+}
+
+// execStringPredicate implements startswith and endswith.
+// Returns bTrue/bFalse when buf is nil (zero-alloc in condition context).
+func execStringPredicate(input []byte, buf []byte, s string, start, end bool) []byte {
+	sc := &scanner{data: input}
+	sc.skipWhitespace()
+	if sc.pos >= len(sc.data) || sc.data[sc.pos] != '"' {
+		if buf == nil {
+			return bFalse
+		}
+		return append(buf, "false"...)
+	}
+	content := sc.readString()
+	var match bool
+	if start {
+		match = len(content) >= len(s) && bytesEqualStr(content[:len(s)], s)
+	} else { // end
+		match = len(content) >= len(s) && bytesEqualStr(content[len(content)-len(s):], s)
+	}
+	if buf == nil {
+		if match {
+			return bTrue
+		}
+		return bFalse
+	}
+	if match {
+		return append(buf, "true"...)
+	}
+	return append(buf, "false"...)
+}
+
+// execTrimStr implements ltrimstr (left=true) and rtrimstr (left=false).
+// If the input string starts/ends with s, returns the trimmed string.
+// If no match, returns the input unchanged (cap-limited zero-alloc sub-slice when buf is nil).
+func execTrimStr(input []byte, buf []byte, s string, left bool) []byte {
+	sc := &scanner{data: input}
+	sc.skipWhitespace()
+	start := sc.pos
+	if sc.pos >= len(sc.data) || sc.data[sc.pos] != '"' {
+		if buf == nil {
+			end := sc.pos
+			return input[start:end:end]
+		}
+		return append(buf, input[start:]...)
+	}
+	content := sc.readString()
+	end := sc.pos
+
+	var match bool
+	var trimmed []byte
+	if left {
+		match = len(content) >= len(s) && bytesEqualStr(content[:len(s)], s)
+		if match {
+			trimmed = content[len(s):]
+		}
+	} else {
+		match = len(content) >= len(s) && bytesEqualStr(content[len(content)-len(s):], s)
+		if match {
+			trimmed = content[:len(content)-len(s)]
+		}
+	}
+
+	if !match {
+		if buf == nil {
+			return input[start:end:end]
+		}
+		return append(buf, input[start:end]...)
+	}
+
+	buf = append(buf, '"')
+	buf = append(buf, trimmed...)
+	buf = append(buf, '"')
+	return buf
 }
 
 // execHas checks whether the input object contains a field.
