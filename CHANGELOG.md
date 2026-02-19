@@ -4,6 +4,34 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — try/catch, elif, object merge, tojson/fromjson, tostring/tonumber, any/all two-arg
+
+### Added
+
+Eight new zero-alloc features:
+
+- **`try expr`** — suppresses errors from the body expression, producing no output on failure. `errBreak` (for `first`/`limit`) propagates unchanged.
+- **`try expr catch handler`** — on failure, runs `handler` with the error message as a JSON string. The catch handler message is allocated once per actual error (exceptional path).
+- **`elif`** — `if C then A elif C2 then B else D end` desugars to nested `if` at parse time; no new op type. Chains of any length are supported.
+- **`+` (object merge)** — `{"a":1} + {"b":2}` = `{"a":1,"b":2}`. Right wins on duplicate keys. Zero-alloc: `objectContainsKey` uses a manual scan loop (no closure/callback), same pattern as `arrayContainsElem`.
+- **`tojson` / `@json`** — wrap any JSON value as a JSON string, escaping `"` and `\`. Zero-alloc.
+- **`fromjson`** — strip outer quotes from a JSON string and unescape `\"` and `\\`. Zero-alloc.
+- **`tostring`** — strings pass through unchanged; non-strings go through `tojson`. Zero-alloc (string path returns cap-limited sub-slice).
+- **`tonumber`** — numbers pass through; strings are parsed as floats via `parseJSONFloat`. Zero-alloc for the number identity path.
+- **`any(gen; cond)` / `all(gen; cond)`** — two-arg forms: generator produces multiple outputs, condition is applied to each. Short-circuits. Zero-alloc.
+
+### Benchmarks (Apple M4 Max)
+| Operation | fastjq | gojq | Speedup |
+|-----------|--------|------|---------|
+| `try .field` (no error) | 149 ns | 635 ns | **4.3x** |
+| object merge `.a + .b` | 157 ns | 710 ns | **4.5x** |
+| `tojson` (~100B object) | 204 ns | 510 ns | **2.5x** |
+| `fromjson` (JSON string) | 47 ns | 430 ns | **9x** |
+| `tonumber` (`"42"` string) | 15 ns | 370 ns | **25x** |
+| `any(.[]; . > 100)` (200 ints) | 2.9 µs | 11.3 µs | **3.9x** |
+
+---
+
 ## [Unreleased] — arithmetic, min/max, @uri
 
 ### Added

@@ -125,68 +125,102 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 
 ## Supported Operations
 
+**Access**
+
 | Syntax | Description |
 |--------|-------------|
 | `.` | Identity — pass input through |
 | `.foo`, `.foo.bar` | Field access, nested |
-| `.[0]`, `.[-1]` | Array index, negative from end |
+| `.[0]`, `.[-1]` | Array index (negative counts from end) |
 | `.[]` | Iterator — emit each element |
 | `.items[]`, `.items[0]`, `.data[0].name` | Chained access |
+| `.[n:m]`, `.[:m]`, `.[n:]` | Slice array or string (negative indices from end) |
+| `.foo?`, `.[0]?`, `.[]?` | Optional — suppress errors, produce no output |
+
+**Modification**
+
+| Syntax | Description |
+|--------|-------------|
 | `del(.foo)`, `del(.foo, .bar)` | Delete fields |
 | `del(.foo.bar)` | Delete nested field |
 | `del(.[0])`, `del(.[1], .[3])` | Delete array elements |
 | `{name, age}` | Object construction (shorthand) |
-| `{a: .foo, b: .bar}` | Object construction (rename) |
+| `{a: .foo, b: .bar}` | Object construction (rename / literal values) |
 | `[.foo, .bar]` | Array construction |
+
+**Logic & Control Flow**
+
+| Syntax | Description |
+|--------|-------------|
 | `expr \| expr` | Pipe |
-| `null`, `true`, `false`, `"str"`, `123` | Literals |
-| `.foo == "val"`, `.foo != "val"` | Equality |
-| `.foo < val`, `.foo <= val`, `.foo > val`, `.foo >= val` | Ordering (numbers and strings) |
-| `expr and expr`, `expr or expr` | Boolean — short-circuit, always return true/false |
-| `.foo \| not` | Boolean negation |
-| `has("key")` | True if object contains field (even if value is null) |
-| `length` | Length: string → char count, array/object → element count, null → 0 |
-| `map(expr)` | Apply expr to every array element, collect results |
-| `expr - expr` | Number subtraction; array difference (elements of left not in right) |
-| `expr * expr` | Number multiplication; `"str" * n` = repeat string n times |
-| `expr / expr` | Number division; `"str" / "sep"` = split (same as `split`) |
+| `.foo == "val"`, `.foo != "val"`, `<`, `<=`, `>`, `>=` | Comparison |
+| `expr and expr`, `expr or expr`, `expr \| not` | Boolean operators — always return true/false |
+| `select(cond)` | Filter — emit input if truthy, nothing if falsy |
+| `if cond then expr [elif cond then expr]* [else expr] end` | Conditional — elif and else optional |
+| `try expr` / `try expr catch handler` | Suppress errors; catch receives error message as string |
+| `.foo // "default"` | Alternative — right if left is null/false |
+| `empty` | Produce zero outputs |
+
+**Arithmetic**
+
+| Syntax | Description |
+|--------|-------------|
+| `expr + expr` | Numbers: sum; strings/arrays: concat; objects: merge (right wins); null: identity |
+| `expr - expr` | Numbers: subtract; arrays: difference (remove right's elements from left) |
+| `expr * expr` | Numbers: multiply; `"str" * n`: repeat string n times |
+| `expr / expr` | Numbers: divide; `"str" / "sep"`: split by separator |
 | `expr % expr` | Number modulo |
-| `min` / `max` | Minimum / maximum element of array (numbers: numeric; strings: lexicographic) |
+| `add` | Reduce array: sum numbers, concat strings/arrays, merge objects |
+
+**Arrays**
+
+| Syntax | Description |
+|--------|-------------|
+| `map(expr)` | Apply expr to every element, collect results |
+| `flatten`, `flatten(n)` | Flatten nested arrays (n = max depth) |
+| `min` / `max` | Minimum / maximum element (numbers or strings) |
 | `min_by(f)` / `max_by(f)` | Element with min/max value of `f` |
-| `@uri` | URL percent-encode a string (RFC 3986 unreserved chars pass through) |
-| `to_entries` | `{"a":1}` → `[{"key":"a","value":1}]` |
-| `from_entries` | `[{"key":"a","value":1}]` → `{"a":1}` (also accepts `"name"` for key) |
-| `if cond then expr else expr end` | Conditional — else is optional (defaults to identity) |
-| `empty` | Produce zero outputs — use as else branch to drop records |
-| `select(.level == "error")` | Filter — pass through or drop |
-| `.foo // "default"` | Alternative — use right if left is null/false |
-| `first` / `last` | First/last element of array (no-arg); or first/last output of `first(expr)` / `last(expr)` |
+| `any` / `any(expr)` / `any(gen; cond)` | True if any element is truthy / matches expr / gen\|cond |
+| `all` / `all(expr)` / `all(gen; cond)` | True if all elements truthy / match expr / gen\|cond |
+| `first` / `last` | First/last element (or `first(expr)` / `last(expr)`) |
 | `limit(n; expr)` | First N outputs of expr |
+| `values` | Filter nulls — emit only non-null values |
+| `numbers`, `strings`, `arrays`, `objects`, `booleans`, `nulls`, `iterables`, `scalars` | Type filters |
+| `index(s)`, `rindex(s)`, `indices(s)` | First/last/all occurrences of value in string or array |
+| `has(key)`, `has(n)` | True if object has field / array has index |
+| `in(obj)` | Reverse membership: `"key" \| in({"key":1})` |
+
+**Strings**
+
+| Syntax | Description |
+|--------|-------------|
+| `split("s")` / `join("s")` | Split string by separator / join array with separator |
+| `ascii_downcase`, `ascii_upcase` | Case conversion |
+| `startswith("s")`, `endswith("s")` | Prefix/suffix test |
+| `ltrimstr("s")`, `rtrimstr("s")` | Strip prefix/suffix |
+| `@base64` / `@base64d` | Base64 encode/decode (handles standard and URL-safe variants) |
+| `@uri` | URL percent-encode (RFC 3986 unreserved chars pass through) |
+
+**Objects**
+
+| Syntax | Description |
+|--------|-------------|
+| `to_entries` | `{"a":1}` → `[{"key":"a","value":1}]` |
+| `from_entries` | `[{"key":"a","value":1}]` → `{"a":1}` (also accepts `"name"`) |
 | `keys_unsorted` | Object keys in insertion order; array → indices |
-| `any` / `any(expr)` | True if any element/result is truthy (short-circuit) |
-| `all` / `all(expr)` | True if all elements/results are truthy (short-circuit) |
-| `.[n:m]`, `.[:m]`, `.[n:]`, `.[:]` | Slice array or string (negative indices count from end) |
-| `values` | Pass through if not null; produce no output if null. Use as `.[] \| values` to filter nulls from a stream |
-| `numbers`, `strings`, `arrays`, `objects`, `booleans`, `nulls` | Type filters — equivalent to `select(type == "X")` |
-| `iterables`, `scalars` | Type filters — arrays/objects or everything else |
-| `"key": expr` | Quoted string keys in object construction: `{"a": .b}` |
-| `in(obj)` | Reverse membership: `"key" \| in({"key":1})` = true |
-| `@base64` | Base64-encode a string |
-| `@base64d` | Base64-decode a string (handles standard and URL-safe `-_` variants, with or without padding) |
-| `index(s)`, `rindex(s)` | First / last occurrence of value in string or array (null if not found) |
-| `indices(s)` | All occurrences → array of indices |
-| `has(n)` | True if array index n is within bounds (n must be ≥ 0) |
+| `length` | String → char count; array/object → count; null → 0 |
+
+**Type & Inspection**
+
+| Syntax | Description |
+|--------|-------------|
+| `type` | Type name: `"string"`, `"number"`, `"object"`, `"array"`, `"boolean"`, `"null"` |
+| `tojson` / `@json` | Serialize any value as a JSON string |
+| `fromjson` | Parse a JSON string to its contained value |
+| `tostring` | Strings pass through; non-strings serialized via `tojson` |
+| `tonumber` | Numbers pass through; strings parsed as floats |
+| `null`, `true`, `false`, `"str"`, `123` | Literals |
 | `debug` | Print value to stderr, pass through unchanged |
-| `expr + expr` | Concatenate strings/arrays, sum numbers, null is identity |
-| `add` | Sum numbers, concatenate strings/arrays, merge objects |
-| `flatten`, `flatten(n)` | Recursively flatten nested arrays (n = max depth) |
-| `split("s")` | Split string by separator → array |
-| `join("s")` | Join array elements with separator → string |
-| `ascii_downcase`, `ascii_upcase` | Convert string to lower/upper case |
-| `startswith("s")`, `endswith("s")` | String prefix/suffix test |
-| `ltrimstr("s")`, `rtrimstr("s")` | Strip prefix/suffix from string |
-| `.foo?`, `.[0]?`, `.[]?` | Optional — suppress errors |
-| `type` | Type name: `"string"`, `"number"`, `"object"`, etc. |
 
 ## Limitations
 
@@ -208,8 +242,6 @@ In jq, `null | .field` returns `null`. In fastjq it errors. This affects chained
 `reduce`, `foreach`, `@csv`, `@html`, `env`, `path`, `sort`, `group_by`, `unique`, `test` (regex), etc. are not supported. See [SYNTAX.md](SYNTAX.md) for the full roadmap.
 
 **No recursive descent** (`..|..`).
-
-**No try-catch** (beyond `?` optional suppression).
 
 **Output is always compact JSON.** Input can be pretty-printed or compact. Behavior on malformed input is undefined.
 

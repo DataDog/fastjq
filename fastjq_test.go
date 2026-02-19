@@ -3392,3 +3392,154 @@ func TestURIEncodeSpecial(t *testing.T) {
 func TestURIEncodePath(t *testing.T) {
 	assertQuery(t, `.path | @uri`, `{"path":"/api/v1/users"}`, `"%2Fapi%2Fv1%2Fusers"`)
 }
+
+// --- try / try-catch ---
+
+func TestTrySuppressesError(t *testing.T) {
+	assertNoOutput(t, `try .foo`, `[1,2,3]`) // field access on array → no output
+}
+func TestTrySucceeds(t *testing.T) {
+	assertQuery(t, `try .foo`, `{"foo":42}`, `42`)
+}
+func TestTryInPipe(t *testing.T) {
+	assertQuery(t, `try .a | .b`, `{"a":{"b":99}}`, `99`)
+	assertNoOutput(t, `try .a | .b`, `[1,2,3]`)
+}
+func TestTryCatchLiteral(t *testing.T) {
+	assertQuery(t, `try .foo catch "caught"`, `[1,2,3]`, `"caught"`)
+}
+func TestTryCatchPassthrough(t *testing.T) {
+	p, _ := Compile(`try .foo catch .`)
+	got, err := p.Run([]byte(`[1,2,3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 || got[0] != '"' {
+		t.Errorf("expected JSON string error message, got %s", got)
+	}
+}
+func TestTryMapTolerant(t *testing.T) {
+	p, _ := Compile(`[.[] | try .x]`)
+	got, err := p.Run([]byte(`[{"x":1},42,{"x":3}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `[1,3]` {
+		t.Errorf("got %s", got)
+	}
+}
+
+// --- elif ---
+
+func TestElif(t *testing.T) {
+	q := `if .x == 1 then "one" elif .x == 2 then "two" else "other" end`
+	assertQuery(t, q, `{"x":1}`, `"one"`)
+	assertQuery(t, q, `{"x":2}`, `"two"`)
+	assertQuery(t, q, `{"x":3}`, `"other"`)
+}
+func TestElifChain(t *testing.T) {
+	q := `if .x == 1 then "one" elif .x == 2 then "two" elif .x == 3 then "three" else "other" end`
+	assertQuery(t, q, `{"x":1}`, `"one"`)
+	assertQuery(t, q, `{"x":2}`, `"two"`)
+	assertQuery(t, q, `{"x":3}`, `"three"`)
+	assertQuery(t, q, `{"x":9}`, `"other"`)
+}
+func TestElifNoElse(t *testing.T) {
+	q := `if .x == 1 then "one" elif .x == 2 then "two" end`
+	assertQuery(t, q, `{"x":1}`, `"one"`)
+	assertQuery(t, q, `{"x":2}`, `"two"`)
+	assertQuery(t, q, `{"x":3}`, `{"x":3}`) // no else → identity
+}
+
+// --- object merge ---
+
+func TestPlusObjectMerge(t *testing.T) {
+	assertQuery(t, `.a + .b`, `{"a":{"x":1},"b":{"y":2}}`, `{"x":1,"y":2}`)
+}
+func TestPlusObjectRightWins(t *testing.T) {
+	assertQuery(t, `.a + .b`, `{"a":{"k":1},"b":{"k":2}}`, `{"k":2}`)
+}
+func TestPlusObjectLiteral(t *testing.T) {
+	assertQuery(t, `{"a":1} + {"b":2}`, `null`, `{"a":1,"b":2}`)
+}
+func TestPlusObjectEmptyLeft(t *testing.T) {
+	assertQuery(t, `{} + {"a":1}`, `null`, `{"a":1}`)
+}
+func TestPlusObjectEmptyRight(t *testing.T) {
+	assertQuery(t, `{"a":1} + {}`, `null`, `{"a":1}`)
+}
+func TestPlusObjectNullLeft(t *testing.T) {
+	assertQuery(t, `null + {"a":1}`, `null`, `{"a":1}`)
+}
+
+// --- tojson / fromjson / @json ---
+
+func TestToJSON(t *testing.T) {
+	assertQuery(t, `tojson`, `{"a":1}`, `"{\"a\":1}"`)
+	assertQuery(t, `tojson`, `42`, `"42"`)
+	assertQuery(t, `tojson`, `"hello"`, `"\"hello\""`)
+	assertQuery(t, `tojson`, `null`, `"null"`)
+	assertQuery(t, `tojson`, `true`, `"true"`)
+	assertQuery(t, `tojson`, `[1,2,3]`, `"[1,2,3]"`)
+}
+func TestAtJSON(t *testing.T) {
+	assertQuery(t, `@json`, `{"a":1}`, `"{\"a\":1}"`)
+}
+func TestFromJSON(t *testing.T) {
+	assertQuery(t, `fromjson`, `"{\"a\":1}"`, `{"a":1}`)
+	assertQuery(t, `fromjson`, `"42"`, `42`)
+	assertQuery(t, `fromjson`, `"true"`, `true`)
+	assertQuery(t, `fromjson`, `"[1,2,3]"`, `[1,2,3]`)
+}
+func TestToFromJSONRoundTrip(t *testing.T) {
+	assertQuery(t, `tojson | fromjson`, `{"a":1,"b":"hello"}`, `{"a":1,"b":"hello"}`)
+	assertQuery(t, `tojson | fromjson`, `[1,2,3]`, `[1,2,3]`)
+}
+
+// --- tostring / tonumber ---
+
+func TestToString(t *testing.T) {
+	assertQuery(t, `tostring`, `"hello"`, `"hello"`)
+	assertQuery(t, `tostring`, `42`, `"42"`)
+	assertQuery(t, `tostring`, `true`, `"true"`)
+	assertQuery(t, `tostring`, `null`, `"null"`)
+	assertQuery(t, `tostring`, `{"a":1}`, `"{\"a\":1}"`)
+}
+func TestToNumber(t *testing.T) {
+	assertQuery(t, `tonumber`, `42`, `42`)
+	assertQuery(t, `tonumber`, `3.14`, `3.14`)
+	assertQuery(t, `tonumber`, `"42"`, `42`)
+	assertQuery(t, `tonumber`, `"3.14"`, `3.14`)
+	assertQuery(t, `tonumber`, `"-5"`, `-5`)
+}
+func TestToNumberError(t *testing.T) {
+	p, _ := Compile(`tonumber`)
+	_, err := p.Run([]byte(`"hello"`))
+	if err == nil {
+		t.Error("expected error for tonumber on non-numeric string")
+	}
+}
+func TestToStringTonumberRoundTrip(t *testing.T) {
+	assertQuery(t, `tostring | tonumber`, `42`, `42`)
+}
+
+// --- any(gen; cond) / all(gen; cond) ---
+
+func TestAnyTwoArg(t *testing.T) {
+	assertQuery(t, `any(.[]; . > 3)`, `[1,2,3,4,5]`, `true`)
+	assertQuery(t, `any(.[]; . > 10)`, `[1,2,3,4,5]`, `false`)
+}
+func TestAllTwoArg(t *testing.T) {
+	assertQuery(t, `all(.[]; . > 0)`, `[1,2,3]`, `true`)
+	assertQuery(t, `all(.[]; . > 2)`, `[1,2,3]`, `false`)
+}
+func TestAnyTwoArgEmpty(t *testing.T) {
+	assertQuery(t, `any(.[]; . > 0)`, `[]`, `false`)
+}
+func TestAllTwoArgEmpty(t *testing.T) {
+	assertQuery(t, `all(.[]; . > 0)`, `[]`, `true`)
+}
+func TestAnyTwoArgGenerator(t *testing.T) {
+	assertQuery(t, `any(.items[]; .active)`,
+		`{"items":[{"active":false},{"active":true},{"active":false}]}`, `true`)
+}
