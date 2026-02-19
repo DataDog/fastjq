@@ -4,10 +4,11 @@ Benchmarks comparing fastjq against [gojq](https://github.com/itchyny/gojq). goj
 
 All benchmarks run with `go test -bench=. -benchmem`. Results from Apple M4 Max, Go 1.25.
 
-> **Note on benchmark reliability**: gojq Large benchmarks use rotating input copies to prevent a Go 1.25
-> calibration artifact where the auto-calibration pre-pass sees warm-cache hits, sets b.N far too high, and
-> produces results identical to the Small benchmarks despite the 1000x size difference. All benchmarks use
-> `b.Loop()` (Go 1.24+) and `benchSink` to prevent dead-code elimination.
+> **Note on benchmark reliability**: Large benchmarks use rotating input copies (8 distinct pre-generated
+> instances) to prevent a Go 1.25 calibration artifact where the auto-calibration pre-pass sees warm-cache
+> hits and produces results identical to the Small benchmarks. All benchmarks use `b.Loop()` (Go 1.24+)
+> and `benchSink` to prevent dead-code elimination. The Large Select benchmark uses `field_199` (the last
+> field in the 200-field object) so fastjq must scan the full 170KB — no early-exit advantage.
 
 ## Summary
 
@@ -15,62 +16,62 @@ All times in µs. Small/Medium values are sub-microsecond but shown with enough 
 
 | Operation | Input | fastjq (µs) | gojq (µs) | Speedup | fastjq allocs | gojq allocs |
 |-----------|-------|------------|----------|---------|---------------|-------------|
-| Field access | Small (~100B) | 0.141 | 0.318 | **2.3x** | 0 | 13 |
-| Field access | Large (~100KB) | 103 | 527 | **5.1x** | 0 | 2,835 |
-| Field deletion | Small (~100B) | 0.163 | 0.864 | **5.3x** | 0 | 33 |
-| Field deletion | Medium (~2KB) | 2.5 | 17.2 | **6.9x** | 0 | 323 |
-| Field deletion | Large (~100KB) | 130 | 730 | **5.6x** | 0 | 4,666 |
-| Array index `.[2]` | 5-elem array | 0.025 | 0.575 | **23x** | 0 | 20 |
-| Array deletion `del(.[1],.[3])` | 5-elem array | 0.088 | 1.509 | **17x** | 0 | 53 |
-| Object construction `{f0, f2}` | Small (~100B) | 0.287 | 0.653 | **2.3x** | 0 | 23 |
-| Object construction `{f0, f50}` | Large (~100KB) | 201 | 531 | **2.6x** | 0 | 2,867 |
-| Iterator `.[]` | 5-elem array | 0.031 | 0.703 | **23x** | 0 | 26 |
-| Iterator `.[]` | 200-elem array | 9.2 | 77 | **8.4x** | 0 | 1,811 |
-| Select `select(.f == "x")` | Small (~100B) | 0.0074 | 0.527 | **71x** | 0 | 20 |
-| Select `select(.f == "x")` | Large (~100KB) | 0.0074 | 710 | **96,000x** | 0 | 4,651 |
-| Alternative `.f // "default"` | Small (~100B) | 0.0061 | 0.431 | **71x** | 0 | 17 |
+| Field access | Small (~100B) | 0.144 | 0.327 | **2.3x** | 0 | 13 |
+| Field access | Large (~100KB) | 109 | 543 | **5.0x** | 0 | 2,835 |
+| Field deletion | Small (~100B) | 0.158 | 0.892 | **5.6x** | 0 | 33 |
+| Field deletion | Medium (~2KB) | 2.7 | 18.0 | **6.7x** | 0 | 323 |
+| Field deletion | Large (~100KB) | 155 | 766 | **4.9x** | 0 | 4,666 |
+| Array index `.[2]` | 5-elem array | 0.025 | 0.588 | **24x** | 0 | 20 |
+| Array deletion `del(.[1],.[3])` | 5-elem array | 0.089 | 1.575 | **18x** | 0 | 53 |
+| Object construction `{f0, f2}` | Small (~100B) | 0.263 | 0.665 | **2.5x** | 0 | 23 |
+| Object construction `{f0, f50}` | Large (~100KB) | 218 | 553 | **2.5x** | 0 | 2,867 |
+| Iterator `.[]` | 5-elem array | 0.031 | 0.729 | **24x** | 0 | 26 |
+| Iterator `.[]` | 200-elem array | 9.7 | 80 | **8.2x** | 0 | 1,811 |
+| Select `select(.f == "x")` | Small (~100B) | 0.0075 | 0.558 | **74x** | 0 | 20 |
+| Select `select(.f == "x")` | Large (~100KB, last field) | 21 | 788 | **38x** | 0 | 4,651 |
+| Alternative `.f // "default"` | Small (~100B) | 0.0062 | 0.453 | **73x** | 0 | 17 |
 
 ## Key Takeaways
 
 - **fastjq achieves 0 allocations** across all operations when using `RunWithBuffer` or `RunFunc`
-- **Fastest on small inputs** where gojq's marshal/unmarshal overhead dominates (up to 71x faster)
-- **Still significantly faster on large inputs** (2.6x–5.6x) where both engines are scanning lots of data
-- **Select/filter is 71x faster on small, 96,000x faster on large**: fastjq scans only to the compared field
-  and returns early; gojq must unmarshal the full 170KB object before evaluating the condition
-- **Large JSON exposes gojq's unmarshal tax**: gojq Field/Del/Construct on 100KB is 500–730 µs vs fastjq's
-  100–200 µs, because gojq pays the full parse cost up front regardless of which fields are accessed
+- **Fastest on small inputs** where gojq's marshal/unmarshal overhead dominates (up to 74x faster)
+- **Still significantly faster on large inputs** (2.5x–5x) where both engines are scanning lots of data
+- **Select is 74x faster on small, 38x faster on large**: the Large Select benchmark scans the full 170KB
+  to find the last field — even at worst case, fastjq avoids the unmarshal/marshal overhead entirely
+- **Large JSON exposes gojq's unmarshal tax**: gojq Field/Del/Construct on 100KB is 540–766 µs vs fastjq's
+  109–218 µs, because gojq pays the full parse cost up front regardless of which fields are accessed
 
 ## Raw Output
 
 ```
-BenchmarkFastjq_Small_Del-16            	 6568147	       162.5 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Medium_Del-16           	  444159	      2479 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Del-16            	   10000	    129783 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Field-16          	 7778565	       140.6 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Field-16          	   10000	    102527 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Index-16          	47918618	        24.74 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_ArrayDel-16       	13452028	        87.60 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Construct-16      	 4102221	       286.8 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Construct-16      	    6504	    201181 ns/op	       1 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Iterator-16       	37619470	        31.35 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Iterator-16       	  116716	      9179 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Select-16         	161349463	         7.420 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Select-16         	162953089	         7.404 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Alternative-16    	197595048	         6.069 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Del-16              	 1383667	       864.4 ns/op	    2594 B/op	      33 allocs/op
-BenchmarkGojq_Medium_Del-16             	   67668	     17195 ns/op	   16967 B/op	     323 allocs/op
-BenchmarkGojq_Large_Del-16              	    1610	    730253 ns/op	  538454 B/op	    4666 allocs/op
-BenchmarkGojq_Small_Field-16            	 3810121	       318.1 ns/op	    1177 B/op	      13 allocs/op
-BenchmarkGojq_Large_Field-16            	    2281	    526765 ns/op	  270054 B/op	    2835 allocs/op
-BenchmarkGojq_Small_Index-16            	 2074956	       575.4 ns/op	    1401 B/op	      20 allocs/op
-BenchmarkGojq_Small_ArrayDel-16         	  796376	      1509 ns/op	    3362 B/op	      53 allocs/op
-BenchmarkGojq_Small_Construct-16        	 1811300	       653.4 ns/op	    1857 B/op	      23 allocs/op
-BenchmarkGojq_Large_Construct-16        	    2256	    531076 ns/op	  274369 B/op	    2867 allocs/op
-BenchmarkGojq_Small_Iterator-16         	 1708077	       702.7 ns/op	    1776 B/op	      26 allocs/op
-BenchmarkGojq_Large_Iterator-16         	   15484	     77388 ns/op	  109809 B/op	    1811 allocs/op
-BenchmarkGojq_Small_Select-16           	 2275237	       526.7 ns/op	    1753 B/op	      20 allocs/op
-BenchmarkGojq_Large_Select-16           	    1664	    710121 ns/op	  538453 B/op	    4651 allocs/op
-BenchmarkGojq_Small_Alternative-16      	 2793718	       430.8 ns/op	    1441 B/op	      17 allocs/op
+BenchmarkFastjq_Small_Del-16            	 7749934	       158.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Medium_Del-16           	  526438	      2691 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Del-16            	    9807	    155444 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Field-16          	 8433512	       143.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Field-16          	   10000	    109431 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Index-16          	48809836	        25.04 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_ArrayDel-16       	13376950	        88.92 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Construct-16      	 4529384	       263.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Construct-16      	    5274	    218483 ns/op	       1 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Iterator-16       	35375359	        31.28 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Iterator-16       	  134950	      9738 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Select-16         	159180238	         7.544 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Select-16         	   59142	     20796 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Alternative-16    	193015660	         6.217 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Del-16              	 1343878	       892.4 ns/op	    2594 B/op	      33 allocs/op
+BenchmarkGojq_Medium_Del-16             	   66754	     17979 ns/op	   16969 B/op	     323 allocs/op
+BenchmarkGojq_Large_Del-16              	    1557	    765652 ns/op	  542571 B/op	    4666 allocs/op
+BenchmarkGojq_Small_Field-16            	 3685694	       326.8 ns/op	    1177 B/op	      13 allocs/op
+BenchmarkGojq_Large_Field-16            	    2192	    542715 ns/op	  270053 B/op	    2835 allocs/op
+BenchmarkGojq_Small_Index-16            	 2042554	       588.0 ns/op	    1401 B/op	      20 allocs/op
+BenchmarkGojq_Small_ArrayDel-16         	  750957	      1575 ns/op	    3362 B/op	      53 allocs/op
+BenchmarkGojq_Small_Construct-16        	 1794679	       664.9 ns/op	    1857 B/op	      23 allocs/op
+BenchmarkGojq_Large_Construct-16        	    2066	    553048 ns/op	  274364 B/op	    2867 allocs/op
+BenchmarkGojq_Small_Iterator-16         	 1651243	       729.3 ns/op	    1776 B/op	      26 allocs/op
+BenchmarkGojq_Large_Iterator-16         	   14850	     80491 ns/op	  109808 B/op	    1811 allocs/op
+BenchmarkGojq_Small_Select-16           	 2165504	       558.4 ns/op	    1753 B/op	      20 allocs/op
+BenchmarkGojq_Large_Select-16           	    1465	    787551 ns/op	  535609 B/op	    4651 allocs/op
+BenchmarkGojq_Small_Alternative-16      	 2627552	       453.4 ns/op	    1441 B/op	      17 allocs/op
 ```
 
 ## CLI Throughput: fastjq vs jq

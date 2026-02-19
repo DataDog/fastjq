@@ -187,11 +187,20 @@ func BenchmarkFastjq_Small_Select(b *testing.B) {
 }
 
 func BenchmarkFastjq_Large_Select(b *testing.B) {
-	p, _ := Compile(`select(.field_50 == "` + strings.Repeat("x", 200) + `")`)
+	// field_199 is the last field in the object — fastjq must scan the full
+	// 170KB to find it, preventing early-exit from skewing the comparison.
+	p, _ := Compile(`select(.field_199 == "` + strings.Repeat("x", 200) + `")`)
+	const n = 8
+	inputs := make([][]byte, n)
+	for i := range inputs {
+		inputs[i] = generateNestedJSON(200, 10, 200)
+	}
 	buf := make([]byte, 0, len(largeJSON))
 	b.ReportAllocs()
+	i := 0
 	for b.Loop() {
-		buf, _ = p.RunWithBuffer(largeJSON, buf)
+		buf, _ = p.RunWithBuffer(inputs[i%n], buf)
+		i++
 	}
 }
 
@@ -408,7 +417,7 @@ func BenchmarkGojq_Small_Select(b *testing.B) {
 }
 
 func BenchmarkGojq_Large_Select(b *testing.B) {
-	query, _ := gojq.Parse(`select(.field_50 == "` + strings.Repeat("x", 200) + `")`)
+	query, _ := gojq.Parse(`select(.field_199 == "` + strings.Repeat("x", 200) + `")`)
 	code, _ := gojq.Compile(query)
 	const n = 8
 	inputs := make([][]byte, n)

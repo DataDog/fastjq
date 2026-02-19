@@ -26,16 +26,16 @@ gojq times include the full `json.Unmarshal` → execute → `json.Marshal` cycl
 
 | Operation | Input | fastjq | gojq | Speedup |
 |-----------|-------|--------|------|---------|
-| `select(.f == "x")` | Small (~100B) | 0.0074 µs | 0.527 µs | **71x** |
-| `select(.f == "x")` | Large (~100KB) | 0.0074 µs | 710 µs | **96,000x** |
-| `del(.foo)` | Small (~100B) | 0.163 µs | 0.864 µs | **5.3x** |
-| `del(.foo)` | Large (~100KB) | 130 µs | 730 µs | **5.6x** |
-| `.field` | Small (~100B) | 0.141 µs | 0.318 µs | **2.3x** |
-| `.field` | Large (~100KB) | 103 µs | 527 µs | **5.1x** |
-| `{f0, f2}` | Small (~100B) | 0.287 µs | 0.653 µs | **2.3x** |
-| `.[]` | 200-elem array | 9.2 µs | 77 µs | **8.4x** |
+| `select(.f == "x")` | Small (~100B) | 0.0075 µs | 0.558 µs | **74x** |
+| `select(.f == "x")` | Large (~100KB, last field) | 21 µs | 788 µs | **38x** |
+| `del(.foo)` | Small (~100B) | 0.158 µs | 0.892 µs | **5.6x** |
+| `del(.foo)` | Large (~100KB) | 155 µs | 766 µs | **4.9x** |
+| `.field` | Small (~100B) | 0.144 µs | 0.327 µs | **2.3x** |
+| `.field` | Large (~100KB) | 109 µs | 543 µs | **5.0x** |
+| `{f0, f2}` | Small (~100B) | 0.263 µs | 0.665 µs | **2.5x** |
+| `.[]` | 200-elem array | 9.7 µs | 80 µs | **8.2x** |
 
-fastjq achieves **0 allocations** on all operations above. The `select` speedup on large JSON (96,000x) is not a typo: fastjq scans forward to the compared field and exits immediately, while gojq must unmarshal the entire 170KB object first.
+fastjq achieves **0 allocations** on all operations above. The Large Select benchmark uses the last field in a 200-field object so fastjq must scan the full 170KB — even worst-case it's 38x faster than gojq, which must unmarshal all 170KB regardless of which field it needs.
 
 ### vs jq CLI (JSONL throughput, 100K lines, ~11MB)
 
