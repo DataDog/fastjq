@@ -194,9 +194,10 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 |--------|-------------|---------------|----------------|
 | `@base64` | Base64-encode a JSON string | `"hello"` | `"aGVsbG8="` |
 | `@base64d` | Base64-decode a JSON string | `"aGVsbG8="` | `"hello"` |
+| `@uri` | URL percent-encode a JSON string (RFC 3986 unreserved chars pass through) | `"hello world"` | `"hello%20world"` |
 
 `@base64d` accepts standard (`+/`), URL-safe (`-_`), padded and unpadded input. Non-printable decoded bytes are escaped as `\uXXXX`.
-`@base64` operates on the raw bytes between quotes. Escape sequences in the input (e.g. `\n`) are encoded as their literal characters (`\` and `n`), not as the decoded byte — use `split` + `join` to handle those cases.
+`@base64` and `@uri` operate on the raw bytes between JSON quotes. JSON escape sequences (e.g. `\n`) are encoded as their literal characters, not as the decoded byte. For strings containing `\uXXXX` escapes, decode first with a helper before encoding.
 
 ### Type Filters
 
@@ -260,6 +261,29 @@ For strings, `index` and `rindex` search for raw byte sequences (escape sequence
 Slicing uses **logical characters** for strings: each escape sequence (`\n`, `\uXXXX`, etc.) counts as one character. Negative indices count from the end. Indices are clamped to valid range.
 
 `+` supports: strings (concat), arrays (concat), numbers (sum). Null is the identity element. Object merging with `+` is not yet supported.
+
+### Arithmetic Operators
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `expr - expr` | Number subtraction; array difference | `.a - .b` on `{"a":10,"b":3}` | `7` |
+| `expr - expr` | Array difference (elements of left not in right) | `[1,2,3] - [2]` | `[1,3]` |
+| `expr * expr` | Number multiplication; string × n = repeat | `.price * .qty` on `{"price":2.5,"qty":4}` | `10` |
+| `expr / expr` | Number division; string / string = split | `"a,b,c" / ","` | `["a","b","c"]` |
+| `expr % expr` | Number modulo | `10 % 3` | `1` |
+
+Precedence: `*`, `/`, `%` bind tighter than `+`, `-`. All left-associative. `null` propagates: `null op x = null`.
+
+### Array Extrema
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `min` | Minimum element of array | `[3,1,4,1,5]` | `1` |
+| `max` | Maximum element of array | `[3,1,4,1,5]` | `5` |
+| `min_by(f)` | Element where `f` is minimum | `[{"n":"a","v":3},{"n":"b","v":1}]` with `min_by(.v)` | `{"n":"b","v":1}` |
+| `max_by(f)` | Element where `f` is maximum | same | `{"n":"a","v":3}` |
+
+Numbers compared by value; strings lexicographically. Empty array → `null`.
 
 ### Reduction and Generation
 
@@ -354,20 +378,15 @@ These operations are implementable at zero allocation but involve more complexit
 | `as $x \| expr` | Variable binding | Store `(start, end)` offsets into original input. **Zero-alloc only if bound values reference input, not constructed output.** Binding a constructed value (e.g., `{a:1} as $x`) would need to store bytes somewhere. |
 | `def f: body; expr` | Function definitions | AST-level feature, compile-time only. But closures and recursion add parser/AST complexity. |
 | `reduce .[] as $x (init; update)` | Fold/accumulate | Needs mutable accumulator. If accumulator lives in the output buffer, works, but each step reads previous output. May require double-buffering (ping-pong between two buffer slices). |
-| `indices(s)`, `index(s)`, `rindex(s)` | Substring search | Byte scanning is zero-alloc. Output is an array of integers. |
-| `@base64`, `@base64d` | Base64 encode/decode | Can be done in-place into output buf. |
-| `@uri`, `@html` | URL/HTML encoding | Character-by-character transform, write to buf. |
+| `@html` | HTML entity escaping | Character-by-character transform, write to buf. |
 | `@csv`, `@tsv` | CSV/TSV formatting | Iterate array, write fields with delimiters and escaping. |
 | `label-break` | Control flow | `label $out \| foreach ...` — requires unwinding callback stack. Achievable with a sentinel error value. |
 | `foreach` | Stateful iteration | `foreach .[] as $x (init; update; extract)`. Requires mutable state across iterations. Double-buffering approach keeps it zero-alloc. |
-| Arithmetic (`-`, `*`, `/`, `%`) | Numeric operations | Parse JSON numbers to native types, compute, serialize back. **`strconv.AppendFloat` into buf avoids allocation.** Integer arithmetic is simpler. |
 | String interpolation `\(expr)` | Embedded expressions in strings | Evaluate inner expression, embed in string. Non-string results need serialization. Adds parser complexity. |
 | `getpath(path)` | Get value at path | Navigate nested structure following path array. Zero-alloc via scanner. |
 | `setpath(path; val)` | Set value at path | Navigate to position, reconstruct tree with modified value. Multi-level reconstruction. Zero-alloc feasible but code complexity is high. |
 | `delpaths(paths)` | Delete at multiple paths | Like `setpath` but removing. Same reconstruction complexity. |
 | `walk(f)` | Recursive transform | Apply f to every value bottom-up. Reconstruct entire tree with transformed values. Intermediate results from inner expressions may need temp storage. |
-| `min`, `max` | Array extrema (simple types) | Keep one "best" offset, compare each element. Zero-alloc for numbers/strings. |
-| `min_by(f)`, `max_by(f)` | Array extrema by key | Must evaluate `f` per element and compare keys. Needs temp storage for "best key so far." |
 
 ### Rejected — structurally incompatible with zero-alloc constraint
 

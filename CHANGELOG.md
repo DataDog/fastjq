@@ -4,6 +4,42 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — arithmetic, min/max, @uri
+
+### Added
+- **`expr - expr`** — Number subtraction and array difference (`[1,2,3] - [2]` = `[1,3]`). Array diff is O(n²) but zero-alloc via manual scan loop (avoids closure capture of booleans that would escape to heap).
+- **`expr * expr`** — Number multiplication and string repetition (`"ab" * 3` = `"ababab"`; `"x" * 0` = `null`).
+- **`expr / expr`** — Number division and string split (`"a,b" / ","` = `["a","b"]`; division by zero → error).
+- **`expr % expr`** — Number modulo (integer fast path; float via `math.Mod`).
+- **`min` / `max`** — Minimum/maximum element of an array. Numbers: float comparison; strings: lexicographic; cross-type ordering: number < string < array < object < boolean < null. Empty array → `null`.
+- **`min_by(f)` / `max_by(f)`** — Element with min/max value of key function `f`. One scan, zero-alloc.
+- **`@uri`** — URL percent-encode a JSON string. RFC 3986 unreserved characters (`A-Z a-z 0-9 - _ . ~`) pass through; all others encoded as `%XX`. Operates on raw JSON string bytes (consistent with `@base64`).
+
+### Precedence
+Parser extended to two-level arithmetic precedence: `*`/`/`/`%` bind tighter than `+`/`-`. New chain:
+```
+parsePipeExpr → ... → parseCmp → parseAddExpr → parseMulExpr → parseAtom
+```
+
+### Fix: `appendInt` negative number bug
+`appendInt` used `for n > 0` which silently produced wrong output for negative integers. Fixed to handle negatives. The bug was latent (all previous callers only passed non-negative values), but arithmetic operations now produce negative results.
+
+### Fix: `parseJSONFloat` on non-numeric inputs
+`execArith` was calling `parseJSONFloat` unconditionally, causing `strconv.ParseFloat` to allocate error objects when inputs were arrays or objects. Fixed by checking the first byte before calling `parseJSONFloat`. All arithmetic benchmarks are now 0 allocs.
+
+### Benchmarks (Apple M4 Max)
+| Operation | fastjq | gojq | Speedup |
+|-----------|--------|------|---------|
+| `.a - .b` (numbers) | 66 ns | 653 ns | **10x** |
+| `.a * .b` (numbers) | 83 ns | 679 ns | **8.2x** |
+| `.a / .b` (numbers) | 115 ns | 736 ns | **6.4x** |
+| `min` (200 ints) | 2.98 µs | 11.7 µs | **3.9x** |
+| `min_by(.v)` (100 objects) | 12.4 µs | 55.7 µs | **4.5x** |
+| `@uri` (36-char URL) | 102 ns | 669 ns | **6.6x** |
+| `.a - .b` (array diff) | 214 ns | 1,277 ns | **6.0x** |
+
+---
+
 ## [Unreleased] — reject with_entries
 
 ### Rejected

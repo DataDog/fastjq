@@ -158,6 +158,13 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `has("key")` | True if object contains field (even if value is null) |
 | `length` | Length: string → char count, array/object → element count, null → 0 |
 | `map(expr)` | Apply expr to every array element, collect results |
+| `expr - expr` | Number subtraction; array difference (elements of left not in right) |
+| `expr * expr` | Number multiplication; `"str" * n` = repeat string n times |
+| `expr / expr` | Number division; `"str" / "sep"` = split (same as `split`) |
+| `expr % expr` | Number modulo |
+| `min` / `max` | Minimum / maximum element of array (numbers: numeric; strings: lexicographic) |
+| `min_by(f)` / `max_by(f)` | Element with min/max value of `f` |
+| `@uri` | URL percent-encode a string (RFC 3986 unreserved chars pass through) |
 | `to_entries` | `{"a":1}` → `[{"key":"a","value":1}]` |
 | `from_entries` | `[{"key":"a","value":1}]` → `{"a":1}` (also accepts `"name"` for key) |
 | `if cond then expr else expr end` | Conditional — else is optional (defaults to identity) |

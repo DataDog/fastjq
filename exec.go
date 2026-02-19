@@ -3,6 +3,7 @@ package fastjq
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 )
@@ -86,8 +87,6 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
-	case opWithEntries:
-		return execWithEntries(node, input, buf, fn)
 	case opFirst:
 		err := execMulti(node.child, input, buf, func(result []byte) error {
 			if err := fn(result); err != nil {
@@ -188,6 +187,42 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execSelect(node, input, buf, fn)
 	case opAlternative:
 		return execAlternative(node, input, buf, fn)
+	case opMinus, opMul, opDiv, opMod:
+		result, err := execArith(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opMin:
+		result, err := execMinMax(input, buf, node, false)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opMax:
+		result, err := execMinMax(input, buf, node, true)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opMinBy:
+		result, err := execMinMax(input, buf, node, false)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opMaxBy:
+		result, err := execMinMax(input, buf, node, true)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opURIEncode:
+		result, err := execURIEncode(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	default:
 		return fmt.Errorf("unknown op type: %d", node.typ)
 	}
@@ -343,6 +378,14 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execTrimStr(input, buf, node.field, true), nil
 	case opRtrimStr:
 		return execTrimStr(input, buf, node.field, false), nil
+	case opMinus, opMul, opDiv, opMod:
+		return execArith(node, input, buf)
+	case opMin, opMinBy:
+		return execMinMax(input, buf, node, false)
+	case opMax, opMaxBy:
+		return execMinMax(input, buf, node, true)
+	case opURIEncode:
+		return execURIEncode(input, buf)
 	default:
 		return exec(node, input, buf)
 	}
@@ -943,10 +986,14 @@ func execLengthSingle(input []byte, buf []byte) ([]byte, error) {
 	}
 }
 
-// appendInt appends a non-negative integer to buf without allocation.
+// appendInt appends an integer (positive, negative, or zero) to buf without allocation.
 func appendInt(buf []byte, n int) []byte {
 	if n == 0 {
 		return append(buf, '0')
+	}
+	if n < 0 {
+		buf = append(buf, '-')
+		n = -n
 	}
 	// Write digits in reverse then flip.
 	start := len(buf)
@@ -962,41 +1009,17 @@ func appendInt(buf []byte, n int) []byte {
 	return buf
 }
 
-// appendKV appends a {"key":"k","value":v} entry to buf. Used by execToEntries and execWithEntries.
-func appendKV(buf []byte, key []byte, value []byte) []byte {
-	buf = append(buf, `{"key":"`...)
-	buf = append(buf, key...)
-	buf = append(buf, `","value":`...)
-	buf = append(buf, value...)
-	return append(buf, '}')
-}
-
-// execToEntries converts a JSON object to [{key, value}] array.
-// Non-object input produces an empty array.
-func execToEntries(input []byte, buf []byte) ([]byte, error) {
-	s := &scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
-		return append(buf, "[]"...), nil
+// appendNumber formats a float64 as compact JSON: integer form when the value is whole,
+// otherwise strconv.AppendFloat with shortest representation.
+func appendNumber(buf []byte, f float64) []byte {
+	if f == float64(int64(f)) && f >= -1e15 && f <= 1e15 {
+		return appendInt(buf, int(f))
 	}
-	buf = append(buf, '[')
-	first := true
-	s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
-		if !first {
-			buf = append(buf, ',')
-		}
-		first = false
-		buf = appendKV(buf, key, input[valueStart:valueEnd])
-		return true
-	})
-	buf = append(buf, ']')
-	return buf, nil
+	return strconv.AppendFloat(buf, f, 'f', -1, 64)
 }
 
-// parseEntryKeyValue scans a single to_entries-style object and extracts
-// the unquoted key string and the value bounds. Called from execFromEntries.
-// Implemented as a standalone (non-closure) function so the scanner variables
-// stay on the stack and do not escape to the heap.
+// parseEntryKeyValue scans a single {key/name, value} entry object and returns
+// the unquoted key string and the value bounds within elem. Used by execFromEntries.
 func parseEntryKeyValue(elem []byte) (keyContent []byte, valStart, valEnd int) {
 	valStart, valEnd = -1, -1
 	s := scanner{data: elem}
@@ -1006,10 +1029,7 @@ func parseEntryKeyValue(elem []byte) (keyContent []byte, valStart, valEnd int) {
 	}
 	s.pos++ // skip '{'
 	s.skipWhitespace()
-	if s.pos < len(s.data) && s.data[s.pos] == '}' {
-		return // empty object
-	}
-	for s.pos < len(s.data) {
+	for s.pos < len(s.data) && s.data[s.pos] != '}' {
 		s.skipWhitespace()
 		if s.pos >= len(s.data) || s.data[s.pos] != '"' {
 			break
@@ -1046,6 +1066,38 @@ func parseEntryKeyValue(elem []byte) (keyContent []byte, valStart, valEnd int) {
 	return
 }
 
+// appendKV appends a {"key":"k","value":v} entry to buf. Used by execToEntries.
+func appendKV(buf []byte, key []byte, value []byte) []byte {
+	buf = append(buf, `{"key":"`...)
+	buf = append(buf, key...)
+	buf = append(buf, `","value":`...)
+	buf = append(buf, value...)
+	return append(buf, '}')
+}
+
+// execToEntries converts a JSON object to [{key, value}] array.
+// Non-object input produces an empty array.
+func execToEntries(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
+		return append(buf, "[]"...), nil
+	}
+	buf = append(buf, '[')
+	first := true
+	s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = appendKV(buf, key, input[valueStart:valueEnd])
+		return true
+	})
+	buf = append(buf, ']')
+	return buf, nil
+}
+
+
 // execFromEntries converts a [{key,value}] array back to a JSON object.
 // Each entry may use "key" or "name" as the key field.
 // Non-array input produces an empty object.
@@ -1076,76 +1128,6 @@ func execFromEntries(input []byte, buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
-// execWithEntries applies f to each {key, value} entry of the input object
-// and reconstructs an object from the results.
-//
-// Uses exec() (no caller-supplied closure) to apply f, which allows Go to
-// stack-allocate exec's internal result-capture closure. The object iteration
-// is inlined. entryBuf is pre-allocated to avoid growth allocs.
-func execWithEntries(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	s := scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
-		return fn(append(buf, "{}"...))
-	}
-
-	buf = append(buf, '{')
-	first := true
-	// 64-byte initial capacity covers typical log record entries without reallocation.
-	// The allocator recycles this in steady state → 0 allocs/op in production use.
-	// For pathological inputs with very large field values (e.g. 100KB+ objects with
-	// 200-char nested values), 1-2 allocs may occur from buffer growth on first call.
-	entryBuf := make([]byte, 0, 64)
-
-	s.pos++ // skip '{'
-	s.skipWhitespace()
-	for s.pos < len(s.data) && s.data[s.pos] != '}' {
-		s.skipWhitespace()
-		if s.pos >= len(s.data) || s.data[s.pos] != '"' {
-			break
-		}
-		key := s.readString()
-		s.skipWhitespace()
-		if s.pos < len(s.data) && s.data[s.pos] == ':' {
-			s.pos++
-		}
-		s.skipWhitespace()
-		vS := s.pos
-		s.skipValue()
-		vE := s.pos
-
-		entryBuf = entryBuf[:0]
-		entryBuf = appendKV(entryBuf, key, input[vS:vE])
-
-		// exec returns nil when f produces no output (e.g. select dropped it).
-		// parseEntryKeyValue returns nil for nil/non-entry results — those are skipped.
-		result, err := exec(node.child, entryBuf, nil)
-		if err != nil {
-			return err
-		}
-		kc, vs, ve := parseEntryKeyValue(result)
-		if kc != nil && vs != -1 {
-			if !first {
-				buf = append(buf, ',')
-			}
-			first = false
-			buf = append(buf, '"')
-			buf = append(buf, kc...)
-			buf = append(buf, '"', ':')
-			buf = append(buf, result[vs:ve]...)
-		}
-
-		s.skipWhitespace()
-		if s.pos < len(s.data) && s.data[s.pos] == ',' {
-			s.pos++
-		} else {
-			break
-		}
-	}
-
-	buf = append(buf, '}')
-	return fn(buf)
-}
 
 // execLast runs the child expression to completion and emits only the last result.
 func execLast(node *op, input []byte, buf []byte, fn func([]byte) error) error {
@@ -1299,11 +1281,7 @@ func execAdd(input []byte, buf []byte, fn func([]byte) error) error {
 			}
 			return true
 		})
-		if sum == float64(int64(sum)) && sum >= -1e15 && sum <= 1e15 {
-			buf = appendInt(buf, int(sum))
-		} else {
-			buf = strconv.AppendFloat(buf, sum, 'f', -1, 64)
-		}
+		buf = appendNumber(buf, sum)
 	}
 	return fn(buf)
 }
@@ -1646,11 +1624,7 @@ func execPlusSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		lf, lok := parseJSONFloat(leftVal)
 		rf, rok := parseJSONFloat(rightVal)
 		if lok && rok {
-			sum := lf + rf
-			if sum == float64(int64(sum)) && sum >= -1e15 && sum <= 1e15 {
-				return appendInt(buf, int(sum)), nil
-			}
-			return strconv.AppendFloat(buf, sum, 'f', -1, 64), nil
+			return appendNumber(buf, lf+rf), nil
 		}
 	}
 	return nil, fmt.Errorf("cannot add %q and %q", leftVal, rightVal)
@@ -2265,4 +2239,322 @@ func execAlternative(node *op, input []byte, buf []byte, fn func([]byte) error) 
 	}
 	// Left was falsy — evaluate right
 	return execMulti(node.right, input, buf, fn)
+}
+
+// execArith implements binary arithmetic: -, *, /, %.
+// Both operands are evaluated with nil scratch (zero-alloc sub-slices).
+// Supports: number op number, array - array (difference), string * n (repeat), string / string (split).
+func execArith(node *op, input []byte, buf []byte) ([]byte, error) {
+	leftVal, err := execSingle(node.left, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	rightVal, err := execSingle(node.right, input, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	ls := scanner{data: leftVal}
+	ls.skipWhitespace()
+	rs := scanner{data: rightVal}
+	rs.skipWhitespace()
+
+	// null propagates through arithmetic (null op x = null)
+	lIsNull := ls.pos >= len(ls.data) || ls.data[ls.pos] == 'n'
+	rIsNull := rs.pos >= len(rs.data) || rs.data[rs.pos] == 'n'
+	if lIsNull || rIsNull {
+		if buf == nil {
+			return bNull, nil
+		}
+		return append(buf, "null"...), nil
+	}
+
+	// Only call parseJSONFloat when the value looks like a number — avoids
+	// strconv.ParseFloat allocating error objects on non-numeric inputs.
+	var lf, rf float64
+	var lok, rok bool
+	if ls.pos < len(ls.data) && isNumberByte(ls.data[ls.pos]) {
+		lf, lok = parseJSONFloat(leftVal)
+	}
+	if rs.pos < len(rs.data) && isNumberByte(rs.data[rs.pos]) {
+		rf, rok = parseJSONFloat(rightVal)
+	}
+
+	switch node.typ {
+	case opMinus:
+		if lok && rok {
+			return appendNumber(buf, lf-rf), nil
+		}
+		// array difference: elements of left not present in right (O(n²), zero-alloc)
+		if ls.pos < len(ls.data) && ls.data[ls.pos] == '[' &&
+			rs.pos < len(rs.data) && rs.data[rs.pos] == '[' {
+			return execArrayDiff(leftVal, rightVal, buf), nil
+		}
+		return nil, fmt.Errorf("cannot subtract %q from %q", rightVal, leftVal)
+
+	case opMul:
+		if lok && rok {
+			return appendNumber(buf, lf*rf), nil
+		}
+		// string * n: repeat string n times; string * 0 or negative → null
+		if ls.pos < len(ls.data) && ls.data[ls.pos] == '"' && rok {
+			n := int(rf)
+			if n <= 0 {
+				if buf == nil {
+					return bNull, nil
+				}
+				return append(buf, "null"...), nil
+			}
+			content := ls.readString()
+			buf = append(buf, '"')
+			for i := 0; i < n; i++ {
+				buf = append(buf, content...)
+			}
+			return append(buf, '"'), nil
+		}
+		return nil, fmt.Errorf("cannot multiply %q and %q", leftVal, rightVal)
+
+	case opDiv:
+		if lok && rok {
+			if rf == 0 {
+				return nil, fmt.Errorf("cannot divide %q by zero", leftVal)
+			}
+			return appendNumber(buf, lf/rf), nil
+		}
+		// string / string: split (same as split builtin)
+		if ls.pos < len(ls.data) && ls.data[ls.pos] == '"' &&
+			rs.pos < len(rs.data) && rs.data[rs.pos] == '"' {
+			sep := rs.readString()
+			return execSplit(leftVal, buf, string(sep)), nil
+		}
+		return nil, fmt.Errorf("cannot divide %q by %q", leftVal, rightVal)
+
+	case opMod:
+		if lok && rok {
+			if rf == 0 {
+				return nil, fmt.Errorf("cannot modulo %q by zero", leftVal)
+			}
+			// integer modulo when both operands are integral
+			li, ri := int64(lf), int64(rf)
+			if lf == float64(li) && rf == float64(ri) {
+				return appendInt(buf, int(li%ri)), nil
+			}
+			return appendNumber(buf, math.Mod(lf, rf)), nil
+		}
+		return nil, fmt.Errorf("cannot modulo %q by %q", leftVal, rightVal)
+	}
+	return nil, fmt.Errorf("unknown arithmetic op %d", node.typ)
+}
+
+// execArrayDiff returns elements of left that do not appear in right (O(n²), zero-alloc).
+// Both inputs must be JSON arrays.
+func execArrayDiff(left, right, buf []byte) []byte {
+	buf = append(buf, '[')
+	first := true
+	ls := scanner{data: left}
+	ls.arrayIter(func(_ int, lStart, lEnd int) bool {
+		leftElem := left[lStart:lEnd]
+		if !arrayContainsElem(right, leftElem) {
+			if !first {
+				buf = append(buf, ',')
+			}
+			first = false
+			buf = append(buf, leftElem...)
+		}
+		return true
+	})
+	return append(buf, ']')
+}
+
+// arrayContainsElem reports whether the JSON array arr contains an element equal to elem.
+// Uses a manual scan loop (no closure) to avoid any heap allocation.
+func arrayContainsElem(arr, elem []byte) bool {
+	s := scanner{data: arr}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return false
+	}
+	s.pos++ // skip '['
+	for s.pos < len(s.data) && s.data[s.pos] != ']' {
+		s.skipWhitespace()
+		start := s.pos
+		s.skipValue()
+		end := s.pos
+		if jsonEqual(arr[start:end], elem) {
+			return true
+		}
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ',' {
+			s.pos++
+		} else {
+			break
+		}
+	}
+	return false
+}
+
+// execMinMax finds the minimum or maximum element of a JSON array.
+// node.child, if non-nil, is the key function (for min_by/max_by).
+// Empty array returns null. Non-array input returns an error.
+func execMinMax(input []byte, buf []byte, node *op, wantMax bool) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return nil, fmt.Errorf("min/max input must be an array")
+	}
+
+	var best []byte    // best element (sub-slice of input)
+	var bestKey []byte // key bytes used for comparison
+
+	var iterErr error
+	s.arrayIter(func(_ int, start, end int) bool {
+		elem := input[start:end]
+		var key []byte
+		if node.child != nil {
+			k, err := execSingle(node.child, elem, nil)
+			if err != nil {
+				iterErr = err
+				return false
+			}
+			key = k
+		} else {
+			key = elem
+		}
+		if best == nil {
+			best = elem
+			bestKey = key
+			return true
+		}
+		cmp := compareJSONOrder(key, bestKey)
+		if (wantMax && cmp > 0) || (!wantMax && cmp < 0) {
+			best = elem
+			bestKey = key
+		}
+		return true
+	})
+	if iterErr != nil {
+		return nil, iterErr
+	}
+	if best == nil {
+		return append(buf, "null"...), nil // empty array
+	}
+	if buf == nil {
+		return best[:len(best):len(best)], nil
+	}
+	return append(buf, best...), nil
+}
+
+// compareJSONOrder returns -1, 0, or +1 for ordering two raw JSON values.
+// Numbers: float comparison. Strings: lexicographic byte order.
+// Cross-type ordering: number < string < array < object < boolean < null.
+func compareJSONOrder(a, b []byte) int {
+	as := scanner{data: a}
+	bs := scanner{data: b}
+	as.skipWhitespace()
+	bs.skipWhitespace()
+
+	aFirst := byte('n')
+	if as.pos < len(as.data) {
+		aFirst = as.data[as.pos]
+	}
+	bFirst := byte('n')
+	if bs.pos < len(bs.data) {
+		bFirst = bs.data[bs.pos]
+	}
+
+	aOrd := jsonTypeOrderVal(aFirst)
+	bOrd := jsonTypeOrderVal(bFirst)
+	if aOrd != bOrd {
+		if aOrd < bOrd {
+			return -1
+		}
+		return 1
+	}
+
+	// Same type — compare values
+	switch aFirst {
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9': // number
+		af, _ := parseJSONFloat(a)
+		bf, _ := parseJSONFloat(b)
+		if af < bf {
+			return -1
+		}
+		if af > bf {
+			return 1
+		}
+		return 0
+	case '"': // string: lexicographic byte comparison of content
+		ac := as.readString()
+		bc := bs.readString()
+		for i := 0; i < len(ac) && i < len(bc); i++ {
+			if ac[i] < bc[i] {
+				return -1
+			}
+			if ac[i] > bc[i] {
+				return 1
+			}
+		}
+		if len(ac) < len(bc) {
+			return -1
+		}
+		if len(ac) > len(bc) {
+			return 1
+		}
+		return 0
+	}
+	return 0
+}
+
+// jsonTypeOrderVal maps the first byte of a JSON value to a sort order integer.
+// number < string < array < object < boolean < null
+func jsonTypeOrderVal(b byte) int {
+	switch b {
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		return 0 // number
+	case '"':
+		return 1 // string
+	case '[':
+		return 2 // array
+	case '{':
+		return 3 // object
+	case 't', 'f':
+		return 4 // boolean
+	default:
+		return 5 // null
+	}
+}
+
+// execURIEncode percent-encodes a JSON string per RFC 3986 unreserved characters.
+// Operates on raw JSON string bytes (escape sequences encoded as their literal bytes).
+// This is consistent with @base64 behaviour and jq for pure-ASCII strings.
+func execURIEncode(input []byte, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return nil, fmt.Errorf("@uri input must be a string")
+	}
+	content := s.readString() // raw bytes between JSON quotes
+
+	buf = append(buf, '"')
+	for _, b := range content {
+		if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') ||
+			b == '-' || b == '_' || b == '.' || b == '~' {
+			buf = append(buf, b)
+		} else {
+			hi := (b >> 4) & 0x0F
+			lo := b & 0x0F
+			buf = append(buf, '%')
+			if hi < 10 {
+				buf = append(buf, '0'+hi)
+			} else {
+				buf = append(buf, 'A'+hi-10)
+			}
+			if lo < 10 {
+				buf = append(buf, '0'+lo)
+			} else {
+				buf = append(buf, 'A'+lo-10)
+			}
+		}
+	}
+	return append(buf, '"'), nil
 }

@@ -36,7 +36,6 @@ All times in µs. Small/Medium values are sub-microsecond but shown with enough 
 | `length` | Small (~100B) | 0.0064 | 0.363 | **56x** | 0 | 13 |
 | `map(.name)` | 20-elem array (~600B) | 1.99 | 9.98 | **5.0x** | 0 | 251 |
 | `to_entries` | Small (~100B) | 0.0062 | 0.359 | **58x** | 0 | 14 |
-| `with_entries(select(...))` | Small (~100B) | 0.0054 | 0.491 | **91x** | 0 | 19 |
 | `keys_unsorted` | Small (~100B) | 0.061 | 0.364 | **6x** | 0 | 14 |
 | `keys_unsorted` | Large (~100KB) | 191 | 596 | **3.1x** | 0 | 3,039 |
 | `any` (no-arg) | 5-elem array | 0.046 | 1.794 | **39x** | 0 | 39 |
@@ -74,14 +73,18 @@ All times in µs. Small/Medium values are sub-microsecond but shown with enough 
 | `map(.name)` | Large array (~6KB, 200 elems) | 20.4 | 91.3 | **4.5x** | 0 | 2,237 |
 | `to_entries` | Small (~100B) | 0.0061 | 0.363 | **60x** | 0 | 14 |
 | `to_entries` | Large (~100KB) | 250 | 808 | **3.2x** | 0 | 5,847 |
-| `with_entries(select(...))` | Small (~100B) | 0.0052 | 0.484 | **93x** | 0 | 19 |
-| `with_entries(select(...))` | Large (~100KB)‡ | 643 | — | — | 2 | — |
 | Alternative `.f // "default"` | Small (~100B) | 0.0072 | 0.456 | **63x** | 0 | 17 |
+| `.a - .b` (subtract) | Small (~100B) | 0.066 | 0.653 | **9.9x** | 0 | 20 |
+| `.a * .b` (multiply) | Small (~100B) | 0.083 | 0.679 | **8.2x** | 0 | 21 |
+| `.a / .b` (divide) | Small (~100B) | 0.115 | 0.736 | **6.4x** | 0 | 21 |
+| `min` | 200-elem int array | 2.98 | 11.7 | **3.9x** | 0 | 409 |
+| `min_by(.value)` | 100-elem object array | 12.4 | 55.7 | **4.5x** | 0 | 1,347 |
+| `@uri` | 36-char URL string | 0.102 | 0.669 | **6.6x** | 0 | 14 |
+| `.a - .b` (array diff) | 5-elem arrays | 0.214 | 1.277 | **6.0x** | 0 | 33 |
 
 ## Key Takeaways
 
 - **fastjq achieves 0 allocations** across all operations in steady state when using `RunWithBuffer` or `RunFunc`
-- **‡ `with_entries` on very large inputs (100KB+ objects with large nested field values) has 2 allocs** from the entry scratch buffer growing beyond its initial 64-byte capacity. In typical log processing with field values < 64 bytes, it is 0 allocs.
 - **† For small raw arrays of primitives, gojq can be faster** — once unmarshaled to `[]interface{}`, gojq accesses elements as native Go slice operations. fastjq always scans the raw JSON bytes, which is slower for tiny arrays (~600B) of numbers.
 - **Fastest on small inputs** where gojq's marshal/unmarshal overhead dominates (up to 63x faster)
 - **Still significantly faster on large inputs** (2.5x–5x) where both engines are scanning lots of data

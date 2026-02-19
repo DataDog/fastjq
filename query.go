@@ -32,7 +32,6 @@ const (
 	opLength                       // length
 	opToEntries                    // to_entries
 	opFromEntries                  // from_entries
-	opWithEntries                  // with_entries(f) — dedicated single-pass executor
 	opAdd                          // add
 	opFlatten                      // flatten / flatten(n)
 	opSlice                        // .[n:m], .[:m], .[n:]
@@ -59,6 +58,15 @@ const (
 	opFirst                        // first(expr)
 	opLast                         // last(expr)
 	opLimit                        // limit(n; expr)
+	opMinus                        // expr - expr
+	opMul                          // expr * expr
+	opDiv                          // expr / expr
+	opMod                          // expr % expr
+	opMin                          // min
+	opMax                          // max
+	opMinBy                        // min_by(f)
+	opMaxBy                        // max_by(f)
+	opURIEncode                    // @uri
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -216,10 +224,10 @@ func parseAnd(s string) (*op, string, error) {
 	return left, rest, nil
 }
 
-// parsePlusExpr parses additive expressions: expr + expr (left-associative).
-// Delegates down to parseAtom.
-func parsePlusExpr(s string) (*op, string, error) {
-	left, rest, err := parseAtom(s)
+// parseAddExpr parses additive expressions: expr + expr, expr - expr (left-associative).
+// Delegates down to parseMulExpr.
+func parseAddExpr(s string) (*op, string, error) {
+	left, rest, err := parseMulExpr(s)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -227,11 +235,21 @@ func parsePlusExpr(s string) (*op, string, error) {
 		rest = strings.TrimSpace(rest)
 		if len(rest) > 0 && rest[0] == '+' {
 			rest = strings.TrimSpace(rest[1:])
-			right, remainder, err := parseAtom(rest)
+			right, remainder, err := parseMulExpr(rest)
 			if err != nil {
 				return nil, remainder, err
 			}
 			left = &op{typ: opPlus, left: left, right: right}
+			rest = remainder
+			continue
+		}
+		if len(rest) > 0 && rest[0] == '-' {
+			rest = strings.TrimSpace(rest[1:])
+			right, remainder, err := parseMulExpr(rest)
+			if err != nil {
+				return nil, remainder, err
+			}
+			left = &op{typ: opMinus, left: left, right: right}
 			rest = remainder
 			continue
 		}
@@ -240,10 +258,40 @@ func parsePlusExpr(s string) (*op, string, error) {
 	return left, rest, nil
 }
 
+// parseMulExpr parses multiplicative expressions: expr * expr, expr / expr, expr % expr (left-associative).
+// Delegates down to parseAtom.
+func parseMulExpr(s string) (*op, string, error) {
+	left, rest, err := parseAtom(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	for {
+		rest = strings.TrimSpace(rest)
+		var typ opType
+		if len(rest) > 0 && rest[0] == '*' {
+			typ = opMul
+		} else if len(rest) > 0 && rest[0] == '/' && !(len(rest) >= 2 && rest[1] == '/') {
+			typ = opDiv
+		} else if len(rest) > 0 && rest[0] == '%' {
+			typ = opMod
+		} else {
+			break
+		}
+		rest = strings.TrimSpace(rest[1:])
+		right, remainder, err := parseAtom(rest)
+		if err != nil {
+			return nil, remainder, err
+		}
+		left = &op{typ: typ, left: left, right: right}
+		rest = remainder
+	}
+	return left, rest, nil
+}
+
 // parseCmp parses comparison expressions: ==, !=, <, <=, >, >=
-// Non-associative (no chaining). Delegates down to parsePlusExpr.
+// Non-associative (no chaining). Delegates down to parseAddExpr.
 func parseCmp(s string) (*op, string, error) {
-	left, rest, err := parsePlusExpr(s)
+	left, rest, err := parseAddExpr(s)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -405,6 +453,20 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opAdd}, s[3:], nil
 	}
 
+	// min_by / min / max_by / max — check _by variants first
+	if strings.HasPrefix(s, "min_by(") {
+		return parseUnaryExprBuiltin(s[7:], opMinBy)
+	}
+	if strings.HasPrefix(s, "min") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return &op{typ: opMin}, s[3:], nil
+	}
+	if strings.HasPrefix(s, "max_by(") {
+		return parseUnaryExprBuiltin(s[7:], opMaxBy)
+	}
+	if strings.HasPrefix(s, "max") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return &op{typ: opMax}, s[3:], nil
+	}
+
 	// flatten / flatten(n)
 	if strings.HasPrefix(s, "flatten") && (len(s) == 7 || !isIdentChar(s[7])) {
 		rest := strings.TrimSpace(s[7:])
@@ -481,13 +543,16 @@ func parseAtom(s string) (*op, string, error) {
 		return parseUnaryExprBuiltin(s[3:], opIn)
 	}
 
-	// @base64 / @base64d — check @base64d before @base64 to avoid prefix collision
+	// Format strings: @base64d, @base64, @uri, @html, @csv, @tsv
 	if s[0] == '@' {
 		if strings.HasPrefix(s, "@base64d") && (len(s) == 8 || !isIdentChar(s[8])) {
 			return &op{typ: opBase64D}, s[8:], nil
 		}
 		if strings.HasPrefix(s, "@base64") && (len(s) == 7 || !isIdentChar(s[7])) {
 			return &op{typ: opBase64}, s[7:], nil
+		}
+		if strings.HasPrefix(s, "@uri") && (len(s) == 4 || !isIdentChar(s[4])) {
+			return &op{typ: opURIEncode}, s[4:], nil
 		}
 		return nil, s, fmt.Errorf("unsupported format string %q", s[:min(len(s), 16)])
 	}
@@ -522,24 +587,12 @@ func parseAtom(s string) (*op, string, error) {
 		return parseStringArgBuiltin(s[9:], opRtrimStr)
 	}
 
-	// to_entries / from_entries / with_entries
+	// to_entries / from_entries
 	if strings.HasPrefix(s, "to_entries") && (len(s) == 10 || !isIdentChar(s[10])) {
 		return &op{typ: opToEntries}, s[10:], nil
 	}
 	if strings.HasPrefix(s, "from_entries") && (len(s) == 12 || !isIdentChar(s[12])) {
 		return &op{typ: opFromEntries}, s[12:], nil
-	}
-	if strings.HasPrefix(s, "with_entries(") {
-		inner, rest, err := parsePipeExpr(s[13:])
-		if err != nil {
-			return nil, rest, fmt.Errorf("in with_entries(): %w", err)
-		}
-		rest = strings.TrimSpace(rest)
-		if len(rest) == 0 || rest[0] != ')' {
-			return nil, rest, fmt.Errorf("expected ')' after with_entries() expression")
-		}
-		rest = rest[1:]
-		return &op{typ: opWithEntries, child: inner}, rest, nil
 	}
 
 	// map(expr) — desugars to [.[] | expr] at parse time

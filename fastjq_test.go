@@ -3287,3 +3287,108 @@ func TestArrayConstructWithLiterals(t *testing.T) {
 		t.Errorf("expected output larger than input")
 	}
 }
+
+// --- Arithmetic: -, *, /, % ---
+
+func TestArithSubtract(t *testing.T) {
+	assertQuery(t, `5 - 3`, `null`, `2`)
+	assertQuery(t, `.a - .b`, `{"a":10,"b":3}`, `7`)
+	assertQuery(t, `1.5 - 0.5`, `null`, `1`)
+	assertQuery(t, `3 - 5`, `null`, `-2`)
+}
+func TestArithSubtractArray(t *testing.T) {
+	// array difference
+	assertQuery(t, `. - ["b","c"]`, `["a","b","c","d"]`, `["a","d"]`)
+	assertQuery(t, `[1,2,3,2,1] - [2]`, `null`, `[1,3,1]`)
+	assertQuery(t, `. - []`, `[1,2,3]`, `[1,2,3]`)
+	assertQuery(t, `[] - [1]`, `null`, `[]`)
+}
+func TestArithMultiply(t *testing.T) {
+	assertQuery(t, `3 * 4`, `null`, `12`)
+	assertQuery(t, `2.5 * 4`, `null`, `10`)
+	assertQuery(t, `.price * .qty`, `{"price":2.5,"qty":4}`, `10`)
+}
+func TestArithMultiplyStringRepeat(t *testing.T) {
+	assertQuery(t, `"ab" * 3`, `null`, `"ababab"`)
+	assertQuery(t, `"x" * 1`, `null`, `"x"`)
+	assertQuery(t, `"x" * 0`, `null`, `null`)
+}
+func TestArithDivide(t *testing.T) {
+	assertQuery(t, `10 / 4`, `null`, `2.5`)
+	assertQuery(t, `10 / 2`, `null`, `5`)
+	assertQuery(t, `7 / 2`, `null`, `3.5`)
+}
+func TestArithDivideStringSplit(t *testing.T) {
+	// string / string = split
+	assertQuery(t, `"a,b,c" / ","`, `null`, `["a","b","c"]`)
+	assertQuery(t, `"hello" / "l"`, `null`, `["he","","o"]`)
+}
+func TestArithModulo(t *testing.T) {
+	assertQuery(t, `10 % 3`, `null`, `1`)
+	assertQuery(t, `7 % 7`, `null`, `0`)
+	assertQuery(t, `-7 % 3`, `null`, `-1`)
+}
+func TestArithNullPropagation(t *testing.T) {
+	assertQuery(t, `null - 5`, `null`, `null`)
+	assertQuery(t, `5 * null`, `null`, `null`)
+}
+func TestArithPrecedence(t *testing.T) {
+	// * binds tighter than +
+	assertQuery(t, `1 + 2 * 3`, `null`, `7`)
+	assertQuery(t, `2 * 3 + 4 * 5`, `null`, `26`)
+	// - and + left-associative
+	assertQuery(t, `10 - 3 - 2`, `null`, `5`)
+}
+func TestArithNegativeResult(t *testing.T) {
+	// appendInt must handle negatives
+	assertQuery(t, `1 - 10`, `null`, `-9`)
+	assertQuery(t, `.a - .b`, `{"a":0,"b":5}`, `-5`)
+}
+
+// --- min / max / min_by / max_by ---
+
+func TestMinNumbers(t *testing.T) {
+	assertQuery(t, `min`, `[3,1,4,1,5,9,2,6]`, `1`)
+	assertQuery(t, `min`, `[42]`, `42`)
+	assertQuery(t, `min`, `[]`, `null`)
+}
+func TestMaxNumbers(t *testing.T) {
+	assertQuery(t, `max`, `[3,1,4,1,5,9,2,6]`, `9`)
+	assertQuery(t, `max`, `[42]`, `42`)
+	assertQuery(t, `max`, `[]`, `null`)
+}
+func TestMinStrings(t *testing.T) {
+	assertQuery(t, `min`, `["banana","apple","cherry"]`, `"apple"`)
+	assertQuery(t, `max`, `["banana","apple","cherry"]`, `"cherry"`)
+}
+func TestMinBy(t *testing.T) {
+	assertQuery(t, `min_by(.age)`,
+		`[{"name":"alice","age":30},{"name":"bob","age":25},{"name":"carol","age":35}]`,
+		`{"name":"bob","age":25}`)
+}
+func TestMaxBy(t *testing.T) {
+	assertQuery(t, `max_by(.value)`,
+		`[{"id":1,"value":10},{"id":2,"value":5},{"id":3,"value":20}]`,
+		`{"id":3,"value":20}`)
+}
+func TestMinByNested(t *testing.T) {
+	assertQuery(t, `min_by(.x) | .name`,
+		`[{"name":"a","x":3},{"name":"b","x":1},{"name":"c","x":2}]`,
+		`"b"`)
+}
+
+// --- @uri ---
+
+func TestURIEncodeSimple(t *testing.T) {
+	assertQuery(t, `@uri`, `"hello world"`, `"hello%20world"`)
+}
+func TestURIEncodeUnreserved(t *testing.T) {
+	// unreserved chars pass through unchanged
+	assertQuery(t, `@uri`, `"abc-._~"`, `"abc-._~"`)
+}
+func TestURIEncodeSpecial(t *testing.T) {
+	assertQuery(t, `@uri`, `"a/b?c=d&e=f"`, `"a%2Fb%3Fc%3Dd%26e%3Df"`)
+}
+func TestURIEncodePath(t *testing.T) {
+	assertQuery(t, `.path | @uri`, `{"path":"/api/v1/users"}`, `"%2Fapi%2Fv1%2Fusers"`)
+}

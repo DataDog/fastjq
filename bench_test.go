@@ -541,3 +541,52 @@ func BenchmarkGojq_Small_Limit(b *testing.B) {
 func BenchmarkGojq_Large_Limit(b *testing.B) {
 	benchGojqIter(b, `limit(10; .[])`, largeIntArr)
 }
+
+func BenchmarkFastjq_Small_Subtract(b *testing.B) {
+	benchFastjqObj(b, `.a - .b`, []byte(`{"a":100,"b":37}`))
+}
+func BenchmarkGojq_Small_Subtract(b *testing.B) {
+	benchGojqObj(b, `.a - .b`, []byte(`{"a":100,"b":37}`))
+}
+
+func BenchmarkFastjq_Small_Multiply(b *testing.B) {
+	benchFastjqObj(b, `.price * .qty`, []byte(`{"price":2.5,"qty":4}`))
+}
+func BenchmarkGojq_Small_Multiply(b *testing.B) {
+	benchGojqObj(b, `.price * .qty`, []byte(`{"price":2.5,"qty":4}`))
+}
+
+func BenchmarkFastjq_Small_Divide(b *testing.B) {
+	benchFastjqObj(b, `.total / .count`, []byte(`{"total":100,"count":3}`))
+}
+func BenchmarkGojq_Small_Divide(b *testing.B) {
+	benchGojqObj(b, `.total / .count`, []byte(`{"total":100,"count":3}`))
+}
+
+func BenchmarkFastjq_Small_Min(b *testing.B) {
+	benchFastjqObj(b, `min`, largeIntArr)
+}
+func BenchmarkGojq_Small_Min(b *testing.B) {
+	benchGojqObj(b, `min`, largeIntArr)
+}
+
+func BenchmarkFastjq_Small_MinBy(b *testing.B) {
+	benchFastjqObj(b, `min_by(.value)`, mediumArray)
+}
+func BenchmarkGojq_Small_MinBy(b *testing.B) {
+	benchGojqObj(b, `min_by(.value)`, mediumArray)
+}
+
+func BenchmarkFastjq_Small_URIEncode(b *testing.B) {
+	benchFastjqObj(b, `@uri`, []byte(`"/api/v1/users?filter=active&page=1"`))
+}
+func BenchmarkGojq_Small_URIEncode(b *testing.B) {
+	benchGojqObj(b, `@uri`, []byte(`"/api/v1/users?filter=active&page=1"`))
+}
+
+func BenchmarkFastjq_Small_ArrayDiff(b *testing.B) {
+	benchFastjqObj(b, `.a - .b`, []byte(`{"a":[1,2,3,4,5],"b":[2,4]}`))
+}
+func BenchmarkGojq_Small_ArrayDiff(b *testing.B) {
+	benchGojqObj(b, `.a - .b`, []byte(`{"a":[1,2,3,4,5],"b":[2,4]}`))
+}

@@ -33,9 +33,15 @@ fastjq is a fast, minimal JQ engine for Go that avoids the expensive marshal/unm
 - `has("key")` (true if object has the field, even if its value is null)
 - `length` (string → char count, array/object → element count, null → 0)
 - `map(expr)` (apply expr to every array element; desugars to `[.[] | expr]` at parse time)
+- `expr - expr` (number subtraction; array difference)
+- `expr * expr` (number multiplication; string × n = repeat)
+- `expr / expr` (number division; string / string = split)
+- `expr % expr` (number modulo)
+- `min`, `max` (array extrema — numbers by value, strings lexicographically)
+- `min_by(f)`, `max_by(f)` (array extrema by key function)
+- `@uri` (URL percent-encode a JSON string)
 - `to_entries` (object → `[{"key":k,"value":v}]` array)
 - `from_entries` (`[{"key":k,"value":v}]` → object; also accepts `"name"` as key field)
-- `with_entries(expr)` (desugars to `to_entries | map(expr) | from_entries` at parse time)
 - `if cond then expr else expr end` (conditional; else is optional, defaults to identity)
 - `empty` (produce zero outputs — useful as else branch to drop records)
 - `(expr)` (parenthesized grouping)
@@ -80,7 +86,7 @@ For deletion, pre-allocate `cap = len(input)` since output is always <= input. `
 
 ### 9. Parser Precedence Chain
 
-Operator precedence is implemented via a function call chain: `parseExpr` → `parseAlt` → `parseCmp` → `parseAtom`. Pipe (`|`) is the loosest, handled in `parsePipeExpr`. Then alternative (`//`), then comparison (`==`, `!=`), then atoms. Clean, extensible, no precedence table needed.
+Operator precedence is implemented via a function call chain: `parseExpr` → `parseAlt` → `parseCmp` → `parseAddExpr` → `parseMulExpr` → `parseAtom`. Pipe (`|`) is the loosest, handled in `parsePipeExpr`. Then alternative (`//`), then `or`, then `and`, then comparison (`==`, `!=`, `<`, etc.), then `+`/`-`, then `*`/`/`/`%`, then atoms. Clean, extensible, no precedence table needed.
 
 ### 10. Literals Store Raw JSON Bytes
 
