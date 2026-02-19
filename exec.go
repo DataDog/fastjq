@@ -9,6 +9,7 @@ var (
 	errExpectedObjectField = errors.New("expected object for field access")
 	errExpectedArrayIndex  = errors.New("expected array for index access")
 	errExpectedIterable    = errors.New("expected array or object for .[]")
+	errBreak               = errors.New("stop iteration") // sentinel for first/limit
 )
 
 // bTrue / bFalse are package-level literals returned directly when buf == nil,
@@ -84,6 +85,21 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(result)
 	case opWithEntries:
 		return execWithEntries(node, input, buf, fn)
+	case opFirst:
+		err := execMulti(node.child, input, buf, func(result []byte) error {
+			if err := fn(result); err != nil {
+				return err
+			}
+			return errBreak
+		})
+		if err == errBreak {
+			return nil
+		}
+		return err
+	case opLast:
+		return execLast(node, input, buf, fn)
+	case opLimit:
+		return execLimit(node, input, buf, fn)
 	case opKeysUnsorted:
 		result, err := execKeysUnsorted(input, buf)
 		if err != nil {
@@ -218,6 +234,11 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execToEntries(input, buf)
 	case opFromEntries:
 		return execFromEntries(input, buf)
+	case opFirst:
+		// exec already returns the first result via execMulti
+		return exec(node.child, input, buf)
+	case opLast:
+		return execLastSingle(node, input, buf)
 	case opKeysUnsorted:
 		return execKeysUnsorted(input, buf)
 	case opAny:
@@ -1015,6 +1036,71 @@ func execWithEntries(node *op, input []byte, buf []byte, fn func([]byte) error) 
 
 	buf = append(buf, '}')
 	return fn(buf)
+}
+
+// execLast runs the child expression to completion and emits only the last result.
+func execLast(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	result, err := execLastSingle(node, input, buf)
+	if err != nil {
+		return err
+	}
+	if result == nil {
+		return nil // no outputs
+	}
+	return fn(result)
+}
+
+func execLastSingle(node *op, input []byte, buf []byte) ([]byte, error) {
+	// Keep a reference to the last result — no copy needed.
+	// Results from execMulti with nil buf are either sub-slices of input
+	// (safe for lifetime of this call) or global literals (bTrue/bFalse).
+	var lastResult []byte
+	err := execMulti(node.child, input, nil, func(result []byte) error {
+		lastResult = result
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if lastResult == nil {
+		return nil, nil
+	}
+	if buf == nil {
+		return lastResult, nil
+	}
+	return append(buf, lastResult...), nil
+}
+
+// execLimit emits at most n results from the child expression.
+// n is evaluated from node.left; the generator is node.child.
+func execLimit(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	nVal, err := execSingle(node.left, input, nil)
+	if err != nil {
+		return err
+	}
+	nf, ok := parseJSONFloat(nVal)
+	if !ok {
+		return fmt.Errorf("limit: count must be a number")
+	}
+	n := int(nf)
+	if n <= 0 {
+		return nil
+	}
+	count := 0
+	err = execMulti(node.child, input, buf, func(result []byte) error {
+		if err := fn(result); err != nil {
+			return err
+		}
+		count++
+		if count >= n {
+			return errBreak
+		}
+		return nil
+	})
+	if err == errBreak {
+		return nil
+	}
+	return err
 }
 
 // execKeysUnsorted returns object keys (insertion order) or array indices as a JSON array.

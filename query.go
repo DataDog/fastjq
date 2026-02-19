@@ -41,6 +41,9 @@ const (
 	opKeysUnsorted                 // keys_unsorted
 	opAny                          // any / any(expr)
 	opAll                          // all / all(expr)
+	opFirst                        // first(expr)
+	opLast                         // last(expr)
+	opLimit                        // limit(n; expr)
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -289,6 +292,60 @@ func parseAtom(s string) (*op, string, error) {
 	// length builtin
 	if strings.HasPrefix(s, "length") && (len(s) == 6 || !isIdentChar(s[6])) {
 		return &op{typ: opLength}, s[6:], nil
+	}
+
+	// first / last — no-arg desugar to .[0] / .[-1]; with arg use dedicated op
+	if strings.HasPrefix(s, "first") && (len(s) == 5 || !isIdentChar(s[5])) {
+		rest := strings.TrimSpace(s[5:])
+		if len(rest) > 0 && rest[0] == '(' {
+			inner, rest2, err := parsePipeExpr(rest[1:])
+			if err != nil {
+				return nil, rest2, err
+			}
+			rest2 = strings.TrimSpace(rest2)
+			if len(rest2) == 0 || rest2[0] != ')' {
+				return nil, rest2, fmt.Errorf("expected ')' after first() argument")
+			}
+			return &op{typ: opFirst, child: inner}, rest2[1:], nil
+		}
+		return &op{typ: opIndex, index: 0}, rest, nil // first → .[0]
+	}
+	if strings.HasPrefix(s, "last") && (len(s) == 4 || !isIdentChar(s[4])) {
+		rest := strings.TrimSpace(s[4:])
+		if len(rest) > 0 && rest[0] == '(' {
+			inner, rest2, err := parsePipeExpr(rest[1:])
+			if err != nil {
+				return nil, rest2, err
+			}
+			rest2 = strings.TrimSpace(rest2)
+			if len(rest2) == 0 || rest2[0] != ')' {
+				return nil, rest2, fmt.Errorf("expected ')' after last() argument")
+			}
+			return &op{typ: opLast, child: inner}, rest2[1:], nil
+		}
+		return &op{typ: opIndex, index: -1}, rest, nil // last → .[-1]
+	}
+
+	// limit(n; expr)
+	if strings.HasPrefix(s, "limit(") {
+		nExpr, rest, err := parsePipeExpr(s[6:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected ';' in limit(n; expr)")
+		}
+		rest = strings.TrimSpace(rest[1:])
+		genExpr, rest, err := parsePipeExpr(rest)
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after limit() arguments")
+		}
+		return &op{typ: opLimit, left: nExpr, child: genExpr}, rest[1:], nil
 	}
 
 	// keys_unsorted

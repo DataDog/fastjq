@@ -126,6 +126,11 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `empty` | Produce zero outputs — use as else branch to drop records |
 | `select(.level == "error")` | Filter — pass through or drop |
 | `.foo // "default"` | Alternative — use right if left is null/false |
+| `first` / `last` | First/last element of array (no-arg); or first/last output of `first(expr)` / `last(expr)` |
+| `limit(n; expr)` | First N outputs of expr |
+| `keys_unsorted` | Object keys in insertion order; array → indices |
+| `any` / `any(expr)` | True if any element/result is truthy (short-circuit) |
+| `all` / `all(expr)` | True if all elements/results are truthy (short-circuit) |
 | `ascii_downcase`, `ascii_upcase` | Convert string to lower/upper case |
 | `startswith("s")`, `endswith("s")` | String prefix/suffix test |
 | `ltrimstr("s")`, `rtrimstr("s")` | Strip prefix/suffix from string |

@@ -196,6 +196,19 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 | `length` | String → chars, array/object → count, null → 0 | `[1,2,3]` | `3` |
 | `keys_unsorted` | Object keys in insertion order; array → indices | `{"b":1,"a":2}` | `["b","a"]` |
 
+### Stream Control
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `first` | First element (no-arg: `.[0]`) | `[10,20,30]` | `10` |
+| `last` | Last element (no-arg: `.[-1]`) | `[10,20,30]` | `30` |
+| `first(expr)` | First output of expr | `[1,2,3,4,5]` (with `first(.[] \| select(. > 2))`) | `3` |
+| `last(expr)` | Last output of expr | `[1,2,3,4,5]` (with `last(.[] \| select(. > 2))`) | `5` |
+| `limit(n; expr)` | First N outputs of expr as a stream | `[1,2,3,4,5]` (with `limit(3; .[])`) | `1`, `2`, `3` |
+
+`limit` emits a stream, not an array. Wrap in `[...]` if you need an array: `[limit(3; .[])]`.
+`any(generator; cond)` two-arg form is not supported.
+
 ### Boolean Reduction
 
 | Syntax | Description | Example Input | Example Output |
@@ -252,8 +265,6 @@ So `a or b and c` parses as `a or (b and c)` — `and` binds tighter than `or`.
 | `values` | Object values | Equivalent to `.[]`, already supported semantically. |
 | `has(0)` | Array index membership | Scan array length, check bounds. |
 | `in(expr)` | Reverse membership test | Same scan logic, reversed operands. |
-| `first`, `last` | First/last of iterator | `first` = take 1 from execMulti. `last` = keep final. |
-| `limit(n; expr)` | Take first N results | Counter in callback. |
 | `add` | Sum array elements | Parse numbers, accumulate, write result. Zero-alloc with integer math. |
 | `flatten` | Flatten nested arrays | Recursive scan, copy non-array elements. |
 | `range(n)` | Generate 0..n-1 | Write integers via callback. |

@@ -1704,6 +1704,142 @@ func TestConstructWithAlternative(t *testing.T) {
 	}
 }
 
+// --- first / last / limit ---
+
+func TestFirstNoArg(t *testing.T) {
+	// first with no arg → .[0]
+	p, _ := Compile("first")
+	got, err := p.Run([]byte(`[10,20,30]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "10" {
+		t.Errorf("got %s, want 10", got)
+	}
+}
+
+func TestLastNoArg(t *testing.T) {
+	// last with no arg → .[-1]
+	p, _ := Compile("last")
+	got, err := p.Run([]byte(`[10,20,30]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "30" {
+		t.Errorf("got %s, want 30", got)
+	}
+}
+
+func TestFirstExpr(t *testing.T) {
+	p, _ := Compile(`first(.[] | select(. > 2))`)
+	got, err := p.Run([]byte(`[1,2,3,4,5]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "3" {
+		t.Errorf("got %s, want 3", got)
+	}
+}
+
+func TestLastExpr(t *testing.T) {
+	p, _ := Compile(`last(.[] | select(. > 2))`)
+	got, err := p.Run([]byte(`[1,2,3,4,5]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "5" {
+		t.Errorf("got %s, want 5", got)
+	}
+}
+
+func TestFirstExprNoMatch(t *testing.T) {
+	p, _ := Compile(`first(.[] | select(. > 10))`)
+	results, err := p.RunAll([]byte(`[1,2,3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results when nothing matches")
+	}
+}
+
+func TestLastExprNoMatch(t *testing.T) {
+	p, _ := Compile(`last(.[] | select(. > 10))`)
+	results, err := p.RunAll([]byte(`[1,2,3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results when nothing matches")
+	}
+}
+
+func TestLimitBasic(t *testing.T) {
+	p, _ := Compile(`limit(3; .[]  )`)
+	results, err := p.RunAll([]byte(`[10,20,30,40,50]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	expected := []string{"10", "20", "30"}
+	for i, r := range results {
+		if string(r) != expected[i] {
+			t.Errorf("result[%d] = %s, want %s", i, r, expected[i])
+		}
+	}
+}
+
+func TestLimitExact(t *testing.T) {
+	// limit equals available results
+	p, _ := Compile(`limit(3; .[])`)
+	results, err := p.RunAll([]byte(`[1,2,3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Errorf("expected 3 results, got %d", len(results))
+	}
+}
+
+func TestLimitMoreThanAvailable(t *testing.T) {
+	// limit larger than available — returns all
+	p, _ := Compile(`limit(10; .[])`)
+	results, err := p.RunAll([]byte(`[1,2,3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Errorf("expected 3 results, got %d", len(results))
+	}
+}
+
+func TestLimitZero(t *testing.T) {
+	p, _ := Compile(`limit(0; .[])`)
+	results, err := p.RunAll([]byte(`[1,2,3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for limit(0)")
+	}
+}
+
+func TestLimitWithFilter(t *testing.T) {
+	p, _ := Compile(`limit(2; .[] | select(. > 2))`)
+	results, err := p.RunAll([]byte(`[1,2,3,4,5,6]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if string(results[0]) != "3" || string(results[1]) != "4" {
+		t.Errorf("got %v", results)
+	}
+}
+
 // --- keys_unsorted ---
 
 func TestKeysUnsortedObject(t *testing.T) {

@@ -4,6 +4,24 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — first, last, limit(n; expr)
+
+### Added
+- `first` (no-arg) — desugars to `.[0]` at parse time. Zero-alloc.
+- `last` (no-arg) — desugars to `.[-1]` at parse time. Zero-alloc.
+- `first(expr)` — returns the first output of expr. Uses `errBreak` sentinel to stop `execMulti` after the first callback invocation. Zero-alloc.
+- `last(expr)` — runs expr to completion, returns only the last output. Keeps a reference (no copy) to the last result — safe because results from `execMulti` with nil buf are either input sub-slices or global literals, both valid for the call's lifetime. Zero-alloc.
+- `limit(n; expr)` — emits at most n outputs of expr (stream, not array). `n` is an expression evaluated via `execSingle`. Counter in callback, stops with `errBreak`. Zero-alloc for literal n.
+
+### Benchmarks (Apple M4 Max)
+| Operation | fastjq | gojq | Speedup |
+|-----------|--------|------|---------|
+| `first(expr)` | 107 ns | 1,478 ns | **14x** |
+| `last(expr)` | 142 ns | 1,883 ns | **13x** |
+| `limit(3; expr)` | 37 ns | 1,635 ns | **44x** |
+
+---
+
 ## [Unreleased] — keys_unsorted, any/all
 
 ### Added

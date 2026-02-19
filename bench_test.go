@@ -304,6 +304,35 @@ func BenchmarkFastjq_Small_WithEntries(b *testing.B) {
 	}
 }
 
+func BenchmarkFastjq_Small_First(b *testing.B) {
+	p, _ := Compile(`first(.[] | select(. > 2))`)
+	input := []byte(`[1,2,3,4,5]`)
+	buf := make([]byte, 0, 8)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(input, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_Last(b *testing.B) {
+	p, _ := Compile(`last(.[] | select(. > 2))`)
+	input := []byte(`[1,2,3,4,5]`)
+	buf := make([]byte, 0, 8)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(input, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_Limit(b *testing.B) {
+	p, _ := Compile(`limit(3; .[])`)
+	input := []byte(`[10,20,30,40,50]`)
+	b.ReportAllocs()
+	for b.Loop() {
+		p.RunFunc(input, func([]byte) error { return nil })
+	}
+}
+
 func BenchmarkFastjq_Small_KeysUnsorted(b *testing.B) {
 	p, _ := Compile("keys_unsorted")
 	buf := make([]byte, 0, 64)
@@ -717,6 +746,52 @@ func BenchmarkGojq_Small_WithEntries(b *testing.B) {
 		iter := code.Run(v)
 		result, _ := iter.Next()
 		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_First(b *testing.B) {
+	query, _ := gojq.Parse(`first(.[] | select(. > 2))`)
+	code, _ := gojq.Compile(query)
+	input := []byte(`[1,2,3,4,5]`)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(input, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_Last(b *testing.B) {
+	query, _ := gojq.Parse(`last(.[] | select(. > 2))`)
+	code, _ := gojq.Compile(query)
+	input := []byte(`[1,2,3,4,5]`)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(input, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_Limit(b *testing.B) {
+	query, _ := gojq.Parse(`limit(3; .[])`)
+	code, _ := gojq.Compile(query)
+	input := []byte(`[10,20,30,40,50]`)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(input, &v)
+		iter := code.Run(v)
+		for {
+			_, ok := iter.Next()
+			if !ok {
+				break
+			}
+		}
 	}
 }
 

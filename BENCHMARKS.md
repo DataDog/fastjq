@@ -37,6 +37,12 @@ All times in µs. Small/Medium values are sub-microsecond but shown with enough 
 | `map(.name)` | 20-elem array (~600B) | 1.99 | 9.98 | **5.0x** | 0 | 251 |
 | `to_entries` | Small (~100B) | 0.0062 | 0.359 | **58x** | 0 | 14 |
 | `with_entries(select(...))` | Small (~100B) | 0.0054 | 0.491 | **91x** | 0 | 19 |
+| `keys_unsorted` | Small (~100B) | 0.177 | 1.259 | **7x** | 0 | 35 |
+| `any` (no-arg) | 5-elem array | 0.050 | 1.814 | **36x** | 0 | 39 |
+| `any(expr)` | 5-elem array | 0.123 | 2.047 | **17x** | 0 | 49 |
+| `first(expr)` | 5-elem array | 0.107 | 1.478 | **14x** | 0 | 39 |
+| `last(expr)` | 5-elem array | 0.142 | 1.883 | **13x** | 0 | 43 |
+| `limit(3; expr)` | 5-elem array | 0.037 | 1.635 | **44x** | 0 | 42 |
 | `ascii_downcase` in select | Small (~100B) | 0.011 | 0.565 | **54x** | 0 | 21 |
 | `startswith("s")` in select | Small (~100B) | 0.011 | 0.567 | **52x** | 0 | 21 |
 | `endswith("s")` in select | Small (~100B) | 0.011 | 0.567 | **52x** | 0 | 21 |
@@ -100,6 +106,18 @@ BenchmarkGojq_Small_Length-16           	 3338461	       363.0 ns/op	    1177 B/
 BenchmarkGojq_Small_Map-16              	  117776	     10116 ns/op	   13653 B/op	     251 allocs/op
 BenchmarkGojq_Small_ToEntries-16        	 3356006	       359.4 ns/op	    1209 B/op	      14 allocs/op
 BenchmarkGojq_Small_WithEntries-16      	 2439589	       490.9 ns/op	    1529 B/op	      19 allocs/op
+BenchmarkFastjq_Small_First-16          	10981736	       107.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Last-16           	 8471472	       142.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Limit-16          	33964146	        36.82 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_KeysUnsorted-16   	 6724323	       177.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Any-16            	24263030	        50.04 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_AnyExpr-16        	 9710288	       122.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_First-16            	  796825	      1478 ns/op	    3379 B/op	      39 allocs/op
+BenchmarkGojq_Small_Last-16             	  638350	      1883 ns/op	    3483 B/op	      43 allocs/op
+BenchmarkGojq_Small_Limit-16            	  739258	      1635 ns/op	    3328 B/op	      42 allocs/op
+BenchmarkGojq_Small_KeysUnsorted-16     	  931345	      1259 ns/op	    1953 B/op	      35 allocs/op
+BenchmarkGojq_Small_Any-16              	  654502	      1814 ns/op	    4508 B/op	      39 allocs/op
+BenchmarkGojq_Small_AnyExpr-16          	  577390	      2047 ns/op	    4620 B/op	      49 allocs/op
 BenchmarkFastjq_Small_AsciiDowncase-16  	100000000	        10.55 ns/op	       0 B/op	       0 allocs/op
 BenchmarkFastjq_Small_Startswith-16     	100000000	        10.52 ns/op	       0 B/op	       0 allocs/op
 BenchmarkFastjq_Small_Endswith-16       	100000000	        10.58 ns/op	       0 B/op	       0 allocs/op
