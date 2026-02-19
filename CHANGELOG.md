@@ -4,6 +4,24 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — keys_unsorted, any/all
+
+### Added
+- `keys_unsorted` — returns object keys as a JSON array in insertion order, or array indices for array input. One objectIter/arrayLen pass. Zero-alloc.
+- `any` / `all` (no-arg) — short-circuit boolean reduction over array/object values. `any` returns `true` on first truthy element; `all` returns `false` on first falsy element. Empty array: `any→false`, `all→true` (vacuous truth).
+- `any(expr)` / `all(expr)` — applies expr to each element via `execSingle`, short-circuits. Common use: `select(.tags | any(. == "critical"))`.
+
+`any(generator; cond)` two-arg form is not supported.
+
+### Benchmarks (Apple M4 Max)
+| Operation | fastjq | gojq | Speedup |
+|-----------|--------|------|---------|
+| `keys_unsorted` | 178 ns | 1,253 ns | **7x** |
+| `any` (no-arg) | 46 ns | 1,804 ns | **39x** |
+| `any(expr)` | 125 ns | 2,047 ns | **16x** |
+
+---
+
 ## [Unreleased] — ascii_downcase/upcase, startswith/endswith, ltrimstr/rtrimstr
 
 ### Added

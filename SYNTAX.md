@@ -157,13 +157,88 @@ Produces zero outputs (instead of an error) when the input type doesn't match.
 
 ---
 
+### Boolean Operators
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `expr and expr` | True if both truthy (short-circuits) | `{"a":1,"b":2}` | `true` |
+| `expr or expr` | True if either truthy (short-circuits) | `{"a":null,"b":1}` | `true` |
+| `expr \| not` | Boolean negation | `false` | `true` |
+
+Only `null` and `false` are falsy. `0`, `""`, `[]`, `{}` are all truthy.
+
+### Comparison Operators
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `.foo == "val"` | Equality | `{"foo":"val"}` | `true` |
+| `.foo != "val"` | Not equal | `{"foo":"other"}` | `true` |
+| `.n < 5` | Less than (numbers or strings) | `{"n":3}` | `true` |
+| `.n <= 5` | Less than or equal | `{"n":5}` | `true` |
+| `.n > 5` | Greater than | `{"n":7}` | `true` |
+| `.n >= 5` | Greater than or equal | `{"n":5}` | `true` |
+
+Ordering works on numbers (float comparison) and strings (lexicographic). Cross-type comparisons return `false`.
+
+### Conditionals
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `if .f == "x" then .a else .b end` | Conditional | `{"f":"x","a":1,"b":2}` | `1` |
+| `if .f == "x" then .a end` | Without else — defaults to identity | `{"f":"y"}` | `{"f":"y"}` |
+| `if C then A elif C2 then B else D end` | Not supported — nest manually | — | — |
+
+### Membership & Length
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `has("key")` | True if object has field (even if null) | `{"x":null}` | `true` |
+| `length` | String → chars, array/object → count, null → 0 | `[1,2,3]` | `3` |
+| `keys_unsorted` | Object keys in insertion order; array → indices | `{"b":1,"a":2}` | `["b","a"]` |
+
+### Boolean Reduction
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `any` | True if any element is truthy | `[false,1,false]` | `true` |
+| `all` | True if all elements are truthy (vacuously true for `[]`) | `[1,"x",true]` | `true` |
+| `any(expr)` | True if expr is truthy for any element | `[1,2,3]` | — |
+| `all(expr)` | True if expr is truthy for all elements | `[1,2,3]` | — |
+
+`any(generator; cond)` two-arg form is not supported.
+
+### String Operations
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `ascii_downcase` | Convert string to lowercase | `"Hello"` | `"hello"` |
+| `ascii_upcase` | Convert string to uppercase | `"hello"` | `"HELLO"` |
+| `startswith("s")` | True if string starts with s | `"foobar"` | `true` |
+| `endswith("s")` | True if string ends with s | `"foobar"` | `false` (for `"foo"`) |
+| `ltrimstr("s")` | Remove prefix if present | `"prod-auth"` | `"auth"` |
+| `rtrimstr("s")` | Remove suffix if present | `"app.log"` | `"app"` |
+
+Escape sequences in strings are preserved by case conversion. All string operations work on raw JSON string bytes — no Unicode-aware processing.
+
+### Object Transforms
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `to_entries` | Object → `[{"key":k,"value":v}]` | `{"a":1}` | `[{"key":"a","value":1}]` |
+| `from_entries` | `[{key,value}]` → object | `[{"key":"a","value":1}]` | `{"a":1}` |
+| `with_entries(f)` | `to_entries \| map(f) \| from_entries` | `{"a":1,"b":null}` | — |
+
+`from_entries` accepts both `"key"` and `"name"` as the key field.
+
+---
+
 ## Operator Precedence (loosest → tightest)
 
 ```
-pipe (|)  →  alternative (//)  →  comparison (==, !=)  →  atom
+pipe (|)  →  alternative (//)  →  or  →  and  →  comparison (==, !=, <, <=, >, >=)  →  atom
 ```
 
-So `.level == "error" // false | select(.)` parses as `((.level == "error") // false) | select(.)`.
+So `a or b and c` parses as `a or (b and c)` — `and` binds tighter than `or`.
 
 ---
 
@@ -171,33 +246,20 @@ So `.level == "error" // false | select(.)` parses as `((.level == "error") // f
 
 ### Feasible at zero allocation
 
-These operations can be implemented using the existing scanner + byte-copy approach with no allocations.
-
 | Syntax | Description | Implementation Notes |
 |--------|-------------|---------------------|
 | `.[2:5]`, `.[:3]`, `.[1:]` | Array/string slicing | Iterate to start, copy through end. Just position tracking. |
-| `length` | Length of string/array/object | Count pass with scanner, write integer to buf. |
-| `keys_unsorted` | Object keys (insertion order) | Iterate object, copy quoted keys into output array. |
 | `values` | Object values | Equivalent to `.[]`, already supported semantically. |
-| `has("foo")`, `has(0)` | Membership test | Scan for field/index, write `true`/`false`. |
+| `has(0)` | Array index membership | Scan array length, check bounds. |
 | `in(expr)` | Reverse membership test | Same scan logic, reversed operands. |
-| `to_entries` | Object to `[{key,value}]` array | Reformat existing bytes into output buf. |
-| `from_entries` | `[{key,value}]` array to object | Scan array elements, extract key/value, reconstruct object. |
-| `map(expr)` | Map over array | Equivalent to `[.[] \| expr]`. Uses existing execMulti. |
-| `empty` | Produce zero outputs | Don't call callback. Trivial. |
-| `not` | Boolean negation | Read value, write `true`/`false`. |
 | `first`, `last` | First/last of iterator | `first` = take 1 from execMulti. `last` = keep final. |
 | `limit(n; expr)` | Take first N results | Counter in callback. |
 | `add` | Sum array elements | Parse numbers, accumulate, write result. Zero-alloc with integer math. |
-| `any`, `all` | Boolean reduction | Short-circuit scan over elements. |
 | `flatten` | Flatten nested arrays | Recursive scan, copy non-array elements. |
 | `range(n)` | Generate 0..n-1 | Write integers via callback. |
-| `ascii_downcase`, `ascii_upcase` | Case conversion | Byte-by-byte transform in output buf. |
-| `ltrimstr(s)`, `rtrimstr(s)` | String trim prefix/suffix | Byte comparison, copy remainder. |
-| `startswith(s)`, `endswith(s)` | String predicates | Byte comparison, write `true`/`false`. |
 | `split(s)` | String split | Scan for separator, build array in output buf. |
 | `join(s)` | Array join | Iterate array, interleave separator. |
-| `recurse` | Recursive descent | Walk all nested values via scanner, stream via callback. |
+| `recurse` / `..` | Recursive descent | Walk all nested values via scanner, stream via callback. |
 | `path(expr)` | Output path as array | Emit path like `["foo","bar"]` or `["items",0]`. |
 | `debug` | Debug print, pass through | Print to stderr, forward value unchanged. |
 
@@ -207,9 +269,6 @@ These operations are implementable at zero allocation but involve more complexit
 
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
-| `if-then-else` | Conditionals | Simple comparisons (`.foo == "bar"`) are zero-alloc via byte comparison. Complex expressions may need intermediate results in the buffer. |
-| `<`, `>`, `<=`, `>=` | Ordering operators | Strings: byte compare, zero-alloc. Numbers: must parse both sides. Still zero-alloc if done in registers, but floating-point edge cases (scientific notation, large numbers) add complexity. |
-| `and`, `or` | Boolean operators | Need jq truthiness rules (`null` and `false` are falsy, everything else truthy). Zero-alloc. |
 | `+` (arrays) | Array concatenation | `[1] + [2]` = `[1,2]`. Strip brackets, join with comma. Simple. |
 | `+` (strings) | String concatenation | Strip quotes, join, re-quote. Must handle escape sequences. |
 | `+` (objects) | Object merge | `{a:1} + {b:2}` = `{a:1,b:2}`. Must handle key conflicts (last wins). Scan right for all keys, iterate left skipping overrides, then append right. Complex but zero-alloc. |

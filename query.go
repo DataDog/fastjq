@@ -38,6 +38,9 @@ const (
 	opEndsWith                     // endswith("s")
 	opLtrimStr                     // ltrimstr("s")
 	opRtrimStr                     // rtrimstr("s")
+	opKeysUnsorted                 // keys_unsorted
+	opAny                          // any / any(expr)
+	opAll                          // all / all(expr)
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -288,6 +291,19 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opLength}, s[6:], nil
 	}
 
+	// keys_unsorted
+	if strings.HasPrefix(s, "keys_unsorted") && (len(s) == 13 || !isIdentChar(s[13])) {
+		return &op{typ: opKeysUnsorted}, s[13:], nil
+	}
+
+	// any / all — with optional (expr) argument
+	if strings.HasPrefix(s, "any") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return parseAnyAll(s[3:], opAny)
+	}
+	if strings.HasPrefix(s, "all") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return parseAnyAll(s[3:], opAll)
+	}
+
 	// ascii_downcase / ascii_upcase
 	if strings.HasPrefix(s, "ascii_downcase") && (len(s) == 14 || !isIdentChar(s[14])) {
 		return &op{typ: opAsciiDowncase}, s[14:], nil
@@ -451,6 +467,28 @@ func parseFieldChain(s string) (*op, string, error) {
 	}
 
 	return node, rest, nil
+}
+
+// parseAnyAll parses any/all with an optional (expr) argument.
+// s is the text after "any"/"all" has been consumed.
+// any(g; cond) two-arg form is not supported and returns an error.
+func parseAnyAll(s string, typ opType) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 || s[0] != '(' {
+		return &op{typ: typ}, s, nil // no-arg form
+	}
+	inner, rest, err := parsePipeExpr(s[1:])
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) > 0 && rest[0] == ';' {
+		return nil, rest, fmt.Errorf("any/all(generator; cond) two-arg form not yet supported; use any(expr) or any")
+	}
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after any/all argument")
+	}
+	return &op{typ: typ, child: inner}, rest[1:], nil
 }
 
 // parseStringArgBuiltin parses builtins of the form name("literal_string").

@@ -1704,6 +1704,194 @@ func TestConstructWithAlternative(t *testing.T) {
 	}
 }
 
+// --- keys_unsorted ---
+
+func TestKeysUnsortedObject(t *testing.T) {
+	p, _ := Compile("keys_unsorted")
+	got, err := p.Run([]byte(`{"b":2,"a":1,"c":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `["b","a","c"]` {
+		t.Errorf("got %s, want [\"b\",\"a\",\"c\"] (insertion order)", got)
+	}
+}
+
+func TestKeysUnsortedArray(t *testing.T) {
+	p, _ := Compile("keys_unsorted")
+	got, err := p.Run([]byte(`["x","y","z"]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `[0,1,2]` {
+		t.Errorf("got %s, want [0,1,2]", got)
+	}
+}
+
+func TestKeysUnsortedEmpty(t *testing.T) {
+	p, _ := Compile("keys_unsorted")
+	got, err := p.Run([]byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `[]` {
+		t.Errorf("got %s, want []", got)
+	}
+}
+
+// --- any / all ---
+
+func TestAnyNoArgTrueCase(t *testing.T) {
+	p, _ := Compile("any")
+	got, err := p.Run([]byte(`[false, null, 1]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestAnyNoArgFalseCase(t *testing.T) {
+	p, _ := Compile("any")
+	got, err := p.Run([]byte(`[false, null, false]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestAnyNoArgEmpty(t *testing.T) {
+	p, _ := Compile("any")
+	got, err := p.Run([]byte(`[]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false (empty → vacuously false)", got)
+	}
+}
+
+func TestAllNoArgTrue(t *testing.T) {
+	p, _ := Compile("all")
+	got, err := p.Run([]byte(`[1, "x", true]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestAllNoArgFalse(t *testing.T) {
+	p, _ := Compile("all")
+	got, err := p.Run([]byte(`[1, false, true]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestAllNoArgEmpty(t *testing.T) {
+	p, _ := Compile("all")
+	got, err := p.Run([]byte(`[]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true (empty → vacuously true)", got)
+	}
+}
+
+func TestAnyWithExpr(t *testing.T) {
+	p, _ := Compile(`any(. > 2)`)
+	got, err := p.Run([]byte(`[1, 2, 3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestAnyWithExprFalse(t *testing.T) {
+	p, _ := Compile(`any(. > 10)`)
+	got, err := p.Run([]byte(`[1, 2, 3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestAllWithExpr(t *testing.T) {
+	p, _ := Compile(`all(. > 0)`)
+	got, err := p.Run([]byte(`[1, 2, 3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestAllWithExprFalse(t *testing.T) {
+	p, _ := Compile(`all(. > 1)`)
+	got, err := p.Run([]byte(`[1, 2, 3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "false" {
+		t.Errorf("got %s, want false", got)
+	}
+}
+
+func TestAnyWithFieldExpr(t *testing.T) {
+	p, _ := Compile(`any(.active == true)`)
+	got, err := p.Run([]byte(`[{"active":false},{"active":true},{"active":false}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestAllWithFieldExpr(t *testing.T) {
+	p, _ := Compile(`all(.level == "error")`)
+	got, err := p.Run([]byte(`[{"level":"error"},{"level":"error"}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "true" {
+		t.Errorf("got %s, want true", got)
+	}
+}
+
+func TestAnyInSelect(t *testing.T) {
+	p, _ := Compile(`select(.tags | any(. == "critical"))`)
+	input := []byte(`{"msg":"boom","tags":["warn","critical"]}`)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(input) {
+		t.Errorf("got %s", got)
+	}
+	results, err := p.RunAll([]byte(`{"msg":"ok","tags":["info","warn"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results")
+	}
+}
+
 // --- ascii_downcase / ascii_upcase ---
 
 func TestAsciiDowncase(t *testing.T) {

@@ -84,6 +84,16 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(result)
 	case opWithEntries:
 		return execWithEntries(node, input, buf, fn)
+	case opKeysUnsorted:
+		result, err := execKeysUnsorted(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opAny:
+		return execAnyAll(node, input, buf, fn, false)
+	case opAll:
+		return execAnyAll(node, input, buf, fn, true)
 	case opAsciiDowncase:
 		result, err := execAsciiCase(input, buf, false)
 		if err != nil {
@@ -208,6 +218,12 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execToEntries(input, buf)
 	case opFromEntries:
 		return execFromEntries(input, buf)
+	case opKeysUnsorted:
+		return execKeysUnsorted(input, buf)
+	case opAny:
+		return execAnyAllSingle(node, input, buf, false)
+	case opAll:
+		return execAnyAllSingle(node, input, buf, true)
 	case opAsciiDowncase:
 		return execAsciiCase(input, buf, false)
 	case opAsciiUpcase:
@@ -999,6 +1015,116 @@ func execWithEntries(node *op, input []byte, buf []byte, fn func([]byte) error) 
 
 	buf = append(buf, '}')
 	return fn(buf)
+}
+
+// execKeysUnsorted returns object keys (insertion order) or array indices as a JSON array.
+func execKeysUnsorted(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return append(buf, "[]"...), nil
+	}
+	buf = append(buf, '[')
+	first := true
+	switch s.data[s.pos] {
+	case '{':
+		s.objectIter(func(key []byte, _, _ int) bool {
+			if !first {
+				buf = append(buf, ',')
+			}
+			first = false
+			buf = append(buf, '"')
+			buf = append(buf, key...)
+			buf = append(buf, '"')
+			return true
+		})
+	case '[':
+		count := s.arrayLen()
+		for i := 0; i < count; i++ {
+			if !first {
+				buf = append(buf, ',')
+			}
+			first = false
+			buf = appendInt(buf, i)
+		}
+	default:
+		return nil, fmt.Errorf("keys_unsorted input must be an object or array")
+	}
+	buf = append(buf, ']')
+	return buf, nil
+}
+
+// execAnyAll implements any/all with optional expr argument.
+// wantAll=false → any (true if at least one match), wantAll=true → all (true if all match).
+func execAnyAll(node *op, input []byte, buf []byte, fn func([]byte) error, wantAll bool) error {
+	result, err := execAnyAllSingle(node, input, buf, wantAll)
+	if err != nil {
+		return err
+	}
+	return fn(result)
+}
+
+func execAnyAllSingle(node *op, input []byte, buf []byte, wantAll bool) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		// empty input: any→false, all→true (vacuous truth)
+		return boolResult(buf, wantAll), nil
+	}
+
+	found := false   // for any: true if a match was found
+	falseFound := false // for all: true if a non-match was found
+
+	check := func(elem []byte) bool {
+		var truthy bool
+		if node.child == nil {
+			truthy = !isFalsy(elem)
+		} else {
+			condVal, _ := execSingle(node.child, elem, nil)
+			truthy = !isFalsy(condVal)
+		}
+		if !wantAll && truthy {
+			found = true
+			return false // stop early
+		}
+		if wantAll && !truthy {
+			falseFound = true
+			return false // stop early
+		}
+		return true
+	}
+
+	switch s.data[s.pos] {
+	case '[':
+		s.arrayIter(func(_ int, start, end int) bool {
+			return check(input[start:end])
+		})
+	case '{':
+		s.objectIter(func(_ []byte, start, end int) bool {
+			return check(input[start:end])
+		})
+	default:
+		return boolResult(buf, false), nil
+	}
+
+	if wantAll {
+		return boolResult(buf, !falseFound), nil
+	}
+	return boolResult(buf, found), nil
+}
+
+// boolResult returns bTrue/bFalse when buf is nil, or appends "true"/"false" to buf.
+func boolResult(buf []byte, v bool) []byte {
+	if v {
+		if buf == nil {
+			return bTrue
+		}
+		return append(buf, "true"...)
+	}
+	if buf == nil {
+		return bFalse
+	}
+	return append(buf, "false"...)
 }
 
 // execAsciiCase converts a JSON string to lower (upcase=false) or upper (upcase=true) case.

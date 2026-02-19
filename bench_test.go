@@ -304,6 +304,36 @@ func BenchmarkFastjq_Small_WithEntries(b *testing.B) {
 	}
 }
 
+func BenchmarkFastjq_Small_KeysUnsorted(b *testing.B) {
+	p, _ := Compile("keys_unsorted")
+	buf := make([]byte, 0, 64)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(smallJSON, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_Any(b *testing.B) {
+	// any on array of 5 elements — short-circuits on first truthy
+	input := []byte(`[false,false,true,false,false]`)
+	p, _ := Compile("any")
+	buf := make([]byte, 0, 8)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(input, buf)
+	}
+}
+
+func BenchmarkFastjq_Small_AnyExpr(b *testing.B) {
+	p, _ := Compile(`any(. == "xxxxxxxxxx")`)
+	input := []byte(`["aaaa","bbbb","xxxxxxxxxx","cccc","dddd"]`)
+	buf := make([]byte, 0, 8)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(input, buf)
+	}
+}
+
 func BenchmarkFastjq_Small_AsciiDowncase(b *testing.B) {
 	// select with case-insensitive match — most common use case
 	p, _ := Compile(`select(.field_2 | ascii_downcase == "xxxxxxxxxx")`)
@@ -684,6 +714,47 @@ func BenchmarkGojq_Small_WithEntries(b *testing.B) {
 	for b.Loop() {
 		var v any
 		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_KeysUnsorted(b *testing.B) {
+	query, _ := gojq.Parse("keys") // gojq uses keys; keys_unsorted not supported
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_Any(b *testing.B) {
+	input := []byte(`[false,false,true,false,false]`)
+	query, _ := gojq.Parse("any")
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(input, &v)
+		iter := code.Run(v)
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
+
+func BenchmarkGojq_Small_AnyExpr(b *testing.B) {
+	input := []byte(`["aaaa","bbbb","xxxxxxxxxx","cccc","dddd"]`)
+	query, _ := gojq.Parse(`any(. == "xxxxxxxxxx")`)
+	code, _ := gojq.Compile(query)
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(input, &v)
 		iter := code.Run(v)
 		result, _ := iter.Next()
 		benchSink, _ = json.Marshal(result)
