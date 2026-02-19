@@ -137,6 +137,3 @@ The condition is evaluated via a single-result path. If the condition uses an it
 
 **Input must be valid JSON.** Behavior on malformed input is undefined. Output is always compact (no pretty-printing).
 
-## License
-
-MIT
