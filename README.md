@@ -6,17 +6,25 @@ fastjq operates directly on raw `[]byte` — no `json.Unmarshal`, no `map[string
 
 **This is not a full jq implementation.** It supports a targeted subset of jq operations chosen for log processing workloads. See [Limitations](#limitations) before using.
 
-## Why
+## Design
 
-If you're processing JSONL log streams in Go — filtering by level, extracting fields, dropping sensitive keys — the standard approach is:
+The standard approach to jq-style processing in Go is:
 
 ```
 json.Unmarshal → manipulate map[string]interface{} → json.Marshal
 ```
 
-That round-trip dominates. For a 100KB log object, it costs ~870 µs and ~4,600 allocations per record, before you've done any actual work.
+That round-trip dominates. For a 100KB log object it costs ~870 µs and ~4,600 allocations per record — before you've done any actual work. fastjq eliminates it entirely.
 
-fastjq eliminates the round-trip. A `select(.level == "error")` on a 100KB object takes **7 ns** and **0 allocations** — it scans to the `level` field and exits immediately.
+**No parse tree.** fastjq never converts JSON to Go types. The input `[]byte` is the only representation. A scanner tracks a position integer and moves forward through the bytes, skipping values by depth-counting brackets rather than recursing.
+
+**Compile once, run many times.** `Compile` parses the query string into a small AST and allocates the result. That AST is immutable and safe for concurrent use. `Run`/`RunWithBuffer`/`RunFunc` do not allocate — they walk the input bytes with the scanner, guided by the pre-compiled AST.
+
+**Copy only what you need.** Field access returns a sub-slice of the input — no copy. Deletion reconstructs the object by copying the kept fields into an output buffer and inserting its own commas, so the result is always compact regardless of how the input was formatted. Nothing else is touched.
+
+**Zero allocations via caller-owned buffer.** Output is written into a `[]byte` passed in by the caller. The caller reuses the same buffer across calls — it grows if an output exceeds its current capacity, then stabilises. At steady state, zero heap allocations occur per record.
+
+**Early exit.** Operations like `select` and field access stop scanning as soon as they have what they need. `select(.level == "error")` on a 100KB object finds `level` early in the document and exits — it never touches the rest of the bytes.
 
 ## Benchmarks
 
@@ -128,14 +136,6 @@ The condition is evaluated via a single-result path. If the condition uses an it
 **No try-catch** (beyond `?` optional suppression).
 
 **Input must be valid JSON.** Behavior on malformed input is undefined. Output is always compact (no pretty-printing).
-
-## How It Works
-
-1. **Compile**: parse the query string into a small AST. Allocates once.
-2. **Execute**: walk the input `[]byte` with a zero-copy scanner. Field access finds the key by scanning byte-by-byte; deletion reconstructs the object with its own commas (never copies commas from input). Nothing is converted to a Go type.
-3. **Output**: results are written into a caller-supplied `[]byte` buffer, returned as a sub-slice.
-
-See [DESIGN.md](DESIGN.md) for architecture details.
 
 ## License
 
