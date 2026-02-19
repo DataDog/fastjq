@@ -31,6 +31,7 @@ const (
 	opLength                       // length
 	opToEntries                    // to_entries
 	opFromEntries                  // from_entries
+	opWithEntries                  // with_entries(f) — dedicated single-pass executor
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -298,11 +299,7 @@ func parseAtom(s string) (*op, string, error) {
 			return nil, rest, fmt.Errorf("expected ')' after with_entries() expression")
 		}
 		rest = rest[1:]
-		// Desugar: to_entries | map(inner) | from_entries
-		iterPipe := &op{typ: opPipe, left: &op{typ: opIterator}, right: inner}
-		mapArr := &op{typ: opArrayConstruct, elems: []*op{iterPipe}}
-		pipe1 := &op{typ: opPipe, left: &op{typ: opToEntries}, right: mapArr}
-		return &op{typ: opPipe, left: pipe1, right: &op{typ: opFromEntries}}, rest, nil
+		return &op{typ: opWithEntries, child: inner}, rest, nil
 	}
 
 	// map(expr) — desugars to [.[] | expr] at parse time

@@ -34,15 +34,14 @@ All times in µs. Small/Medium values are sub-microsecond but shown with enough 
 | `has("key")` in select | Small (~100B) | 0.012 | 0.554 | **48x** | 0 | 20 |
 | `if-then-else` | Small (~100B) | 0.0098 | 0.446 | **46x** | 0 | 16 |
 | `length` | Small (~100B) | 0.0064 | 0.363 | **56x** | 0 | 13 |
-| `map(.name)` | 20-elem array (~600B) | 1.9 | 10.1 | **5.4x** | 20 | 251 |
-| `to_entries` | Small (~100B) | 0.0063 | 0.369 | **59x** | 0 | 14 |
-| `with_entries(select(...))` | Small (~100B) | 0.039 | 0.482 | **12x** | 2 | 19 |
+| `map(.name)` | 20-elem array (~600B) | 1.99 | 9.98 | **5.0x** | 0 | 251 |
+| `to_entries` | Small (~100B) | 0.0062 | 0.359 | **58x** | 0 | 14 |
+| `with_entries(select(...))` | Small (~100B) | 0.0054 | 0.491 | **91x** | 0 | 19 |
 | Alternative `.f // "default"` | Small (~100B) | 0.0072 | 0.456 | **63x** | 0 | 17 |
 
 ## Key Takeaways
 
-- **fastjq achieves 0 allocations** across most operations when using `RunWithBuffer` or `RunFunc`
-- **`map` and array collection involve per-element allocations** (one per result from `execMulti` using a nil scratch buffer to avoid aliasing). 20-element `map(.name)` = 20 allocs. This is a deliberate tradeoff — correct output over zero-alloc for these inherently transforming operations.
+- **fastjq achieves 0 allocations** across all operations in steady state when using `RunWithBuffer` or `RunFunc`
 - **Fastest on small inputs** where gojq's marshal/unmarshal overhead dominates (up to 63x faster)
 - **Still significantly faster on large inputs** (2.5x–5x) where both engines are scanning lots of data
 - **Compound select (and/or) is ~56–60x faster**: each boolean operand is evaluated via `execSingle` with no closures; gojq must unmarshal the full object
@@ -66,14 +65,14 @@ BenchmarkFastjq_Large_Iterator-16       	  125816	      9353 ns/op	       0 B/op
 BenchmarkFastjq_Small_Select-16         	127535204	         9.412 ns/op	       0 B/op	       0 allocs/op
 BenchmarkFastjq_Large_Select-16         	   70533	     15886 ns/op	      52 B/op	       0 allocs/op
 BenchmarkFastjq_Small_Alternative-16    	166693396	         7.202 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_SelectAnd-16      	100000000	        10.88 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_SelectOr-16       	100000000	        10.93 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Has-16            	100000000	        11.54 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_IfThenElse-16     	122431113	         9.800 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Length-16         	186295711	         6.442 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Map-16            	  585703	      1872 ns/op	     240 B/op	      20 allocs/op
-BenchmarkFastjq_Small_ToEntries-16      	188879682	         6.331 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_WithEntries-16    	 30020920	        39.28 ns/op	      16 B/op	       2 allocs/op
+BenchmarkFastjq_Small_SelectAnd-16      	100000000	        10.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_SelectOr-16       	100000000	        10.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Has-16            	100000000	        11.60 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_IfThenElse-16     	122896479	         9.767 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Length-16         	190670870	         6.268 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Map-16            	  618403	      1992 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_ToEntries-16      	192997694	         6.237 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_WithEntries-16    	223646692	         5.358 ns/op	       0 B/op	       0 allocs/op
 BenchmarkGojq_Small_Del-16              	 1236974	       962.8 ns/op	    2594 B/op	      33 allocs/op
 BenchmarkGojq_Medium_Del-16             	   63924	     18917 ns/op	   16967 B/op	     323 allocs/op
 BenchmarkGojq_Large_Del-16              	    1486	    798991 ns/op	  539192 B/op	    4666 allocs/op
@@ -94,8 +93,8 @@ BenchmarkGojq_Small_Has-16              	 2147979	       553.7 ns/op	    1753 B/
 BenchmarkGojq_Small_IfThenElse-16       	 2712096	       446.3 ns/op	    1361 B/op	      16 allocs/op
 BenchmarkGojq_Small_Length-16           	 3338461	       363.0 ns/op	    1177 B/op	      13 allocs/op
 BenchmarkGojq_Small_Map-16              	  117776	     10116 ns/op	   13653 B/op	     251 allocs/op
-BenchmarkGojq_Small_ToEntries-16        	 3272193	       368.8 ns/op	    1209 B/op	      14 allocs/op
-BenchmarkGojq_Small_WithEntries-16      	 2436348	       482.4 ns/op	    1529 B/op	      19 allocs/op
+BenchmarkGojq_Small_ToEntries-16        	 3356006	       359.4 ns/op	    1209 B/op	      14 allocs/op
+BenchmarkGojq_Small_WithEntries-16      	 2439589	       490.9 ns/op	    1529 B/op	      19 allocs/op
 ```
 
 ## CLI Throughput: fastjq vs jq

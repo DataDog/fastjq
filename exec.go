@@ -11,6 +11,11 @@ var (
 	errExpectedIterable    = errors.New("expected array or object for .[]")
 )
 
+// bTrue / bFalse are package-level literals returned directly when buf == nil,
+// avoiding heap allocation for boolean results in zero-scratch evaluation paths.
+var bTrue = []byte("true")
+var bFalse = []byte("false")
+
 // execMulti executes an op against input, calling fn for each result.
 // Single-output ops call fn once. Iterators call fn per element.
 // buf is used as scratch space and may be reused across fn calls.
@@ -77,6 +82,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opWithEntries:
+		return execWithEntries(node, input, buf, fn)
 	case opEmpty:
 		return nil // produce zero outputs — never call fn
 	case opHas:
@@ -98,6 +105,11 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	switch node.typ {
 	case opLiteral:
+		// When buf is nil, return the compile-time literal bytes directly (zero-alloc).
+		// Safe since callers only read the result, never append beyond len.
+		if buf == nil {
+			return node.literal, nil
+		}
 		return append(buf, node.literal...), nil
 	case opIdentity:
 		return execIdentity(input, buf)
@@ -115,6 +127,9 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			return nil, err
 		}
 		if isFalsy(leftVal) {
+			if buf == nil {
+				return bFalse, nil
+			}
 			return append(buf[:0], "false"...), nil
 		}
 		rightVal, err := execSingle(node.right, input, buf)
@@ -122,7 +137,13 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			return nil, err
 		}
 		if isFalsy(rightVal) {
+			if buf == nil {
+				return bFalse, nil
+			}
 			return append(buf[:0], "false"...), nil
+		}
+		if buf == nil {
+			return bTrue, nil
 		}
 		return append(buf[:0], "true"...), nil
 	case opOr:
@@ -131,6 +152,9 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			return nil, err
 		}
 		if !isFalsy(leftVal) {
+			if buf == nil {
+				return bTrue, nil
+			}
 			return append(buf[:0], "true"...), nil
 		}
 		rightVal, err := execSingle(node.right, input, buf)
@@ -138,12 +162,24 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			return nil, err
 		}
 		if !isFalsy(rightVal) {
+			if buf == nil {
+				return bTrue, nil
+			}
 			return append(buf[:0], "true"...), nil
+		}
+		if buf == nil {
+			return bFalse, nil
 		}
 		return append(buf[:0], "false"...), nil
 	case opNot:
 		if isFalsy(input) {
+			if buf == nil {
+				return bTrue, nil
+			}
 			return append(buf, "true"...), nil
+		}
+		if buf == nil {
+			return bFalse, nil
 		}
 		return append(buf, "false"...), nil
 	case opLength:
@@ -181,11 +217,18 @@ func exec(node *op, input []byte, buf []byte) ([]byte, error) {
 }
 
 // execIdentity copies the input to the output buffer (trimmed of whitespace).
+// When buf is nil, returns a cap-limited sub-slice of input directly (zero-alloc).
+// Cap-limited prevents callers from using spare capacity as scratch, which would
+// corrupt the input bytes.
 func execIdentity(input []byte, buf []byte) ([]byte, error) {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	start := s.pos
 	s.skipValue()
+	if buf == nil {
+		end := s.pos
+		return input[start:end:end], nil
+	}
 	return append(buf, input[start:s.pos]...), nil
 }
 
@@ -212,7 +255,11 @@ func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	if node.child != nil {
 		return execMulti(node.child, value, buf, fn)
 	}
-
+	// When buf is nil, pass a cap-limited sub-slice directly (zero-alloc).
+	// Cap-limited prevents callers from treating spare capacity as scratch.
+	if buf == nil {
+		return fn(value[:len(value):len(value)])
+	}
 	return fn(append(buf, value...))
 }
 
@@ -238,7 +285,10 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 	if node.child != nil {
 		return exec(node.child, value, buf)
 	}
-
+	// When buf is nil, return a cap-limited sub-slice directly (zero-alloc).
+	if buf == nil {
+		return value[:len(value):len(value)], nil
+	}
 	return append(buf, value...), nil
 }
 
@@ -279,7 +329,9 @@ func execIndexMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	if node.child != nil {
 		return execMulti(node.child, result, buf, fn)
 	}
-
+	if buf == nil {
+		return fn(result[:len(result):len(result)])
+	}
 	return fn(append(buf, result...))
 }
 
@@ -320,7 +372,9 @@ func execIndex(node *op, input []byte, buf []byte) ([]byte, error) {
 	if node.child != nil {
 		return exec(node.child, result, buf)
 	}
-
+	if buf == nil {
+		return result[:len(result):len(result)], nil
+	}
 	return append(buf, result...), nil
 }
 
@@ -552,13 +606,24 @@ func execCompareSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	rightBuf := leftVal[len(leftVal):len(leftVal):cap(leftVal)]
+	// When buf is nil, leftVal is a cap-limited sub-slice (no spare capacity).
+	// Use nil scratch for the right side to avoid writing into input's backing array.
+	var rightBuf []byte
+	if buf != nil {
+		rightBuf = leftVal[len(leftVal):len(leftVal):cap(leftVal)]
+	}
 	rightVal, err := execSingle(node.right, input, rightBuf)
 	if err != nil {
 		return nil, err
 	}
 	if evalCmpOp(node.cmpOp, leftVal, rightVal) {
+		if buf == nil {
+			return bTrue, nil
+		}
 		return append(buf[:0], "true"...), nil
+	}
+	if buf == nil {
+		return bFalse, nil
 	}
 	return append(buf[:0], "false"...), nil
 }
@@ -753,6 +818,56 @@ func execToEntries(input []byte, buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
+// parseEntryKeyValue scans a single to_entries-style object and extracts
+// the unquoted key string and the value bounds. Called from execFromEntries.
+// Implemented as a standalone (non-closure) function so the scanner variables
+// stay on the stack and do not escape to the heap.
+func parseEntryKeyValue(elem []byte) (keyContent []byte, valStart, valEnd int) {
+	valStart, valEnd = -1, -1
+	s := scanner{data: elem}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
+		return
+	}
+	s.pos++ // skip '{'
+	s.skipWhitespace()
+	if s.pos < len(s.data) && s.data[s.pos] == '}' {
+		return // empty object
+	}
+	for s.pos < len(s.data) {
+		s.skipWhitespace()
+		if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+			break
+		}
+		k := s.readString()
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ':' {
+			s.pos++
+		}
+		s.skipWhitespace()
+		vs := s.pos
+		s.skipValue()
+		ve := s.pos
+
+		if bytesEqualStr(k, "key") || bytesEqualStr(k, "name") {
+			inner := scanner{data: elem[vs:ve]}
+			inner.skipWhitespace()
+			if inner.pos < len(inner.data) && inner.data[inner.pos] == '"' {
+				keyContent = inner.readString()
+			}
+		} else if bytesEqualStr(k, "value") {
+			valStart, valEnd = vs, ve
+		}
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ',' {
+			s.pos++
+		} else {
+			break
+		}
+	}
+	return
+}
+
 // execFromEntries converts a [{key,value}] array back to a JSON object.
 // Each entry may use "key" or "name" as the key field.
 // Non-array input produces an empty object.
@@ -765,26 +880,7 @@ func execFromEntries(input []byte, buf []byte) ([]byte, error) {
 	buf = append(buf, '{')
 	first := true
 	s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-		elem := input[elemStart:elemEnd]
-		es := &scanner{data: elem}
-
-		var keyContent []byte // unquoted key string
-		var valStart, valEnd int = -1, -1
-
-		es.objectIter(func(k []byte, vs, ve int) bool {
-			if bytesEqualStr(k, "key") || bytesEqualStr(k, "name") {
-				// Extract unquoted string content of the key field value
-				inner := &scanner{data: elem[vs:ve]}
-				inner.skipWhitespace()
-				if inner.pos < len(inner.data) && inner.data[inner.pos] == '"' {
-					keyContent = inner.readString()
-				}
-			} else if bytesEqualStr(k, "value") {
-				valStart, valEnd = vs, ve
-			}
-			return true
-		})
-
+		keyContent, valStart, valEnd := parseEntryKeyValue(input[elemStart:elemEnd])
 		if keyContent == nil || valStart == -1 {
 			return true // skip malformed entry
 		}
@@ -795,11 +891,82 @@ func execFromEntries(input []byte, buf []byte) ([]byte, error) {
 		buf = append(buf, '"')
 		buf = append(buf, keyContent...)
 		buf = append(buf, '"', ':')
-		buf = append(buf, elem[valStart:valEnd]...)
+		buf = append(buf, input[elemStart:elemEnd][valStart:valEnd]...)
 		return true
 	})
 	buf = append(buf, '}')
 	return buf, nil
+}
+
+// execWithEntries applies f to each {key, value} entry of the input object
+// and reconstructs an object from the results.
+//
+// Uses exec() (no caller-supplied closure) to apply f, which allows Go to
+// stack-allocate exec's internal result-capture closure. The object iteration
+// is inlined. entryBuf is pre-allocated to avoid growth allocs.
+func execWithEntries(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
+		return fn(append(buf, "{}"...))
+	}
+
+	buf = append(buf, '{')
+	first := true
+	entryBuf := make([]byte, 0, 64) // pre-alloc avoids realloc growth from nil
+
+	s.pos++ // skip '{'
+	s.skipWhitespace()
+	for s.pos < len(s.data) && s.data[s.pos] != '}' {
+		s.skipWhitespace()
+		if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+			break
+		}
+		key := s.readString()
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ':' {
+			s.pos++
+		}
+		s.skipWhitespace()
+		vS := s.pos
+		s.skipValue()
+		vE := s.pos
+
+		entryBuf = entryBuf[:0]
+		entryBuf = append(entryBuf, `{"key":"`...)
+		entryBuf = append(entryBuf, key...)
+		entryBuf = append(entryBuf, `","value":`...)
+		entryBuf = append(entryBuf, input[vS:vE]...)
+		entryBuf = append(entryBuf, '}')
+
+		// exec returns nil when f produces no output (e.g. select dropped it).
+		// parseEntryKeyValue returns nil for nil/non-entry results — those are skipped.
+		result, err := exec(node.child, entryBuf, nil)
+		if err != nil {
+			return err
+		}
+		kc, vs, ve := parseEntryKeyValue(result)
+		if kc != nil && vs != -1 {
+			if !first {
+				buf = append(buf, ',')
+			}
+			first = false
+			buf = append(buf, '"')
+			buf = append(buf, kc...)
+			buf = append(buf, '"', ':')
+			buf = append(buf, result[vs:ve]...)
+		}
+
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ',' {
+			s.pos++
+		} else {
+			break
+		}
+	}
+
+	buf = append(buf, '}')
+	return fn(buf)
 }
 
 // execHas checks whether the input object contains a field.

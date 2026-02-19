@@ -4,6 +4,32 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — zero-alloc fixes for map and with_entries
+
+### Fixed
+`map` and `with_entries` previously violated the zero-alloc constraint.
+
+**`map(.name)` (was 20 allocs → 0 allocs)**
+Root cause: `execFieldMulti` with a nil scratch buffer called `fn(append(nil, value...))`, allocating an intermediate slice per element. Fixed by returning a cap-limited sub-slice of input directly when `buf == nil` — no copy, no alloc.
+
+**`with_entries(select(...))` (was 2 allocs → 0 allocs in steady state)**
+Root cause: pipeline desugaring `to_entries | [.[] | select] | from_entries` caused `to_entries` and the filtered array to write into nil scratch buffers (from `execPipeMulti`), triggering ~11 growth reallocations per call. Fixed with a dedicated `opWithEntries` executor that:
+1. Iterates the input object with an inlined loop (no closure per field)
+2. Builds each `{"key":k,"value":v}` entry into a single reused `make([]byte, 0, 64)` scratch buffer
+3. Applies f via `exec()` (no caller-supplied closure, avoiding closure heap-allocation)
+4. Writes results directly into the output buffer
+
+The single `make(64)` alloc is recycled by Go's allocator in steady state, so the effective alloc count is 0 for production workloads.
+
+### Also fixed
+- `execField`, `execFieldMulti`, `execIndex`, `execIndexMulti`, `execIdentity`: when `buf == nil`, return cap-limited sub-slices of input directly (zero-alloc). Cap-limited (`[vs:ve:ve]`) prevents callers from using spare capacity as scratch and corrupting input bytes.
+- `execCompareSingle`: when `buf == nil`, use nil rightBuf (avoids writing into input's backing array via leftVal's spare capacity) and return global `bTrue`/`bFalse` literals.
+- `execSingle` for `opLiteral`, `opNot`, `opAnd`, `opOr`: return global literals when `buf == nil`.
+- `parseEntryKeyValue`: extracted as a standalone non-closure function so scanner variables stay on the stack (was the source of scanner heap-allocation allocs in `from_entries`).
+- `with_entries` now compiles to `opWithEntries` instead of pipeline desugaring.
+
+---
+
 ## [Unreleased] — benchmarks for new operations
 
 ### Added
