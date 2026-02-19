@@ -83,6 +83,12 @@ All times in µs. Small/Medium values are sub-microsecond but shown with enough 
 | `min_by(.value)` | 100-elem object array | 12.4 | 55.7 | **4.5x** | 0 | 1,347 |
 | `@uri` | 36-char URL string | 0.102 | 0.669 | **6.6x** | 0 | 14 |
 | `.a - .b` (array diff) | 5-elem arrays | 0.214 | 1.277 | **6.0x** | 0 | 33 |
+| `try .field` (no error) | Small (~100B) | 0.138 | 0.944 | **6.8x** | 0 | 30 |
+| object merge `.a + .b` | Small (~100B) | 0.158 | 1.359 | **8.6x** | 0 | 33 |
+| `tojson` | Small (~100B) | 0.194 | 1.507 | **7.8x** | 0 | 39 |
+| `fromjson` | JSON string | 0.047 | 1.175 | **25x** | 0 | 31 |
+| `tonumber` | `"42"` string | 0.016 | 0.331 | **21x** | 0 | 11 |
+| `any(.[]; . > 100)` | 200-int array | 2.9 | 26.8 | **9.2x** | 0 | 629 |
 
 ## Key Takeaways
 
@@ -164,6 +170,20 @@ BenchmarkFastjq_Small_Min-16              	  757362	      1696 ns/op	       0 B/
 BenchmarkFastjq_Small_MinBy-16            	  123882	     11080 ns/op	       0 B/op	       0 allocs/op
 BenchmarkFastjq_Small_URIEncode-16        	13283856	        91.24 ns/op	       0 B/op	       0 allocs/op
 BenchmarkFastjq_Small_ArrayDiff-16        	 5784708	       205.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_TryNoError-16       	 7593350	       138.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_TryCatchNoError-16  	 9530468	       141.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_TryNoError-16         	 1282160	       944.2 ns/op	    1913 B/op	      30 allocs/op
+BenchmarkFastjq_Small_ObjectMerge-16      	 7536252	       158.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_ObjectMerge-16        	  857368	      1359 ns/op	    2906 B/op	      33 allocs/op
+BenchmarkFastjq_Small_ToJSON-16           	 6485331	       193.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_ToJSON-16             	  829893	      1507 ns/op	    2410 B/op	      39 allocs/op
+BenchmarkFastjq_Small_FromJSON-16         	26773711	        47.39 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_FromJSON-16           	 1000000	      1175 ns/op	    2714 B/op	      31 allocs/op
+BenchmarkFastjq_Small_ToString-16         	 5360292	       202.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_ToNumber-16         	77560298	        15.53 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_ToNumber-16           	 3653104	       331.0 ns/op	    1112 B/op	      11 allocs/op
+BenchmarkFastjq_Small_AnyTwoArg-16        	  429387	      2931 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_AnyTwoArg-16          	   44340	     26784 ns/op	   26303 B/op	     629 allocs/op
 ```
 
 ## CLI Throughput: fastjq vs jq
