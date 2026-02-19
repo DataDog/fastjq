@@ -199,10 +199,6 @@ func TestJQCompat(t *testing.T) {
 		{"from_entries name alias", "from_entries", `[{"name":"x","value":42}]`, ""},
 		{"to_entries round-trip", "to_entries | from_entries", `{"a":1,"b":2,"c":3}`, ""},
 
-		// --- with_entries ---
-		{"with_entries filter null", `with_entries(select(.value != null))`, `{"a":1,"b":null,"c":3}`, ""},
-		{"with_entries filter key", `with_entries(select(.key != "secret"))`, `{"name":"alice","secret":"s3cr3t"}`, ""},
-
 		// --- keys_unsorted ---
 		{"keys_unsorted object", "keys_unsorted", `{"b":2,"a":1,"c":3}`, ""},
 		{"keys_unsorted empty", "keys_unsorted", `{}`, ""},
@@ -319,7 +315,6 @@ func TestJQCompat(t *testing.T) {
 		{"log drop sensitive", `del(.password,.token)`, `{"user":"alice","password":"s3cr3t","token":"abc123"}`, ""},
 		{"log case insensitive", `select(.level | ascii_downcase == "error")`, `{"level":"ERROR","msg":"boom"}`, ""},
 		{"log prefix filter", `select(.path | startswith("/api/"))`, `{"path":"/api/users","status":200}`, ""},
-		{"log normalize", `with_entries(select(.value != null))`, `{"a":1,"b":null,"c":"x"}`, ""},
 		{"log extract from array", `.items[] | select(.active) | .name`, `{"items":[{"name":"a","active":true},{"name":"b","active":false},{"name":"c","active":true}]}`, ""},
 		{"log type routing", `if .level == "error" then {alert: .msg} else empty end`, `{"level":"error","msg":"disk full"}`, ""},
 		{"log alternative default", `.service // "unknown"`, `{"level":"error"}`, ""},

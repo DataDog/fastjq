@@ -273,12 +273,6 @@ func BenchmarkFastjq_Small_ToEntries(b *testing.B) {
 func BenchmarkFastjq_Large_ToEntries(b *testing.B) {
 	benchFastjqObj(b, `to_entries`, largeJSON)
 }
-func BenchmarkFastjq_Small_WithEntries(b *testing.B) {
-	benchFastjqObj(b, `with_entries(select(.value != null))`, smallJSON)
-}
-func BenchmarkFastjq_Large_WithEntries(b *testing.B) {
-	benchFastjqObj(b, `with_entries(select(.value != null))`, largeJSON)
-}
 func BenchmarkFastjq_Small_KeysUnsorted(b *testing.B) {
 	benchFastjqObj(b, `keys_unsorted`, smallJSON)
 }
@@ -465,9 +459,6 @@ func BenchmarkGojq_Small_Map(b *testing.B)          { benchGojqObj(b, `map(.name
 func BenchmarkGojq_Large_Map(b *testing.B)          { benchGojqObj(b, `map(.name)`, largeArray) }
 func BenchmarkGojq_Small_ToEntries(b *testing.B)    { benchGojqObj(b, `to_entries`, smallJSON) }
 func BenchmarkGojq_Large_ToEntries(b *testing.B)    { benchGojqLargeRot(b, `to_entries`) }
-func BenchmarkGojq_Small_WithEntries(b *testing.B) {
-	benchGojqObj(b, `with_entries(select(.value != null))`, smallJSON)
-}
 func BenchmarkGojq_Small_KeysUnsorted(b *testing.B) {
 	benchGojqObj(b, `keys`, smallJSON) // gojq: keys_unsorted not supported
 }

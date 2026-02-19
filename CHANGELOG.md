@@ -4,6 +4,17 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — reject with_entries
+
+### Rejected
+- **`with_entries(f)`** — evaluated and removed. `with_entries` must build each `{"key":k,"value":v}` entry as a temporary JSON object before passing it to `f`. The entry bytes cannot share the output buffer (they may be read by `f` while results are being written), so a dedicated scratch buffer (`make([]byte, 0, 64)`) is unavoidable — 1 alloc/call that does not recycle in steady state at 100x iterations.
+
+  The use cases are covered without the alloc: `to_entries | map(f) | from_entries` composes the same result using the caller-supplied buffer. For filtering null values: `to_entries | map(select(.value != null)) | from_entries`. For redacting keys: `to_entries | map(select(.key != "secret")) | from_entries`.
+
+  Documented in SYNTAX.md as "Rejected" alongside `range` and `recurse`.
+
+---
+
 ## [Unreleased] — add, range, flatten, split, join
 
 ### Added
@@ -24,10 +35,7 @@ Five new zero-alloc operations:
 ## [Unreleased] — from_entries: capitalized key variants (Key, Name, Value)
 
 ### Fixed
-`from_entries` (and `parseEntryKeyValue` used by `with_entries`) now accepts all jq-documented capitalized variants: `"Key"`, `"Name"`, `"Value"` in addition to the existing `"key"`, `"name"`, `"value"`.
-
-### with_entries alloc — clarification
-The single `make([]byte, 0, 64)` alloc in `with_entries` is necessary and correct. `f` receives `{"key":"k","value":v}` as a JSON object; that object must exist as bytes in memory. Using `buf`'s spare capacity is unsafe because `exec(f, entry, nil)` may return result bytes that are sub-slices of `entry` — when we subsequently write the output to `buf`, it would overwrite the bytes we're still reading from. The 64-byte scratch is the minimum required, and the alloc is recycled by Go's allocator in steady state.
+`from_entries` now accepts all jq-documented capitalized variants: `"Key"`, `"Name"`, `"Value"` in addition to the existing `"key"`, `"name"`, `"value"`. (`parseEntryKeyValue` is also used internally by `execFromEntries`.)
 
 ---
 
@@ -105,7 +113,7 @@ The single `make([]byte, 0, 64)` alloc in `with_entries` is necessary and correc
 ## [Unreleased] — jq compatibility harness
 
 ### Added
-`compat_test.go`: 149 test cases verifying fastjq produces byte-identical output to the jq CLI (1.8.1) across all supported operations. Tests cover identity, field access, deletion, construction, pipes, comparisons, boolean logic, select, alternative, type, has, length, map, to/from/with_entries, keys_unsorted, any/all, first/last/limit, if-then-else, string operations (downcase, upcase, startswith, endswith, ltrimstr, rtrimstr), flatten, add, split, join, unicode, and realistic log processing patterns.
+`compat_test.go`: 147 test cases verifying fastjq produces byte-identical output to the jq CLI (1.8.1) across all supported operations. Tests cover identity, field access, deletion, construction, pipes, comparisons, boolean logic, select, alternative, type, has, length, map, to_entries/from_entries, keys_unsorted, any/all, first/last/limit, if-then-else, string operations (downcase, upcase, startswith, endswith, ltrimstr, rtrimstr), flatten, add, split, join, unicode, and realistic log processing patterns.
 
 Tests are skipped automatically when `jq` is not in PATH.
 
@@ -157,12 +165,10 @@ Tests are skipped automatically when `jq` is not in PATH.
 
 ### Changed
 Added Large (and Medium for map) benchmarks for all operations that previously only had Small variants:
-- Large object benchmarks: `has`, `length`, `keys_unsorted`, `to_entries`, `with_entries`, `ascii_downcase`, `startswith`, `ltrimstr`
+- Large object benchmarks: `has`, `length`, `keys_unsorted`, `to_entries`, `ascii_downcase`, `startswith`, `ltrimstr`
 - Large/Medium array benchmarks: `map`, `any`, `any(expr)`, `first(expr)`, `last(expr)`, `limit`
 
 **Fixed**: Three Large benchmarks (`has`, `ascii_downcase`, `startswith`) were showing calibration artifacts because `buf, _ = RunWithBuffer(...)` reassigned `buf` to a sub-slice of the input (for `select` operations that return input unchanged). Subsequent iterations used that sub-slice as scratch, corrupting rotation inputs. Fixed by using `_, _ = RunWithBuffer(input, scratch[:0])` with a dedicated non-reassigned scratch buffer.
-
-**Fixed**: `execWithEntries` entry scratch buffer reverted to 64-byte initial capacity (was changed to size-proportional which prevented allocator recycling). The 64-byte version recycles in steady state for typical inputs.
 
 Added 5 new CLI benchmark queries to `bench_vs_jq.sh`:
 - `select(.field_2 | ascii_downcase == "xxxxxxxxxx")` — 18x faster
@@ -225,29 +231,17 @@ All zero-alloc. `buf == nil` fast-paths added to predicates (return global liter
 
 ---
 
-## [Unreleased] — zero-alloc fixes for map and with_entries
+## [Unreleased] — zero-alloc fix for map
 
 ### Fixed
-`map` and `with_entries` previously violated the zero-alloc constraint.
-
 **`map(.name)` (was 20 allocs → 0 allocs)**
 Root cause: `execFieldMulti` with a nil scratch buffer called `fn(append(nil, value...))`, allocating an intermediate slice per element. Fixed by returning a cap-limited sub-slice of input directly when `buf == nil` — no copy, no alloc.
-
-**`with_entries(select(...))` (was 2 allocs → 0 allocs in steady state)**
-Root cause: pipeline desugaring `to_entries | [.[] | select] | from_entries` caused `to_entries` and the filtered array to write into nil scratch buffers (from `execPipeMulti`), triggering ~11 growth reallocations per call. Fixed with a dedicated `opWithEntries` executor that:
-1. Iterates the input object with an inlined loop (no closure per field)
-2. Builds each `{"key":k,"value":v}` entry into a single reused `make([]byte, 0, 64)` scratch buffer
-3. Applies f via `exec()` (no caller-supplied closure, avoiding closure heap-allocation)
-4. Writes results directly into the output buffer
-
-The single `make(64)` alloc is recycled by Go's allocator in steady state, so the effective alloc count is 0 for production workloads.
 
 ### Also fixed
 - `execField`, `execFieldMulti`, `execIndex`, `execIndexMulti`, `execIdentity`: when `buf == nil`, return cap-limited sub-slices of input directly (zero-alloc). Cap-limited (`[vs:ve:ve]`) prevents callers from using spare capacity as scratch and corrupting input bytes.
 - `execCompareSingle`: when `buf == nil`, use nil rightBuf (avoids writing into input's backing array via leftVal's spare capacity) and return global `bTrue`/`bFalse` literals.
 - `execSingle` for `opLiteral`, `opNot`, `opAnd`, `opOr`: return global literals when `buf == nil`.
 - `parseEntryKeyValue`: extracted as a standalone non-closure function so scanner variables stay on the stack (was the source of scanner heap-allocation allocs in `from_entries`).
-- `with_entries` now compiles to `opWithEntries` instead of pipeline desugaring.
 
 ---
 
@@ -255,7 +249,7 @@ The single `make(64)` alloc is recycled by Go's allocator in steady state, so th
 
 ### Added
 Added fastjq vs gojq benchmarks for all operations added since the last benchmark update:
-`SelectAnd`, `SelectOr`, `Has`, `IfThenElse`, `Length`, `Map`, `ToEntries`, `WithEntries`.
+`SelectAnd`, `SelectOr`, `Has`, `IfThenElse`, `Length`, `Map`, `ToEntries`.
 Also added `generateObjectArray(n)` helper and `smallArray` (20-element array, ~600B) for array-based benchmarks.
 
 ### Notable results (Apple M4 Max, Go 1.25)
@@ -269,18 +263,16 @@ Also added `generateObjectArray(n)` helper and `smallArray` (20-element array, ~
 | `length` | 6.4 ns | 363 ns | **56x** | 0 |
 | `map(.name)` (20 elems) | 1,872 ns | 10,116 ns | **5.4x** | 20 |
 | `to_entries` | 6.3 ns | 369 ns | **59x** | 0 |
-| `with_entries(select(...))` | 39 ns | 482 ns | **12x** | 2 |
 
 `map` shows 20 allocs (one per element) due to nil scratch in `execArrayConstruct` — see length/map CHANGELOG entry. All other new operations are 0-alloc.
 
 ---
 
-## [Unreleased] — to_entries, from_entries, with_entries
+## [Unreleased] — to_entries, from_entries
 
 ### Added
 - `to_entries` — converts `{"a":1,"b":2}` to `[{"key":"a","value":1},{"key":"b","value":2}]`. Zero-alloc: writes directly into output buffer via objectIter. Non-object input returns `[]`.
 - `from_entries` — converts `[{"key":"a","value":1}]` back to `{"a":1}`. Accepts both `"key"` and `"name"` as the key field name. Zero-alloc: reads entry fields via objectIter, writes output directly.
-- `with_entries(expr)` — desugars to `to_entries | map(expr) | from_entries` at parse time. No new op type. Enables patterns like `with_entries(select(.value != null))` to filter null fields and `with_entries(select(.key != "secret"))` to redact keys.
 
 ### Tradeoffs
 - `to_entries` on non-object input silently returns `[]` rather than erroring. This is a graceful degradation for mixed-type streams.

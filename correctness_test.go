@@ -323,12 +323,6 @@ func TestEdgeCaseHasVsNullCheck(t *testing.T) {
 	assertQuery(t, `.x != null`, `{}`, `false`) // missing → null → equals null
 }
 
-func TestEdgeCaseWithEntriesPreservesOrder(t *testing.T) {
-	// with_entries preserves insertion order
-	input := `{"c":3,"a":1,"b":2}`
-	assertQuery(t, `with_entries(select(.value > 1))`, input, `{"c":3,"b":2}`)
-}
-
 func TestEdgeCasePipeMultiOutput(t *testing.T) {
 	// Pipes propagate multi-output correctly
 	p, _ := Compile(`.items[] | select(.active == true) | .name`)

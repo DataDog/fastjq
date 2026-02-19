@@ -259,7 +259,7 @@ For strings, `index` and `rindex` search for raw byte sequences (escape sequence
 
 Slicing uses **logical characters** for strings: each escape sequence (`\n`, `\uXXXX`, etc.) counts as one character. Negative indices count from the end. Indices are clamped to valid range.
 
-`+` supports: strings (concat), arrays (concat), numbers (sum). Null is the identity element. Object merging with `+` is not yet supported — use `with_entries` instead.
+`+` supports: strings (concat), arrays (concat), numbers (sum). Null is the identity element. Object merging with `+` is not yet supported.
 
 ### Reduction and Generation
 
@@ -319,9 +319,8 @@ Escape sequences in strings are preserved by case conversion. All string operati
 |--------|-------------|---------------|----------------|
 | `to_entries` | Object → `[{"key":k,"value":v}]` | `{"a":1}` | `[{"key":"a","value":1}]` |
 | `from_entries` | `[{key,value}]` → object | `[{"key":"a","value":1}]` | `{"a":1}` |
-| `with_entries(f)` | `to_entries \| map(f) \| from_entries` | `{"a":1,"b":null}` | — |
 
-`from_entries` accepts both `"key"` and `"name"` as the key field.
+`from_entries` accepts both `"key"` and `"name"` as the key field. Use `to_entries | map(f) | from_entries` explicitly in place of `with_entries(f)` (see Rejected below).
 
 ---
 
@@ -380,6 +379,7 @@ These operations were evaluated, implemented, and then removed after benchmarkin
 |--------|--------|
 | `range(n)` / `range(from; to; step)` | **Synthesizes new data not present in the input.** Every other fastjq operation transforms or extracts bytes already in the input. `range` generates integer values from scratch. Formatting each integer requires a buffer passed to `fn func([]byte) error` — Go's escape analysis conservatively heap-allocates any buffer passed to a function interface, giving 1 alloc/call. Additionally, a fixed `[64]byte` buffer silently overflows for extreme float steps, causing unbounded extra allocations. |
 | `recurse` / `..` | **Recursive closures escape to heap, scaling with JSON depth.** The recursive descent creates an `objectIter`/`arrayIter` closure at every nesting level that captures `fn func([]byte) error`. Because `fn` is a function interface, Go assumes the closure may outlive the stack frame and heap-allocates it — ~3-4 allocs per level. For a 3-level JSON object, that is ~11 allocs/call. Unlike `range` (fixed 1 alloc), `recurse` allocs scale with input depth. Fixing this would require a full stack-based redesign that avoids closures entirely, incompatible with the current callback architecture. |
+| `with_entries(f)` | **Requires a dedicated scratch buffer per call.** `with_entries` must build each `{"key":k,"value":v}` entry as a temporary JSON object, pass it to `f`, and write the result to the output. The entry bytes cannot alias the output buffer (they may be read by `f` and written by `from_entries` simultaneously), so a separate scratch buffer is mandatory. A `make([]byte, 0, 64)` allocation is unavoidable — 1 alloc/call that is real at 100x steady-state. Use `to_entries \| map(f) \| from_entries` explicitly; the composed form reuses the caller-supplied buffer correctly. |
 
 ### Challenging — likely require allocation
 

@@ -2073,7 +2073,7 @@ func TestSplitJoinRoundTrip(t *testing.T) {
 	assertQuery(t, `split(",") | join(",")`, `"a,b,c"`, `"a,b,c"`)
 }
 
-// --- to_entries / from_entries / with_entries ---
+// --- to_entries / from_entries ---
 
 func TestToEntries(t *testing.T) {
 	p, _ := Compile("to_entries")
@@ -2150,33 +2150,6 @@ func TestToFromEntriesRoundTrip(t *testing.T) {
 	}
 	if string(got) != string(input) {
 		t.Errorf("round-trip: got %s, want %s", got, input)
-	}
-}
-
-func TestWithEntriesFilterNullValues(t *testing.T) {
-	// Remove entries where value is null
-	p, _ := Compile(`with_entries(select(.value != null))`)
-	got, err := p.Run([]byte(`{"a":1,"b":null,"c":3}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `{"a":1,"c":3}` {
-		t.Errorf("got %s", got)
-	}
-}
-
-func TestWithEntriesRenameKeys(t *testing.T) {
-	// Wrap all values: {key: k, value: {original: v}}
-	p, _ := Compile(`with_entries(.value |= {original: .})`)
-	// .value |= expr is not supported yet, skip — use a simpler form
-	// Instead test: with_entries(select(.key != "secret"))
-	p, _ = Compile(`with_entries(select(.key != "secret"))`)
-	got, err := p.Run([]byte(`{"name":"alice","secret":"s3cr3t","age":30}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `{"name":"alice","age":30}` {
-		t.Errorf("got %s", got)
 	}
 }
 

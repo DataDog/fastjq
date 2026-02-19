@@ -160,7 +160,6 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `map(expr)` | Apply expr to every array element, collect results |
 | `to_entries` | `{"a":1}` → `[{"key":"a","value":1}]` |
 | `from_entries` | `[{"key":"a","value":1}]` → `{"a":1}` (also accepts `"name"` for key) |
-| `with_entries(expr)` | `to_entries \| map(expr) \| from_entries` — transform or filter object entries |
 | `if cond then expr else expr end` | Conditional — else is optional (defaults to identity) |
 | `empty` | Produce zero outputs — use as else branch to drop records |
 | `select(.level == "error")` | Filter — pass through or drop |
@@ -210,7 +209,7 @@ In jq, `null | .field` returns `null`. In fastjq it errors. This affects chained
 `+`, `-`, `*`, `/`, `%` and `"\(.field)"` template syntax are not supported.
 
 **No higher-order functions or builtins beyond those listed.**
-`reduce`, `foreach`, `@base64`, `@uri`, `@csv`, `env`, `path`, `indices`, `sort`, `group_by`, `unique`, `test` (regex), etc. are not supported. See [SYNTAX.md](SYNTAX.md) for the full roadmap.
+`reduce`, `foreach`, `@uri`, `@csv`, `env`, `path`, `sort`, `group_by`, `unique`, `test` (regex), etc. are not supported. See [SYNTAX.md](SYNTAX.md) for the full roadmap.
 
 **No recursive descent** (`..|..`).
 
