@@ -4,6 +4,21 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — README improvements and code refactoring
+
+### Changed (README)
+- Added "Try it out (CLI)" section with example commands using `cmd/fastjq-bench`
+- Added highlights table for newer operations (ascii_downcase, keys_unsorted, to_entries, has, any)
+- Fixed Limitations: removed `length`, `map`, `keys` which are now implemented; replaced with accurate description
+- Added "Further reading" section linking to SYNTAX.md, BENCHMARKS.md, DESIGN.md, CONSTRAINTS.md, CHANGELOG.md
+
+### Changed (code structure)
+- `bench_test.go`: 1291 → 457 lines (-65%). Added 6 benchmark helpers (benchFastjqObj, benchFastjqLargeSelect, benchFastjqFunc, benchGojqObj, benchGojqLargeRot, benchGojqIter). All 90+ benchmark functions converted to 1-2 line bodies.
+- `fastjq_test.go`: Added `assertQuery` and `assertNoOutput` helpers. Converted most repetitive test groups (identity, field access, delete, compare, literal, type) to single-line calls.
+- `exec.go`: `execStringPredicate` now uses `boolResult` helper instead of inline duplication. `appendKV` helper deduplicates the 5-line `{"key":k,"value":v}` pattern shared by `execToEntries` and `execWithEntries`.
+
+---
+
 ## [Unreleased] — benchmark cleanup: Large/Medium variants + bench_vs_jq.sh update
 
 ### Changed

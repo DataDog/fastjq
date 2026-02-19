@@ -104,7 +104,7 @@ exec.go                    — Executor: field access, indexing, deletion, itera
 float.go                   — Zero-alloc float parsing via unsafe.String
 fastjq_test.go             — Unit + integration tests (97 tests)
 bench_test.go              — Benchmarks: fastjq vs gojq (28 benchmarks)
-cmd/fastjq-bench/main.go  — Minimal JSONL processor CLI for benchmarking against jq
+cmd/fastjq/main.go         — JSONL processor CLI (usage: `fastjq 'query' < input.jsonl`)
 bench_vs_jq.sh             — Shell script: generates test data, builds CLI, runs JSONL throughput benchmarks vs jq
 ```
 

@@ -45,6 +45,19 @@ gojq times include the full `json.Unmarshal` → execute → `json.Marshal` cycl
 
 fastjq achieves **0 allocations** on all operations above. The Large Select benchmark uses the last field in a 200-field object so fastjq must scan the full 170KB — even worst-case it's 38x faster than gojq, which must unmarshal all 170KB regardless of which field it needs.
 
+A few highlights from newer operations:
+
+| Operation | Input | fastjq | gojq | Speedup |
+|-----------|-------|--------|------|---------|
+| `ascii_downcase` in select | Small (~100B) | 0.010 µs | 0.564 µs | **56x** |
+| `ascii_downcase` in select | Large (~100KB) | 178 µs | 794 µs | **4.5x** |
+| `keys_unsorted` | Small (~100B) | 0.061 µs | 0.364 µs | **6x** |
+| `to_entries` | Small (~100B) | 0.0061 µs | 0.363 µs | **60x** |
+| `has("key")` in select | Large (~100KB) | 159 µs | 767 µs | **4.8x** |
+| `any(expr)` | 5-elem array | 0.122 µs | 2.039 µs | **17x** |
+
+See [BENCHMARKS.md](BENCHMARKS.md) for the complete table with Large/Medium variants, raw output, and CLI results.
+
 ### vs jq CLI (JSONL throughput, 100K lines, ~11MB)
 
 | Operation | jq | fastjq | Speedup |
@@ -58,6 +71,28 @@ fastjq achieves **0 allocations** on all operations above. The Large Select benc
 | `.field` | 0.146s | 0.027s | **5x** |
 | `{f0, f2}` | 0.251s | 0.048s | **5x** |
 | `to_entries` | 0.714s | 0.039s | **18x** |
+
+## Try it out (CLI)
+
+A minimal JSONL processor CLI is included for benchmarking and quick experimentation:
+
+```bash
+# Build
+go build -o fastjq ./cmd/fastjq
+
+# Filter error logs from a JSONL stream
+cat app.log | ./fastjq 'select(.level == "error")'
+
+# Case-insensitive filter
+cat app.log | ./fastjq 'select(.level | ascii_downcase == "error")'
+
+# Drop sensitive fields
+cat app.log | ./fastjq 'del(.password, .token)'
+
+# Benchmark against jq CLI (requires jq in PATH)
+chmod +x bench_vs_jq.sh
+./bench_vs_jq.sh
+```
 
 ## Install
 
@@ -151,12 +186,23 @@ The condition is evaluated via a single-result path. If the condition uses an it
 **`del` paths must be literal field or index expressions.**
 `del(.foo)`, `del(.foo.bar)`, `del(.[0])`, and `del(.foo, .bar)` work. Dynamic deletion does not: `del(.items[])` and `del(.items[] | select(...))` both return an error.
 
-**No arithmetic, string interpolation, or functions.**
-`+`, `-`, `*`, `/`, `length`, `keys`, `map`, `reduce`, `@base64`, `env`, `path`, etc. are not supported.
+**No arithmetic or string interpolation.**
+`+`, `-`, `*`, `/`, `%` and `"\(.field)"` template syntax are not supported.
+
+**No higher-order functions or builtins beyond those listed.**
+`reduce`, `foreach`, `@base64`, `@uri`, `@csv`, `env`, `path`, `indices`, `sort`, `group_by`, `unique`, `test` (regex), etc. are not supported. See [SYNTAX.md](SYNTAX.md) for the full roadmap of what's feasible.
 
 **No recursive descent** (`..|..`).
 
 **No try-catch** (beyond `?` optional suppression).
 
 **Input must be valid JSON.** Behavior on malformed input is undefined. Output is always compact (no pretty-printing).
+
+## Further reading
+
+- [SYNTAX.md](SYNTAX.md) — Full operation reference with examples, and a roadmap of unimplemented operations categorised by feasibility
+- [BENCHMARKS.md](BENCHMARKS.md) — Complete benchmark tables (Small/Medium/Large), raw output, and CLI throughput results
+- [DESIGN.md](DESIGN.md) — Architecture details, key design decisions, supported operations list
+- [CONSTRAINTS.md](CONSTRAINTS.md) — Performance and scope constraints; what the library will and won't do
+- [CHANGELOG.md](CHANGELOG.md) — Change history with tradeoffs and benchmark notes
 

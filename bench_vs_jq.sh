@@ -8,7 +8,7 @@ ITERATIONS=3
 TMPDIR_PREFIX="/tmp/fastjq_bench"
 SMALL_FILE="${TMPDIR_PREFIX}_small.jsonl"
 LARGE_FILE="${TMPDIR_PREFIX}_large.jsonl"
-FASTJQ_BIN="/tmp/fastjq-bench"
+FASTJQ_BIN="/tmp/fastjq"
 DATAGEN_BIN="/tmp/fastjq-datagen"
 DATAGEN_SRC="/tmp/fastjq-datagen.go"
 
@@ -122,7 +122,7 @@ echo ""
 # --- Build fastjq CLI ---
 echo "Building fastjq-bench..."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-go build -o "$FASTJQ_BIN" "${SCRIPT_DIR}/cmd/fastjq-bench"
+go build -o "$FASTJQ_BIN" "${SCRIPT_DIR}/cmd/fastjq"
 echo ""
 
 # --- Timing helper ---
