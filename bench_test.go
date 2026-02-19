@@ -311,6 +311,20 @@ func BenchmarkFastjq_Small_Join(b *testing.B) {
 	benchFastjqObj(b, `join(",")`, []byte(`["field_0","field_1","field_2","field_3","field_4"]`))
 }
 
+func BenchmarkFastjq_Small_IndexFind(b *testing.B) {
+	benchFastjqObj(b, `index(",")`, []byte(`"field_0,field_1,field_2,field_3,field_4"`))
+}
+func BenchmarkFastjq_Small_IndicesAll(b *testing.B) {
+	benchFastjqObj(b, `indices(",")`, []byte(`"field_0,field_1,field_2,field_3,field_4"`))
+}
+
+func BenchmarkGojq_Small_IndexFind(b *testing.B) {
+	benchGojqObj(b, `index(",")`, []byte(`"field_0,field_1,field_2,field_3,field_4"`))
+}
+func BenchmarkGojq_Small_IndicesAll(b *testing.B) {
+	benchGojqObj(b, `indices(",")`, []byte(`"field_0,field_1,field_2,field_3,field_4"`))
+}
+
 func BenchmarkFastjq_Small_Slice(b *testing.B) {
 	benchFastjqObj(b, `.[1:4]`, []byte(`[0,1,2,3,4,5]`))
 }

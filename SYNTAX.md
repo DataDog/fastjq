@@ -188,11 +188,25 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 | `if .f == "x" then .a end` | Without else — defaults to identity | `{"f":"y"}` | `{"f":"y"}` |
 | `if C then A elif C2 then B else D end` | Not supported — nest manually | — | — |
 
+### Search and Debug
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `index("s")` | First occurrence of string/value in string or array | `"a,b,c"` | `1` |
+| `rindex("s")` | Last occurrence | `"a,b,c"` | `3` |
+| `indices("s")` | All occurrences as array | `"a,b,c"` | `[1,3]` |
+| `index(n)` | First occurrence of value n in array | `[1,2,3,2]` with `index(2)` | `1` |
+| `rindex(n)` | Last occurrence of value n in array | `[1,2,3,2]` with `rindex(2)` | `3` |
+| `debug` | Print value to stderr as `[DEBUG]: value`, pass through | `{"x":1}` | `{"x":1}` |
+
+For strings, `index` and `rindex` search for raw byte sequences (escape sequences are compared as-is). Returns `null` if not found, `[]` for `indices` with no matches.
+
 ### Membership & Length
 
 | Syntax | Description | Example Input | Example Output |
 |--------|-------------|---------------|----------------|
 | `has("key")` | True if object has field (even if null) | `{"x":null}` | `true` |
+| `has(n)` | True if array index n exists (n ≥ 0) | `[1,2,3]` with `has(2)` | `true` |
 | `length` | String → chars, array/object → count, null → 0 | `[1,2,3]` | `3` |
 | `keys_unsorted` | Object keys in insertion order; array → indices | `{"b":1,"a":2}` | `["b","a"]` |
 
@@ -295,11 +309,9 @@ So `a or b and c` parses as `a or (b and c)` — `and` binds tighter than `or`.
 | Syntax | Description | Implementation Notes |
 |--------|-------------|---------------------|
 | `values` | Object values | Equivalent to `.[]`, already supported semantically. |
-| `has(0)` | Array index membership | Scan array length, check bounds. |
 | `in(expr)` | Reverse membership test | Same scan logic, reversed operands. |
 | `recurse` / `..` | Recursive descent | Walk all nested values via scanner, stream via callback. |
 | `path(expr)` | Output path as array | Emit path like `["foo","bar"]` or `["items",0]`. |
-| `debug` | Debug print, pass through | Print to stderr, forward value unchanged. |
 
 ### Feasible but require careful handling
 

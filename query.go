@@ -37,6 +37,10 @@ const (
 	opFlatten                      // flatten / flatten(n)
 	opSlice                        // .[n:m], .[:m], .[n:]
 	opPlus                         // expr + expr
+	opIndex1                       // index(s) — first occurrence
+	opRIndex1                      // rindex(s) — last occurrence
+	opIndicesN                     // indices(s) — all occurrences
+	opDebug                        // debug — print to stderr, pass through
 	opSplit                        // split("s")
 	opJoin                         // join("s")
 	opAsciiDowncase                // ascii_downcase
@@ -414,6 +418,22 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opFlatten, index: -1}, rest, nil // -1 = unlimited depth
 	}
 
+	// index(s) / rindex(s) / indices(s)
+	if strings.HasPrefix(s, "indices(") {
+		return parseUnaryExprBuiltin(s[8:], opIndicesN)
+	}
+	if strings.HasPrefix(s, "index(") {
+		return parseUnaryExprBuiltin(s[6:], opIndex1)
+	}
+	if strings.HasPrefix(s, "rindex(") {
+		return parseUnaryExprBuiltin(s[7:], opRIndex1)
+	}
+
+	// debug — print to stderr, pass through
+	if strings.HasPrefix(s, "debug") && (len(s) == 5 || !isIdentChar(s[5])) {
+		return &op{typ: opDebug}, s[5:], nil
+	}
+
 	// split(s) / join(s)
 	if strings.HasPrefix(s, "split(") {
 		return parseStringArgBuiltin(s[6:], opSplit)
@@ -610,6 +630,21 @@ func parseAnyAll(s string, typ opType) (*op, string, error) {
 	return &op{typ: typ, child: inner}, rest[1:], nil
 }
 
+// parseUnaryExprBuiltin parses a builtin of the form name(expr).
+// s starts after the opening '(' has been consumed.
+func parseUnaryExprBuiltin(s string, typ opType) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	inner, rest, err := parsePipeExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after argument")
+	}
+	return &op{typ: typ, child: inner}, rest[1:], nil
+}
+
 // parseStringArgBuiltin parses builtins of the form name("literal_string").
 // s should start just after the opening '(' has been consumed.
 // The unquoted string content is stored in op.field.
@@ -640,11 +675,32 @@ func parseStringArgBuiltin(s string, typ opType) (*op, string, error) {
 	return &op{typ: typ, field: key}, rest[1:], nil
 }
 
-// parseHas parses has("key") — checks whether an object contains a field.
+// parseHas parses has("key") or has(n) — object key / array index membership.
 func parseHas(s string) (*op, string, error) {
 	s = strings.TrimSpace(s[4:]) // skip "has("
+
+	// has(n) — integer argument for array index check
+	if len(s) > 0 && (isDigit(s[0]) || (s[0] == '-' && len(s) > 1 && isDigit(s[1]))) {
+		neg := s[0] == '-'
+		if neg {
+			s = s[1:]
+		}
+		idx, rest, err := parseInt(s)
+		if err != nil {
+			return nil, s, fmt.Errorf("has() integer argument: %w", err)
+		}
+		if neg {
+			idx = -idx
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after has() argument")
+		}
+		return &op{typ: opHas, index: idx, literal: []byte("array")}, rest[1:], nil
+	}
+
 	if len(s) == 0 || s[0] != '"' {
-		return nil, s, fmt.Errorf("has() requires a string field name")
+		return nil, s, fmt.Errorf("has() requires a string field name or integer index")
 	}
 	// Scan to closing quote, handling escapes
 	i := 1

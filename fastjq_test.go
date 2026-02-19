@@ -1876,6 +1876,39 @@ func TestStringOpsComposed(t *testing.T) {
 	}
 }
 
+// --- index / rindex / indices ---
+
+func TestIndexString(t *testing.T)         { assertQuery(t, `index(",")`, `"a,b,c"`, `1`) }
+func TestIndexStringMiss(t *testing.T)     { assertQuery(t, `index("x")`, `"hello"`, `null`) }
+func TestRIndexString(t *testing.T)        { assertQuery(t, `rindex(",")`, `"a,b,c"`, `3`) }
+func TestRIndexStringMiss(t *testing.T)    { assertQuery(t, `rindex("x")`, `"hello"`, `null`) }
+func TestIndicesString(t *testing.T)       { assertQuery(t, `indices(",")`, `"a,b,c"`, `[1,3]`) }
+func TestIndicesStringNone(t *testing.T)   { assertQuery(t, `indices("x")`, `"hello"`, `[]`) }
+func TestIndexArray(t *testing.T)          { assertQuery(t, `index(2)`, `[1,2,3,2,1]`, `1`) }
+func TestRIndexArray(t *testing.T)         { assertQuery(t, `rindex(2)`, `[1,2,3,2,1]`, `3`) }
+func TestIndicesArray(t *testing.T)        { assertQuery(t, `indices(2)`, `[1,2,3,2,1]`, `[1,3]`) }
+func TestIndexArrayMiss(t *testing.T)      { assertQuery(t, `index(9)`, `[1,2,3]`, `null`) }
+func TestIndexInPipe(t *testing.T) {
+	assertQuery(t, `.path | index("/")`, `{"path":"/api/users"}`, `0`)
+}
+
+// --- has(n) for arrays ---
+
+func TestHasArrayInBounds(t *testing.T)    { assertQuery(t, `has(2)`, `[1,2,3]`, `true`) }
+func TestHasArrayOutOfBounds(t *testing.T) { assertQuery(t, `has(5)`, `[1,2,3]`, `false`) }
+func TestHasArrayNegative(t *testing.T)    { assertQuery(t, `has(-1)`, `[1,2,3]`, `false`) }
+func TestHasArrayZero(t *testing.T)        { assertQuery(t, `has(0)`, `[1,2,3]`, `true`) }
+func TestHasArrayEmpty(t *testing.T)       { assertQuery(t, `has(0)`, `[]`, `false`) }
+
+// --- debug ---
+
+func TestDebugPassthrough(t *testing.T) {
+	assertQuery(t, `debug`, `{"a":1}`, `{"a":1}`)
+}
+func TestDebugInPipe(t *testing.T) {
+	assertQuery(t, `debug | .a`, `{"a":42}`, `42`)
+}
+
 // --- slice .[n:m] ---
 
 func TestSliceArray(t *testing.T)         { assertQuery(t, ".[2:4]", `[0,1,2,3,4]`, `[2,3]`) }

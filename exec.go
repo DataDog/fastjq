@@ -3,6 +3,7 @@ package fastjq
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 )
 
@@ -114,6 +115,15 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execAnyAll(node, input, buf, fn, true)
 	case opAdd:
 		return execAdd(input, buf, fn)
+	case opIndex1:
+		return fn(execFindIndex(node, input, buf, false, false))
+	case opRIndex1:
+		return fn(execFindIndex(node, input, buf, true, false))
+	case opIndicesN:
+		return fn(execFindIndex(node, input, buf, false, true))
+	case opDebug:
+		execDebug(input)
+		return fn(input)
 	case opSlice:
 		result, err := execSlice(node, input, buf)
 		if err != nil {
@@ -269,6 +279,18 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execAnyAllSingle(node, input, buf, true)
 	case opAdd:
 		return exec(node, input, buf)
+	case opIndex1:
+		return execFindIndex(node, input, buf, false, false), nil
+	case opRIndex1:
+		return execFindIndex(node, input, buf, true, false), nil
+	case opIndicesN:
+		return execFindIndex(node, input, buf, false, true), nil
+	case opDebug:
+		execDebug(input)
+		if buf == nil {
+			return input[:len(input):len(input)], nil
+		}
+		return append(buf, input...), nil
 	case opSlice:
 		return execSlice(node, input, buf)
 	case opPlus:
@@ -1601,6 +1623,130 @@ func execPlusSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	return nil, fmt.Errorf("cannot add %q and %q", leftVal, rightVal)
 }
 
+// execDebug prints the input to stderr and is used by opDebug.
+func execDebug(input []byte) {
+	fmt.Fprintf(os.Stderr, "[DEBUG]: %s\n", input)
+}
+
+// execFindIndex implements index(s), rindex(s), and indices(s).
+//   last=true, all=false  → rindex: last occurrence
+//   last=false, all=false → index:  first occurrence, null if not found
+//   last=false, all=true  → indices: all occurrences as array
+func execFindIndex(node *op, input []byte, buf []byte, last, all bool) []byte {
+	// Evaluate the search value
+	searchVal, err := execSingle(node.child, input, nil)
+	if err != nil {
+		if all {
+			return append(buf, "[]"...)
+		}
+		return append(buf, "null"...)
+	}
+
+	ss := scanner{data: input}
+	ss.skipWhitespace()
+	if ss.pos >= len(ss.data) {
+		if all {
+			return append(buf, "[]"...)
+		}
+		return append(buf, "null"...)
+	}
+
+	switch ss.data[ss.pos] {
+	case '"': // string: search for substring
+		// Both input and searchVal should be JSON strings
+		sv := scanner{data: searchVal}
+		sv.skipWhitespace()
+		if sv.pos >= len(sv.data) || sv.data[sv.pos] != '"' {
+			break
+		}
+		content := ss.readString()      // raw bytes of input string content
+		needle := sv.readString()       // raw bytes of search string content
+
+		if all {
+			buf = append(buf, '[')
+			first := true
+			pos := 0
+			for pos <= len(content)-len(needle) {
+				if bytesEqual(content[pos:pos+len(needle)], needle) {
+					if !first {
+						buf = append(buf, ',')
+					}
+					first = false
+					buf = appendInt(buf, pos)
+					pos += len(needle)
+				} else {
+					pos++
+				}
+			}
+			return append(buf, ']')
+		}
+		// index or rindex
+		found := -1
+		if last {
+			for i := len(content) - len(needle); i >= 0; i-- {
+				if bytesEqual(content[i:i+len(needle)], needle) {
+					found = i
+					break
+				}
+			}
+		} else {
+			for i := 0; i <= len(content)-len(needle); i++ {
+				if bytesEqual(content[i:i+len(needle)], needle) {
+					found = i
+					break
+				}
+			}
+		}
+		if found == -1 {
+			return append(buf, "null"...)
+		}
+		return appendInt(buf, found)
+
+	case '[': // array: search for matching element
+		if all {
+			buf = append(buf, '[')
+			first := true
+			i := 0
+			ss.arrayIter(func(_ int, start, end int) bool {
+				if jsonEqual(input[start:end], searchVal) {
+					if !first {
+						buf = append(buf, ',')
+					}
+					first = false
+					buf = appendInt(buf, i)
+				}
+				i++
+				return true
+			})
+			return append(buf, ']')
+		}
+		// index or rindex
+		found := -1
+		i := 0
+		ss.arrayIter(func(_ int, start, end int) bool {
+			if jsonEqual(input[start:end], searchVal) {
+				if last {
+					found = i // keep updating for rindex
+				} else if found == -1 {
+					found = i // stop at first for index
+					return false
+				}
+			}
+			i++
+			return true
+		})
+		if found == -1 {
+			return append(buf, "null"...)
+		}
+		return appendInt(buf, found)
+	}
+
+	if all {
+		return append(buf, "[]"...)
+	}
+	return append(buf, "null"...)
+}
+
 // execKeysUnsorted returns object keys (insertion order) or array indices as a JSON array.
 func execKeysUnsorted(input []byte, buf []byte) ([]byte, error) {
 	s := &scanner{data: input}
@@ -1815,20 +1961,29 @@ func execTrimStr(input []byte, buf []byte, s string, left bool) []byte {
 	return buf
 }
 
-// execHas checks whether the input object contains a field.
-// Returns true if the field exists (even if its value is null), false otherwise.
+// execHas checks field membership (object) or index bounds (array).
+// For objects: true if the field exists, even if its value is null.
+// For arrays: true if the index is within bounds (node.literal == "array").
 func execHas(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	s := &scanner{data: input}
 	s.skipWhitespace()
+	if len(node.literal) > 0 && node.literal[0] == 'a' {
+		// Array index check: has(n)
+		if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+			return fn(boolResult(buf, false))
+		}
+		// jq: has(n) on array requires n >= 0; negative indices are not bounds-adjusted
+		length := s.arrayLen()
+		idx := node.index
+		return fn(boolResult(buf, idx >= 0 && idx < length))
+	}
+	// Object key check: has("field")
 	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
-		return fn(append(buf, "false"...))
+		return fn(boolResult(buf, false))
 	}
 	key := []byte(node.field)
 	vs, _ := s.findField(key)
-	if vs == -1 {
-		return fn(append(buf, "false"...))
-	}
-	return fn(append(buf, "true"...))
+	return fn(boolResult(buf, vs != -1))
 }
 
 // execIf evaluates cond; if truthy runs the then-branch, otherwise the else-branch.

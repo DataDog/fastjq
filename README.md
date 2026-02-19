@@ -171,6 +171,10 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `any` / `any(expr)` | True if any element/result is truthy (short-circuit) |
 | `all` / `all(expr)` | True if all elements/results are truthy (short-circuit) |
 | `.[n:m]`, `.[:m]`, `.[n:]`, `.[:]` | Slice array or string (negative indices count from end) |
+| `index(s)`, `rindex(s)` | First / last occurrence of value in string or array (null if not found) |
+| `indices(s)` | All occurrences → array of indices |
+| `has(n)` | True if array index n is within bounds (n must be ≥ 0) |
+| `debug` | Print value to stderr, pass through unchanged |
 | `expr + expr` | Concatenate strings/arrays, sum numbers, null is identity |
 | `add` | Sum numbers, concatenate strings/arrays, merge objects |
 | `flatten`, `flatten(n)` | Recursively flatten nested arrays (n = max depth) |

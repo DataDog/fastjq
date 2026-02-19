@@ -21,6 +21,22 @@ Five new zero-alloc operations:
 
 ---
 
+## [Unreleased] — index/rindex/indices, has(n), debug
+
+### Added
+- **`index(s)` / `rindex(s)`** — first / last occurrence of a string in a string, or a value in an array. Returns the byte-position index or null. Zero-alloc byte scan.
+- **`indices(s)`** — all occurrence positions as an integer array. Zero-alloc: writes integers directly into buf.
+- **`has(n)` for arrays** — completes the `has` builtin. Array index membership requires `n ≥ 0` (negative indices always return false, matching jq semantics).
+- **`debug`** — prints `[DEBUG]: <value>` to stderr, passes value through unchanged. Zero-alloc: uses `fmt.Fprintf(os.Stderr, ...)` and returns input sub-slice directly.
+
+### Benchmarks (Apple M4 Max)
+| Operation | fastjq | gojq | Speedup |
+|-----------|--------|------|---------|
+| `index(",")` on string | 73 ns | 890 ns | **12x** |
+| `indices(",")` on string | 134 ns | 2,080 ns | **16x** |
+
+---
+
 ## [Unreleased] — .[n:m] slicing and expr + expr
 
 ### Added

@@ -243,6 +243,21 @@ func TestJQCompat(t *testing.T) {
 		{`ltrimstr no match`, `ltrimstr("xyz")`, `"foobar"`, ""},
 		{`rtrimstr match`, `rtrimstr("bar")`, `"foobar"`, ""},
 
+		// --- index / rindex / indices ---
+		{"index string", `index(",")`, `"a,b,c"`, ""},
+		{"rindex string", `rindex(",")`, `"a,b,c"`, ""},
+		{"indices string", `indices(",")`, `"a,b,c"`, ""},
+		{"index array", `index(2)`, `[1,2,3,2,1]`, ""},
+		{"indices miss", `indices("x")`, `"hello"`, ""},
+
+		// --- has(n) ---
+		{"has array in bounds", `has(2)`, `[1,2,3]`, ""},
+		{"has array oob", `has(5)`, `[1,2,3]`, ""},
+		{"has array neg", `has(-1)`, `[1,2,3]`, ""},
+
+		// --- debug (output goes to stderr, value passes through) ---
+		{"debug passthrough", `debug | .a`, `{"a":1}`, ""},
+
 		// --- slice ---
 		{"slice array", ".[1:4]", `[0,1,2,3,4]`, ""},
 		{"slice array from", ".[2:]", `[0,1,2,3,4]`, ""},
