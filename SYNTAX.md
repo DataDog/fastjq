@@ -188,6 +188,16 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 | `if .f == "x" then .a end` | Without else — defaults to identity | `{"f":"y"}` | `{"f":"y"}` |
 | `if C then A elif C2 then B else D end` | Not supported — nest manually | — | — |
 
+### Format Strings
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `@base64` | Base64-encode a JSON string | `"hello"` | `"aGVsbG8="` |
+| `@base64d` | Base64-decode a JSON string | `"aGVsbG8="` | `"hello"` |
+
+`@base64d` accepts standard (`+/`), URL-safe (`-_`), padded and unpadded input. Non-printable decoded bytes are escaped as `\uXXXX`.
+`@base64` operates on the raw bytes between quotes. Escape sequences in the input (e.g. `\n`) are encoded as their literal characters (`\` and `n`), not as the decoded byte — use `split` + `join` to handle those cases.
+
 ### Search and Debug
 
 | Syntax | Description | Example Input | Example Output |

@@ -124,6 +124,18 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opDebug:
 		execDebug(input)
 		return fn(input)
+	case opBase64:
+		result, err := execBase64Encode(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opBase64D:
+		result, err := execBase64Decode(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opSlice:
 		result, err := execSlice(node, input, buf)
 		if err != nil {
@@ -291,6 +303,10 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			return input[:len(input):len(input)], nil
 		}
 		return append(buf, input...), nil
+	case opBase64:
+		return execBase64Encode(input, buf)
+	case opBase64D:
+		return execBase64Decode(input, buf)
 	case opSlice:
 		return execSlice(node, input, buf)
 	case opPlus:
@@ -1621,6 +1637,165 @@ func execPlusSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("cannot add %q and %q", leftVal, rightVal)
+}
+
+// base64Alphabet is the standard base64 encoding alphabet.
+const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+// execBase64Encode encodes a JSON string to base64.
+// Operates on the raw bytes between quotes (escape sequences encoded as-is).
+// This matches jq behaviour for ASCII strings; escape sequences may differ for
+// strings containing \uXXXX or other escapes.
+func execBase64Encode(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return nil, fmt.Errorf("@base64 input must be a string")
+	}
+	content := s.readString() // raw bytes between quotes
+
+	buf = append(buf, '"')
+	for i := 0; i < len(content); i += 3 {
+		rem := len(content) - i
+		b0 := content[i]
+		var b1, b2 byte
+		if rem > 1 {
+			b1 = content[i+1]
+		}
+		if rem > 2 {
+			b2 = content[i+2]
+		}
+		buf = append(buf, base64Alphabet[(b0>>2)&0x3F])
+		buf = append(buf, base64Alphabet[((b0&0x03)<<4)|((b1>>4)&0x0F)])
+		if rem > 1 {
+			buf = append(buf, base64Alphabet[((b1&0x0F)<<2)|((b2>>6)&0x03)])
+		} else {
+			buf = append(buf, '=')
+		}
+		if rem > 2 {
+			buf = append(buf, base64Alphabet[b2&0x3F])
+		} else {
+			buf = append(buf, '=')
+		}
+	}
+	buf = append(buf, '"')
+	return buf, nil
+}
+
+// base64DecodeChar maps a base64 character to its 6-bit value.
+// Handles both standard (+/) and URL-safe (-_) variants.
+func base64DecodeChar(ch byte) (byte, bool) {
+	switch {
+	case ch >= 'A' && ch <= 'Z':
+		return ch - 'A', true
+	case ch >= 'a' && ch <= 'z':
+		return ch - 'a' + 26, true
+	case ch >= '0' && ch <= '9':
+		return ch - '0' + 52, true
+	case ch == '+' || ch == '-':
+		return 62, true
+	case ch == '/' || ch == '_':
+		return 63, true
+	case ch == '=':
+		return 0, true // padding
+	default:
+		return 0, false
+	}
+}
+
+// appendJSONByte appends a single byte to buf with proper JSON string escaping.
+func appendJSONByte(buf []byte, b byte) []byte {
+	switch b {
+	case '"':
+		return append(buf, '\\', '"')
+	case '\\':
+		return append(buf, '\\', '\\')
+	case '\n':
+		return append(buf, '\\', 'n')
+	case '\r':
+		return append(buf, '\\', 'r')
+	case '\t':
+		return append(buf, '\\', 't')
+	case '\b':
+		return append(buf, '\\', 'b')
+	case '\f':
+		return append(buf, '\\', 'f')
+	default:
+		if b < 0x20 {
+			// Other control character → \u00XX
+			hi := b >> 4
+			lo := b & 0x0F
+			buf = append(buf, '\\', 'u', '0', '0')
+			if hi < 10 {
+				buf = append(buf, '0'+hi)
+			} else {
+				buf = append(buf, 'a'+hi-10)
+			}
+			if lo < 10 {
+				buf = append(buf, '0'+lo)
+			} else {
+				buf = append(buf, 'a'+lo-10)
+			}
+			return buf
+		}
+		return append(buf, b)
+	}
+}
+
+// execBase64Decode decodes a base64 JSON string back to a JSON string.
+// Handles both standard (+/) and URL-safe (-_) base64. Strips whitespace.
+func execBase64Decode(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return nil, fmt.Errorf("@base64d input must be a string")
+	}
+	content := s.readString() // raw base64 bytes between quotes
+
+	buf = append(buf, '"')
+
+	// Decode base64: collect 4-char groups, track padding separately.
+	// Handles standard, URL-safe (-/_), and unpadded inputs.
+	var vals [4]byte
+	var pads [4]bool // true if the char was '=' padding
+	n := 0
+	for _, ch := range content {
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			continue
+		}
+		if ch == '=' {
+			pads[n] = true
+			vals[n] = 0
+		} else {
+			v, ok := base64DecodeChar(ch)
+			if !ok {
+				return nil, fmt.Errorf("@base64d: invalid character %q", ch)
+			}
+			vals[n] = v
+		}
+		n++
+		if n == 4 {
+			buf = appendJSONByte(buf, (vals[0]<<2)|(vals[1]>>4))
+			if !pads[2] {
+				buf = appendJSONByte(buf, ((vals[1]&0x0F)<<4)|(vals[2]>>2))
+			}
+			if !pads[3] {
+				buf = appendJSONByte(buf, ((vals[2]&0x03)<<6)|vals[3])
+			}
+			n = 0
+			pads = [4]bool{}
+		}
+	}
+	// Remaining chars (unpadded input: 2 or 3 chars in last group)
+	if n == 3 {
+		buf = appendJSONByte(buf, (vals[0]<<2)|(vals[1]>>4))
+		buf = appendJSONByte(buf, ((vals[1]&0x0F)<<4)|(vals[2]>>2))
+	} else if n == 2 {
+		buf = appendJSONByte(buf, (vals[0]<<2)|(vals[1]>>4))
+	}
+
+	buf = append(buf, '"')
+	return buf, nil
 }
 
 // execDebug prints the input to stderr and is used by opDebug.

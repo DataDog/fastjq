@@ -41,6 +41,8 @@ const (
 	opRIndex1                      // rindex(s) — last occurrence
 	opIndicesN                     // indices(s) — all occurrences
 	opDebug                        // debug — print to stderr, pass through
+	opBase64                       // @base64 — encode string to base64
+	opBase64D                      // @base64d — decode base64 string
 	opSplit                        // split("s")
 	opJoin                         // join("s")
 	opAsciiDowncase                // ascii_downcase
@@ -434,6 +436,17 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opDebug}, s[5:], nil
 	}
 
+	// @base64 / @base64d — check @base64d before @base64 to avoid prefix collision
+	if s[0] == '@' {
+		if strings.HasPrefix(s, "@base64d") && (len(s) == 8 || !isIdentChar(s[8])) {
+			return &op{typ: opBase64D}, s[8:], nil
+		}
+		if strings.HasPrefix(s, "@base64") && (len(s) == 7 || !isIdentChar(s[7])) {
+			return &op{typ: opBase64}, s[7:], nil
+		}
+		return nil, s, fmt.Errorf("unsupported format string %q", s[:min(len(s), 16)])
+	}
+
 	// split(s) / join(s)
 	if strings.HasPrefix(s, "split(") {
 		return parseStringArgBuiltin(s[6:], opSplit)
@@ -557,7 +570,7 @@ func parseDotExpr(s string) (*op, string, error) {
 		return parseBracketExpr(s)
 	}
 
-	// Identity: just "." followed by end, whitespace, pipe, comma, or paren
+	// Identity: just "." followed by end, whitespace, pipe, comma, paren, or @format
 	if s == "" || s[0] == ' ' || s[0] == '\t' || s[0] == '\n' || s[0] == '\r' || s[0] == '|' || s[0] == ',' || s[0] == ')' || s[0] == '}' || s[0] == ']' || s[0] == '=' || s[0] == '!' || s[0] == '/' {
 		return &op{typ: opIdentity}, s, nil
 	}

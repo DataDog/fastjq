@@ -311,6 +311,19 @@ func BenchmarkFastjq_Small_Join(b *testing.B) {
 	benchFastjqObj(b, `join(",")`, []byte(`["field_0","field_1","field_2","field_3","field_4"]`))
 }
 
+func BenchmarkFastjq_Small_Base64Encode(b *testing.B) {
+	benchFastjqObj(b, `@base64`, []byte(`"hello world from fastjq benchmark"`))
+}
+func BenchmarkFastjq_Small_Base64Decode(b *testing.B) {
+	benchFastjqObj(b, `@base64d`, []byte(`"aGVsbG8gd29ybGQgZnJvbSBmYXN0anEgYmVuY2htYXJr"`))
+}
+func BenchmarkGojq_Small_Base64Encode(b *testing.B) {
+	benchGojqObj(b, `@base64`, []byte(`"hello world from fastjq benchmark"`))
+}
+func BenchmarkGojq_Small_Base64Decode(b *testing.B) {
+	benchGojqObj(b, `@base64d`, []byte(`"aGVsbG8gd29ybGQgZnJvbSBmYXN0anEgYmVuY2htYXJr"`))
+}
+
 func BenchmarkFastjq_Small_IndexFind(b *testing.B) {
 	benchFastjqObj(b, `index(",")`, []byte(`"field_0,field_1,field_2,field_3,field_4"`))
 }

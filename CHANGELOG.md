@@ -21,6 +21,20 @@ Five new zero-alloc operations:
 
 ---
 
+## [Unreleased] — @base64 / @base64d
+
+### Added
+- **`@base64`** — encode a JSON string to standard base64 with `=` padding. Operates on raw bytes between quotes. Zero-alloc: writes groups of 4 chars directly into buf.
+- **`@base64d`** — decode a base64 JSON string. Accepts standard (`+/`), URL-safe (`-_`), padded and unpadded input. Non-printable decoded bytes are JSON-escaped as `\uXXXX`. Zero-alloc.
+
+### Benchmarks (Apple M4 Max)
+| Operation | fastjq | gojq | Speedup |
+|-----------|--------|------|---------|
+| `@base64` (34-char string) | 86 ns | 521 ns | **6x** |
+| `@base64d` (48-char encoded) | 217 ns | 552 ns | **2.5x** |
+
+---
+
 ## [Unreleased] — index/rindex/indices, has(n), debug
 
 ### Added

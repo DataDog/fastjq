@@ -243,6 +243,11 @@ func TestJQCompat(t *testing.T) {
 		{`ltrimstr no match`, `ltrimstr("xyz")`, `"foobar"`, ""},
 		{`rtrimstr match`, `rtrimstr("bar")`, `"foobar"`, ""},
 
+		// --- @base64 / @base64d ---
+		{"base64 encode", `@base64`, `"hello"`, ""},
+		{"base64 decode", `@base64d`, `"aGVsbG8="`, ""},
+		{"base64 round-trip", `@base64 | @base64d`, `"hello world"`, ""},
+
 		// --- index / rindex / indices ---
 		{"index string", `index(",")`, `"a,b,c"`, ""},
 		{"rindex string", `rindex(",")`, `"a,b,c"`, ""},

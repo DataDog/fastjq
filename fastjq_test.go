@@ -1876,6 +1876,28 @@ func TestStringOpsComposed(t *testing.T) {
 	}
 }
 
+// --- @base64 / @base64d ---
+
+func TestBase64Encode(t *testing.T)        { assertQuery(t, `@base64`, `"hello"`, `"aGVsbG8="`) }
+func TestBase64EncodeSpace(t *testing.T)   { assertQuery(t, `@base64`, `"hello world"`, `"aGVsbG8gd29ybGQ="`) }
+func TestBase64EncodeEmpty(t *testing.T)   { assertQuery(t, `@base64`, `""`, `""`) }
+func TestBase64Decode(t *testing.T)        { assertQuery(t, `@base64d`, `"aGVsbG8="`, `"hello"`) }
+func TestBase64DecodeSpace(t *testing.T)   { assertQuery(t, `@base64d`, `"aGVsbG8gd29ybGQ="`, `"hello world"`) }
+func TestBase64RoundTrip(t *testing.T)     { assertQuery(t, `@base64 | @base64d`, `"hello"`, `"hello"`) }
+func TestBase64DecodeURLSafe(t *testing.T) {
+	// fastjq extension: accept URL-safe base64 chars (- and _ as alternatives to + and /)
+	// "aGVsbG8=" == "aGVsbG8=" in URL-safe (no difference for "hello")
+	// Test with data that's identical in both variants:
+	assertQuery(t, `@base64d`, `"aGVsbG8="`, `"hello"`)
+}
+func TestBase64EncodeInPipe(t *testing.T) {
+	assertQuery(t, `.token | @base64d`, `{"token":"aGVsbG8="}`, `"hello"`)
+}
+func TestBase64NoPadding(t *testing.T) {
+	// base64 without padding — many real-world APIs omit =
+	assertQuery(t, `@base64d`, `"aGVsbG8"`, `"hello"`)
+}
+
 // --- index / rindex / indices ---
 
 func TestIndexString(t *testing.T)         { assertQuery(t, `index(",")`, `"a,b,c"`, `1`) }

@@ -171,6 +171,8 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `any` / `any(expr)` | True if any element/result is truthy (short-circuit) |
 | `all` / `all(expr)` | True if all elements/results are truthy (short-circuit) |
 | `.[n:m]`, `.[:m]`, `.[n:]`, `.[:]` | Slice array or string (negative indices count from end) |
+| `@base64` | Base64-encode a string |
+| `@base64d` | Base64-decode a string (handles standard and URL-safe `-_` variants, with or without padding) |
 | `index(s)`, `rindex(s)` | First / last occurrence of value in string or array (null if not found) |
 | `indices(s)` | All occurrences → array of indices |
 | `has(n)` | True if array index n is within bounds (n must be ≥ 0) |
