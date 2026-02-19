@@ -1876,6 +1876,43 @@ func TestStringOpsComposed(t *testing.T) {
 	}
 }
 
+// --- slice .[n:m] ---
+
+func TestSliceArray(t *testing.T)         { assertQuery(t, ".[2:4]", `[0,1,2,3,4]`, `[2,3]`) }
+func TestSliceArrayFrom(t *testing.T)     { assertQuery(t, ".[2:]", `[0,1,2,3,4]`, `[2,3,4]`) }
+func TestSliceArrayTo(t *testing.T)       { assertQuery(t, ".[:3]", `[0,1,2,3,4]`, `[0,1,2]`) }
+func TestSliceArrayAll(t *testing.T)      { assertQuery(t, ".[:]", `[0,1,2,3,4]`, `[0,1,2,3,4]`) }
+func TestSliceArrayNegFrom(t *testing.T)  { assertQuery(t, ".[-2:]", `[0,1,2,3,4]`, `[3,4]`) }
+func TestSliceArrayNegTo(t *testing.T)    { assertQuery(t, ".[:-1]", `[0,1,2,3,4]`, `[0,1,2,3]`) }
+func TestSliceArrayBothNeg(t *testing.T)  { assertQuery(t, ".[-3:-1]", `[0,1,2,3,4]`, `[2,3]`) }
+func TestSliceArrayEmpty(t *testing.T)    { assertQuery(t, ".[3:3]", `[0,1,2,3,4]`, `[]`) }
+func TestSliceString(t *testing.T)        { assertQuery(t, ".[0:5]", `"hello world"`, `"hello"`) }
+func TestSliceStringFrom(t *testing.T)    { assertQuery(t, ".[6:]", `"hello world"`, `"world"`) }
+func TestSliceStringNeg(t *testing.T)     { assertQuery(t, ".[-5:]", `"hello world"`, `"world"`) }
+func TestSliceStringEscape(t *testing.T)  { assertQuery(t, ".[0:3]", `"a\nb\nc"`, `"a\nb"`) } // escape = 1 char
+func TestSliceInPipe(t *testing.T) {
+	assertQuery(t, `.items[1:3]`, `{"items":[10,20,30,40]}`, `[20,30]`)
+}
+
+// --- + (plus) ---
+
+func TestPlusStrings(t *testing.T)     { assertQuery(t, `"hello" + " world"`, `{}`, `"hello world"`) }
+func TestPlusStringField(t *testing.T) { assertQuery(t, `.a + .b`, `{"a":"foo","b":"bar"}`, `"foobar"`) }
+func TestPlusArrays(t *testing.T)      { assertQuery(t, `[1,2] + [3,4]`, `{}`, `[1,2,3,4]`) }
+func TestPlusArrayField(t *testing.T)  { assertQuery(t, `.a + .b`, `{"a":[1,2],"b":[3,4]}`, `[1,2,3,4]`) }
+func TestPlusNumbers(t *testing.T)     { assertQuery(t, `.a + .b`, `{"a":1,"b":2}`, `3`) }
+func TestPlusNullLeft(t *testing.T)    { assertQuery(t, `null + "x"`, `{}`, `"x"`) }
+func TestPlusNullRight(t *testing.T)   { assertQuery(t, `"a" + null`, `{}`, `"a"`) }
+func TestPlusNullMissing(t *testing.T) { assertQuery(t, `.missing + "default"`, `{}`, `"default"`) }
+func TestPlusChained(t *testing.T)     { assertQuery(t, `"a" + "b" + "c"`, `{}`, `"abc"`) }
+func TestPlusInPipe(t *testing.T) {
+	assertQuery(t, `.prefix + .name`, `{"prefix":"user_","name":"alice"}`, `"user_alice"`)
+}
+func TestPlusPrecedence(t *testing.T) {
+	// + binds tighter than ==: (.a + .b) == 3
+	assertQuery(t, `.a + .b == 3`, `{"a":1,"b":2}`, `true`)
+}
+
 // --- add ---
 
 func TestAddNumbers(t *testing.T)            { assertQuery(t, "add", `[1,2,3,4,5]`, `15`) }

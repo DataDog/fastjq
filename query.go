@@ -2,6 +2,7 @@ package fastjq
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -34,6 +35,8 @@ const (
 	opWithEntries                  // with_entries(f) — dedicated single-pass executor
 	opAdd                          // add
 	opFlatten                      // flatten / flatten(n)
+	opSlice                        // .[n:m], .[:m], .[n:]
+	opPlus                         // expr + expr
 	opSplit                        // split("s")
 	opJoin                         // join("s")
 	opAsciiDowncase                // ascii_downcase
@@ -205,10 +208,34 @@ func parseAnd(s string) (*op, string, error) {
 	return left, rest, nil
 }
 
-// parseCmp parses comparison expressions: ==, !=, <, <=, >, >=
-// Non-associative (no chaining). Delegates down to parseAtom.
-func parseCmp(s string) (*op, string, error) {
+// parsePlusExpr parses additive expressions: expr + expr (left-associative).
+// Delegates down to parseAtom.
+func parsePlusExpr(s string) (*op, string, error) {
 	left, rest, err := parseAtom(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	for {
+		rest = strings.TrimSpace(rest)
+		if len(rest) > 0 && rest[0] == '+' {
+			rest = strings.TrimSpace(rest[1:])
+			right, remainder, err := parseAtom(rest)
+			if err != nil {
+				return nil, remainder, err
+			}
+			left = &op{typ: opPlus, left: left, right: right}
+			rest = remainder
+			continue
+		}
+		break
+	}
+	return left, rest, nil
+}
+
+// parseCmp parses comparison expressions: ==, !=, <, <=, >, >=
+// Non-associative (no chaining). Delegates down to parsePlusExpr.
+func parseCmp(s string) (*op, string, error) {
+	left, rest, err := parsePlusExpr(s)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -736,7 +763,39 @@ func parseSelect(s string) (*op, string, error) {
 	return &op{typ: opSelect, child: cond}, rest, nil
 }
 
-// parseBracketExpr parses [N] (index) or [] (iterator) after a dot or field.
+// parseOptionalIntLit parses an optional signed integer literal from s,
+// returning (expr, rest) where expr is nil if no integer was found.
+// Used by parseBracketExpr for slice bounds.
+func parseOptionalIntLit(s string) (*op, string) {
+	neg := false
+	t := s
+	if len(t) > 0 && t[0] == '-' {
+		neg = true
+		t = t[1:]
+	}
+	if len(t) == 0 || !isDigit(t[0]) {
+		return nil, s // no integer
+	}
+	idx, rest, _ := parseInt(t)
+	if neg {
+		idx = -idx
+	}
+	return &op{typ: opLiteral, literal: []byte(strconv.Itoa(idx))}, rest
+}
+
+// parseSliceEnd parses the optional end bound and closing ']' of a slice.
+// s starts after the ':'. Returns the opSlice node.
+func parseSliceEnd(s string, startExpr *op) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	endExpr, rest := parseOptionalIntLit(s)
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ']' {
+		return nil, rest, fmt.Errorf("expected ']' after slice")
+	}
+	return &op{typ: opSlice, left: startExpr, right: endExpr}, rest[1:], nil
+}
+
+// parseBracketExpr parses [N] (index), [] (iterator), or [N:M] (slice).
 // Assumes s starts with '['.
 func parseBracketExpr(s string) (*op, string, error) {
 	s = s[1:] // skip '['
@@ -754,7 +813,12 @@ func parseBracketExpr(s string) (*op, string, error) {
 		return node, s, nil
 	}
 
-	// .[N] or .[-N] — array index
+	// .[:M] — slice with no start
+	if len(s) > 0 && s[0] == ':' {
+		return parseSliceEnd(s[1:], nil)
+	}
+
+	// .[N] or .[-N] or .[N:M] — index or slice with start
 	neg := false
 	if len(s) > 0 && s[0] == '-' {
 		neg = true
@@ -768,6 +832,13 @@ func parseBracketExpr(s string) (*op, string, error) {
 		idx = -idx
 	}
 	rest = strings.TrimSpace(rest)
+
+	// .[N:M] or .[N:] — slice
+	if len(rest) > 0 && rest[0] == ':' {
+		startExpr := &op{typ: opLiteral, literal: []byte(strconv.Itoa(idx))}
+		return parseSliceEnd(rest[1:], startExpr)
+	}
+
 	if len(rest) == 0 || rest[0] != ']' {
 		return nil, rest, fmt.Errorf("expected ']' after array index")
 	}

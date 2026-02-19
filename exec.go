@@ -13,10 +13,11 @@ var (
 	errBreak               = errors.New("stop iteration") // sentinel for first/limit
 )
 
-// bTrue / bFalse are package-level literals returned directly when buf == nil,
-// avoiding heap allocation for boolean results in zero-scratch evaluation paths.
+// bTrue / bFalse / bNull are package-level literals returned directly when buf == nil,
+// avoiding heap allocation for boolean and null results in zero-scratch evaluation paths.
 var bTrue = []byte("true")
 var bFalse = []byte("false")
+var bNull = []byte("null")
 
 // execMulti executes an op against input, calling fn for each result.
 // Single-output ops call fn once. Iterators call fn per element.
@@ -113,6 +114,14 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execAnyAll(node, input, buf, fn, true)
 	case opAdd:
 		return execAdd(input, buf, fn)
+	case opSlice:
+		result, err := execSlice(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opPlus:
+		return execPlus(node, input, buf, fn)
 	case opFlatten:
 		result, err := execFlattenInto(input, buf, node)
 		if err != nil {
@@ -260,6 +269,10 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execAnyAllSingle(node, input, buf, true)
 	case opAdd:
 		return exec(node, input, buf)
+	case opSlice:
+		return execSlice(node, input, buf)
+	case opPlus:
+		return execPlusSingle(node, input, buf)
 	case opFlatten:
 		return execFlattenInto(input, buf, node)
 	case opSplit:
@@ -337,6 +350,10 @@ func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	fieldName := []byte(node.field)
 	vs, ve := s.findField(fieldName)
 	if vs == -1 {
+		// Missing field: return null without following the child chain.
+		if buf == nil {
+			return fn(bNull)
+		}
 		return fn(append(buf, "null"...))
 	}
 
@@ -367,6 +384,9 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 	fieldName := []byte(node.field)
 	vs, ve := s.findField(fieldName)
 	if vs == -1 {
+		if buf == nil {
+			return bNull, nil
+		}
 		return append(buf, "null"...), nil
 	}
 
@@ -375,7 +395,6 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 	if node.child != nil {
 		return exec(node.child, value, buf)
 	}
-	// When buf is nil, return a cap-limited sub-slice directly (zero-alloc).
 	if buf == nil {
 		return value[:len(value):len(value)], nil
 	}
@@ -1368,6 +1387,218 @@ func execJoin(input []byte, buf []byte, sep string) []byte {
 	})
 	buf = append(buf, '"')
 	return buf
+}
+
+// execSlice implements .[n:m], .[:m], .[n:] on arrays and strings.
+// node.left = start expr (nil = 0), node.right = end expr (nil = length).
+// Negative indices count from the end. Zero-alloc: writes directly into buf.
+func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return append(buf, "null"...), nil
+	}
+
+	// Compute logical length for bound resolution
+	var length int
+	switch s.data[s.pos] {
+	case '[':
+		length = s.arrayLen()
+	case '"':
+		// Count logical characters (escape sequences = 1 each)
+		p := s.pos + 1
+		for p < len(s.data) {
+			if s.data[p] == '"' {
+				break
+			}
+			if s.data[p] == '\\' && p+1 < len(s.data) && s.data[p+1] == 'u' {
+				p += 6
+			} else if s.data[p] == '\\' {
+				p += 2
+			} else {
+				p++
+			}
+			length++
+		}
+	default:
+		return append(buf, "null"...), nil
+	}
+
+	// Resolve start bound
+	start := 0
+	if node.left != nil {
+		sv, err := execSingle(node.left, input, nil)
+		if err != nil {
+			return nil, err
+		}
+		f, ok := parseJSONFloat(sv)
+		if !ok {
+			return nil, fmt.Errorf("slice index must be a number")
+		}
+		start = int(f)
+		if start < 0 {
+			start += length
+		}
+		if start < 0 {
+			start = 0
+		}
+		if start > length {
+			start = length
+		}
+	}
+
+	// Resolve end bound
+	end := length
+	if node.right != nil {
+		sv, err := execSingle(node.right, input, nil)
+		if err != nil {
+			return nil, err
+		}
+		f, ok := parseJSONFloat(sv)
+		if !ok {
+			return nil, fmt.Errorf("slice index must be a number")
+		}
+		end = int(f)
+		if end < 0 {
+			end += length
+		}
+		if end < 0 {
+			end = 0
+		}
+		if end > length {
+			end = length
+		}
+	}
+	if start > end {
+		start = end
+	}
+
+	switch s.data[s.pos] {
+	case '[':
+		buf = append(buf, '[')
+		first := true
+		i := 0
+		s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
+			if i >= start && i < end {
+				if !first {
+					buf = append(buf, ',')
+				}
+				first = false
+				buf = append(buf, input[elemStart:elemEnd]...)
+			}
+			i++
+			return true
+		})
+		buf = append(buf, ']')
+	case '"':
+		buf = append(buf, '"')
+		s.pos++ // skip opening '"'
+		i := 0
+		for s.pos < len(s.data) && s.data[s.pos] != '"' {
+			charStart := s.pos
+			if s.data[s.pos] == '\\' && s.pos+1 < len(s.data) && s.data[s.pos+1] == 'u' {
+				s.pos += 6
+			} else if s.data[s.pos] == '\\' {
+				s.pos += 2
+			} else {
+				s.pos++
+			}
+			if i >= start && i < end {
+				buf = append(buf, input[charStart:s.pos]...)
+			}
+			i++
+		}
+		buf = append(buf, '"')
+	}
+	return buf, nil
+}
+
+// execPlus implements expr + expr: null identity, string concat, array concat, numeric add.
+// Uses nil scratch for operands so results are input sub-slices (zero-alloc).
+func execPlus(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	result, err := execPlusSingle(node, input, buf)
+	if err != nil {
+		return err
+	}
+	return fn(result)
+}
+
+func execPlusSingle(node *op, input []byte, buf []byte) ([]byte, error) {
+	// Evaluate both operands with nil scratch — cap-limited sub-slices, no alloc.
+	leftVal, err := execSingle(node.left, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	rightVal, err := execSingle(node.right, input, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	ls := scanner{data: leftVal}
+	ls.skipWhitespace()
+	rs := scanner{data: rightVal}
+	rs.skipWhitespace()
+
+	// null is identity for +: null + x = x, x + null = x
+	if ls.pos >= len(ls.data) || ls.data[ls.pos] == 'n' {
+		if buf == nil {
+			return rightVal, nil
+		}
+		return append(buf, rightVal...), nil
+	}
+	if rs.pos >= len(rs.data) || rs.data[rs.pos] == 'n' {
+		if buf == nil {
+			return leftVal, nil
+		}
+		return append(buf, leftVal...), nil
+	}
+
+	switch ls.data[ls.pos] {
+	case '"': // string concatenation
+		if rs.pos < len(rs.data) && rs.data[rs.pos] == '"' {
+			lc := ls.readString()
+			rc := rs.readString()
+			buf = append(buf, '"')
+			buf = append(buf, lc...)
+			buf = append(buf, rc...)
+			buf = append(buf, '"')
+			return buf, nil
+		}
+	case '[': // array concatenation
+		if rs.pos < len(rs.data) && rs.data[rs.pos] == '[' {
+			buf = append(buf, '[')
+			first := true
+			ls.arrayIter(func(_ int, start, end int) bool {
+				if !first {
+					buf = append(buf, ',')
+				}
+				first = false
+				buf = append(buf, leftVal[start:end]...)
+				return true
+			})
+			rs.arrayIter(func(_ int, start, end int) bool {
+				if !first {
+					buf = append(buf, ',')
+				}
+				first = false
+				buf = append(buf, rightVal[start:end]...)
+				return true
+			})
+			buf = append(buf, ']')
+			return buf, nil
+		}
+	default: // numeric add
+		lf, lok := parseJSONFloat(leftVal)
+		rf, rok := parseJSONFloat(rightVal)
+		if lok && rok {
+			sum := lf + rf
+			if sum == float64(int64(sum)) && sum >= -1e15 && sum <= 1e15 {
+				return appendInt(buf, int(sum)), nil
+			}
+			return strconv.AppendFloat(buf, sum, 'f', -1, 64), nil
+		}
+	}
+	return nil, fmt.Errorf("cannot add %q and %q", leftVal, rightVal)
 }
 
 // execKeysUnsorted returns object keys (insertion order) or array indices as a JSON array.

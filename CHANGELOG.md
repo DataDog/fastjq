@@ -21,6 +21,23 @@ Five new zero-alloc operations:
 
 ---
 
+## [Unreleased] — .[n:m] slicing and expr + expr
+
+### Added
+- **`.[n:m]` / `.[:m]` / `.[n:]` / `.[:]`** — Array and string slicing. Negative indices count from the end; out-of-range indices are clamped. Strings slice by logical characters (escape sequences count as 1). Zero-alloc: writes directly into buf via position-tracked scan.
+- **`expr + expr`** — Binary concatenation/addition: strings concat, arrays concat, numbers sum, `null` is the identity element (`null + x = x`). Zero-alloc via nil-buf evaluation of both operands (cap-limited input sub-slices), result written to buf. `+` has higher precedence than comparison operators.
+- Also added `bNull` global literal (like `bTrue`/`bFalse`) to eliminate allocations when returning null for missing fields with a nil scratch buffer.
+
+### Benchmarks (Apple M4 Max)
+| Operation | fastjq | gojq | Speedup |
+|-----------|--------|------|---------|
+| `.[1:4]` array slice | 86 ns | 788 ns | **9x** |
+| `.[:5]` string slice | 47 ns | 437 ns | **9x** |
+| `.a + .b` string concat | 69 ns | 655 ns | **9x** |
+| `"prefix" + .name` | 107 ns | 709 ns | **6.6x** |
+
+---
+
 ## [Unreleased] — README, .gitignore, null propagation docs
 
 ### Changed

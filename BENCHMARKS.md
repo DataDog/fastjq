@@ -53,6 +53,10 @@ All times in µs. Small/Medium values are sub-microsecond but shown with enough 
 | `flatten` | 3-elem nested array | 0.104 | 1.268 | **12x** | 0 | 38 |
 | `split(",")` | Short string | 0.110 | 0.773 | **7x** | 0 | 21 |
 | `join(",")` | 5-elem array | 0.100 | 0.848 | **8.5x** | 0 | 30 |
+| `.[1:4]` array slice | 6-elem array | 0.086 | 0.788 | **9x** | 0 | 21 |
+| `.[:5]` string slice | 24-char string | 0.047 | 0.437 | **9x** | 0 | 12 |
+| `.a + .b` string concat | Small (~100B) | 0.069 | 0.655 | **9x** | 0 | 21 |
+| `"prefix" + .name` | Small (~100B) | 0.107 | 0.709 | **6.6x** | 0 | 23 |
 | `ascii_downcase` in select | Small (~100B) | 0.010 | 0.564 | **56x** | 0 | 21 |
 | `ascii_downcase` in select | Large (~100KB) | 178 | 794 | **4.5x** | 0 | 4,652 |
 | `startswith("s")` in select | Small (~100B) | 0.010 | 0.568 | **57x** | 0 | 21 |
@@ -154,6 +158,14 @@ BenchmarkGojq_Small_Startswith-16       	 2127511	       566.5 ns/op	    1801 B/
 BenchmarkGojq_Small_Endswith-16         	 2098352	       567.3 ns/op	    1801 B/op	      21 allocs/op
 BenchmarkGojq_Small_Ltrimstr-16         	 2939564	       407.9 ns/op	    1305 B/op	      16 allocs/op
 BenchmarkGojq_Small_Rtrimstr-16         	 2907825	       412.4 ns/op	    1305 B/op	      16 allocs/op
+BenchmarkFastjq_Small_Slice-16          	13770956	        86.17 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_SliceString-16    	25514926	        46.87 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Plus-16           	17136165	        69.40 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_PlusStr-16        	10809499	       106.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Slice-16            	 1517143	       787.8 ns/op	    1425 B/op	      21 allocs/op
+BenchmarkGojq_Small_SliceString-16      	 2766013	       436.9 ns/op	    1144 B/op	      12 allocs/op
+BenchmarkGojq_Small_Plus-16             	 1838305	       655.0 ns/op	    1673 B/op	      21 allocs/op
+BenchmarkGojq_Small_PlusStr-16          	 1694414	       709.1 ns/op	    1705 B/op	      23 allocs/op
 BenchmarkFastjq_Small_Add-16            	20463265	        57.08 ns/op	       0 B/op	       0 allocs/op
 BenchmarkFastjq_Small_AddStrings-16     	 9052885	       130.3 ns/op	       0 B/op	       0 allocs/op
 BenchmarkFastjq_Small_Flatten-16        	11245194	       104.4 ns/op	       0 B/op	       0 allocs/op

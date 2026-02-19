@@ -196,6 +196,24 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 | `length` | String → chars, array/object → count, null → 0 | `[1,2,3]` | `3` |
 | `keys_unsorted` | Object keys in insertion order; array → indices | `{"b":1,"a":2}` | `["b","a"]` |
 
+### Slicing and Concatenation
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `.[n:m]` | Array/string slice from index n to m (exclusive) | `[0,1,2,3,4]` with `.[1:4]` | `[1,2,3]` |
+| `.[:m]` | Slice from start to m | `"hello world"` with `.[:5]` | `"hello"` |
+| `.[n:]` | Slice from n to end | `[0,1,2,3,4]` with `.[2:]` | `[2,3,4]` |
+| `.[:]` | Full slice (identity for arrays/strings) | `[1,2,3]` | `[1,2,3]` |
+| `.[-n:]` | Last n elements | `[0,1,2,3,4]` with `.[-2:]` | `[3,4]` |
+| `"a" + "b"` | String concatenation | any | `"ab"` |
+| `[1] + [2,3]` | Array concatenation | any | `[1,2,3]` |
+| `.a + .b` | Field concatenation | `{"a":"foo","b":"bar"}` | `"foobar"` |
+| `null + x` / `x + null` | null is identity for `+` | any | `x` |
+
+Slicing uses **logical characters** for strings: each escape sequence (`\n`, `\uXXXX`, etc.) counts as one character. Negative indices count from the end. Indices are clamped to valid range.
+
+`+` supports: strings (concat), arrays (concat), numbers (sum). Null is the identity element. Object merging with `+` is not yet supported — use `with_entries` instead.
+
 ### Reduction and Generation
 
 | Syntax | Description | Example Input | Example Output |
@@ -276,7 +294,6 @@ So `a or b and c` parses as `a or (b and c)` — `and` binds tighter than `or`.
 
 | Syntax | Description | Implementation Notes |
 |--------|-------------|---------------------|
-| `.[2:5]`, `.[:3]`, `.[1:]` | Array/string slicing | Iterate to start, copy through end. Just position tracking. |
 | `values` | Object values | Equivalent to `.[]`, already supported semantically. |
 | `has(0)` | Array index membership | Scan array length, check bounds. |
 | `in(expr)` | Reverse membership test | Same scan logic, reversed operands. |
@@ -290,8 +307,6 @@ These operations are implementable at zero allocation but involve more complexit
 
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
-| `+` (arrays) | Array concatenation | `[1] + [2]` = `[1,2]`. Strip brackets, join with comma. Simple. |
-| `+` (strings) | String concatenation | Strip quotes, join, re-quote. Must handle escape sequences. |
 | `+` (objects) | Object merge | `{a:1} + {b:2}` = `{a:1,b:2}`. Must handle key conflicts (last wins). Scan right for all keys, iterate left skipping overrides, then append right. Complex but zero-alloc. |
 | `*` (objects) | Recursive merge | Deep merge two objects. Recursive descent and reconstruction. Zero-alloc possible but recursion depth can be problematic. |
 | `try-catch` | Error handling | Capture errors from sub-expressions and redirect. The callback pattern makes this viable. |

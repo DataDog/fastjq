@@ -243,6 +243,22 @@ func TestJQCompat(t *testing.T) {
 		{`ltrimstr no match`, `ltrimstr("xyz")`, `"foobar"`, ""},
 		{`rtrimstr match`, `rtrimstr("bar")`, `"foobar"`, ""},
 
+		// --- slice ---
+		{"slice array", ".[1:4]", `[0,1,2,3,4]`, ""},
+		{"slice array from", ".[2:]", `[0,1,2,3,4]`, ""},
+		{"slice array to", ".[:3]", `[0,1,2,3,4]`, ""},
+		{"slice array neg", ".[-2:]", `[0,1,2,3,4]`, ""},
+		{"slice string", ".[0:5]", `"hello world"`, ""},
+		{"slice string neg", ".[-5:]", `"hello world"`, ""},
+
+		// --- + ---
+		{"plus strings", `"hello" + " world"`, `{}`, ""},
+		{"plus arrays", `[1,2] + [3,4]`, `{}`, ""},
+		{"plus numbers", `.a + .b`, `{"a":1,"b":2}`, ""},
+		{"plus null left", `null + "x"`, `{}`, ""},
+		{"plus null right", `"a" + null`, `{}`, ""},
+		{"plus field string", `.a + .b`, `{"a":"foo","b":"bar"}`, ""},
+
 		// --- flatten ---
 		{"flatten deep", "flatten", `[[1,[2,3]],[4]]`, ""},
 		{"flatten depth 1", "flatten(1)", `[[1,[2]],3]`, ""},

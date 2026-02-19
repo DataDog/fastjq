@@ -311,6 +311,20 @@ func BenchmarkFastjq_Small_Join(b *testing.B) {
 	benchFastjqObj(b, `join(",")`, []byte(`["field_0","field_1","field_2","field_3","field_4"]`))
 }
 
+func BenchmarkFastjq_Small_Slice(b *testing.B) {
+	benchFastjqObj(b, `.[1:4]`, []byte(`[0,1,2,3,4,5]`))
+}
+func BenchmarkFastjq_Small_SliceString(b *testing.B) {
+	benchFastjqObj(b, `.[:5]`, []byte(`"hello world from fastjq"`))
+}
+func BenchmarkFastjq_Small_Plus(b *testing.B) {
+	benchFastjqObj(b, `.a + .b`, []byte(`{"a":"foo","b":"bar"}`))
+}
+func BenchmarkFastjq_Small_PlusStr(b *testing.B) {
+	benchFastjqObj(b, `.prefix + .name`,
+		[]byte(`{"prefix":"user_","name":"alice"}`))
+}
+
 func BenchmarkFastjq_Small_AsciiDowncase(b *testing.B) {
 	benchFastjqObj(b, `select(.field_2 | ascii_downcase == "xxxxxxxxxx")`, smallJSON)
 }
@@ -446,6 +460,20 @@ func BenchmarkGojq_Small_Split(b *testing.B) {
 }
 func BenchmarkGojq_Small_Join(b *testing.B) {
 	benchGojqObj(b, `join(",")`, []byte(`["field_0","field_1","field_2","field_3","field_4"]`))
+}
+
+func BenchmarkGojq_Small_Slice(b *testing.B) {
+	benchGojqObj(b, `.[1:4]`, []byte(`[0,1,2,3,4,5]`))
+}
+func BenchmarkGojq_Small_SliceString(b *testing.B) {
+	benchGojqObj(b, `.[:5]`, []byte(`"hello world from fastjq"`))
+}
+func BenchmarkGojq_Small_Plus(b *testing.B) {
+	benchGojqObj(b, `.a + .b`, []byte(`{"a":"foo","b":"bar"}`))
+}
+func BenchmarkGojq_Small_PlusStr(b *testing.B) {
+	benchGojqObj(b, `.prefix + .name`,
+		[]byte(`{"prefix":"user_","name":"alice"}`))
 }
 
 func BenchmarkGojq_Small_AsciiDowncase(b *testing.B) {

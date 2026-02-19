@@ -170,6 +170,8 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `keys_unsorted` | Object keys in insertion order; array → indices |
 | `any` / `any(expr)` | True if any element/result is truthy (short-circuit) |
 | `all` / `all(expr)` | True if all elements/results are truthy (short-circuit) |
+| `.[n:m]`, `.[:m]`, `.[n:]`, `.[:]` | Slice array or string (negative indices count from end) |
+| `expr + expr` | Concatenate strings/arrays, sum numbers, null is identity |
 | `add` | Sum numbers, concatenate strings/arrays, merge objects |
 | `flatten`, `flatten(n)` | Recursively flatten nested arrays (n = max depth) |
 | `split("s")` | Split string by separator → array |
