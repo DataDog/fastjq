@@ -18,6 +18,8 @@ That round-trip dominates. For a 100KB log object, it costs ~870 µs and ~4,600 
 
 fastjq eliminates the round-trip. A `select(.level == "error")` on a 100KB object takes **7 ns** and **0 allocations** — it scans to the `level` field and exits immediately.
 
+## Benchmarks
+
 ### vs gojq (in-process, Apple M4 Max, Go 1.25)
 
 gojq times include the full `json.Unmarshal` → execute → `json.Marshal` cycle.
