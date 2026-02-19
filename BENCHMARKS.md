@@ -37,22 +37,43 @@ All times in µs. Small/Medium values are sub-microsecond but shown with enough 
 | `map(.name)` | 20-elem array (~600B) | 1.99 | 9.98 | **5.0x** | 0 | 251 |
 | `to_entries` | Small (~100B) | 0.0062 | 0.359 | **58x** | 0 | 14 |
 | `with_entries(select(...))` | Small (~100B) | 0.0054 | 0.491 | **91x** | 0 | 19 |
-| `keys_unsorted` | Small (~100B) | 0.177 | 1.259 | **7x** | 0 | 35 |
-| `any` (no-arg) | 5-elem array | 0.050 | 1.814 | **36x** | 0 | 39 |
-| `any(expr)` | 5-elem array | 0.123 | 2.047 | **17x** | 0 | 49 |
-| `first(expr)` | 5-elem array | 0.107 | 1.478 | **14x** | 0 | 39 |
-| `last(expr)` | 5-elem array | 0.142 | 1.883 | **13x** | 0 | 43 |
-| `limit(3; expr)` | 5-elem array | 0.037 | 1.635 | **44x** | 0 | 42 |
-| `ascii_downcase` in select | Small (~100B) | 0.011 | 0.565 | **54x** | 0 | 21 |
-| `startswith("s")` in select | Small (~100B) | 0.011 | 0.567 | **52x** | 0 | 21 |
-| `endswith("s")` in select | Small (~100B) | 0.011 | 0.567 | **52x** | 0 | 21 |
-| `ltrimstr("s")` | Small (~100B) | 0.0060 | 0.408 | **68x** | 0 | 16 |
-| `rtrimstr("s")` | Small (~100B) | 0.0061 | 0.412 | **68x** | 0 | 16 |
+| `keys_unsorted` | Small (~100B) | 0.061 | 0.364 | **6x** | 0 | 14 |
+| `keys_unsorted` | Large (~100KB) | 191 | 596 | **3.1x** | 0 | 3,039 |
+| `any` (no-arg) | 5-elem array | 0.046 | 1.794 | **39x** | 0 | 39 |
+| `any(expr)` | 5-elem array | 0.122 | 2.039 | **17x** | 0 | 49 |
+| `any(expr)` | 200-elem array | 2.8 | 1.674 | 0.6x†| 0 | 29 |
+| `first(expr)` | 5-elem array | 0.104 | 1.467 | **14x** | 0 | 39 |
+| `first(expr)` | 200-elem array | 3.6 | 1.392 | 0.4x†| 0 | 23 |
+| `last(expr)` | 5-elem array | 0.142 | 1.871 | **13x** | 0 | 43 |
+| `last(expr)` | 200-elem array | 3.2 | 1.488 | 0.5x†| 0 | 24 |
+| `limit(3; expr)` | 5-elem array | 0.034 | 1.605 | **47x** | 0 | 42 |
+| `limit(10; expr)` | 200-elem array | 0.656 | 1.560 | **2.4x** | 0 | 24 |
+| `ascii_downcase` in select | Small (~100B) | 0.010 | 0.564 | **56x** | 0 | 21 |
+| `ascii_downcase` in select | Large (~100KB) | 178 | 794 | **4.5x** | 0 | 4,652 |
+| `startswith("s")` in select | Small (~100B) | 0.010 | 0.568 | **57x** | 0 | 21 |
+| `startswith("s")` in select | Large (~100KB) | 248 | 781 | **3.1x** | 0 | 4,651 |
+| `endswith("s")` in select | Small (~100B) | 0.010 | 0.563 | **56x** | 0 | 21 |
+| `ltrimstr("s")` | Small (~100B) | 0.0060 | 0.411 | **68x** | 0 | 16 |
+| `ltrimstr("s")` | Large (~100KB) | 216 | — | — | 0 | — |
+| `rtrimstr("s")` | Small (~100B) | 0.0060 | 0.421 | **70x** | 0 | 16 |
+| `has("key")` in select | Small (~100B) | 0.011 | 0.547 | **50x** | 0 | 20 |
+| `has("key")` in select | Large (~100KB) | 159 | 767 | **4.8x** | 0 | 4,652 |
+| `length` | Small (~100B) | 0.0060 | 0.358 | **60x** | 0 | 13 |
+| `length` | Large (~100KB) | 179 | 576 | **3.2x** | 0 | 2,835 |
+| `map(.name)` | Small array (~600B, 20 elems) | 1.96 | 9.95 | **5.1x** | 0 | 251 |
+| `map(.name)` | Medium array (~3KB, 100 elems) | 10.5 | — | — | 0 | — |
+| `map(.name)` | Large array (~6KB, 200 elems) | 20.4 | 91.3 | **4.5x** | 0 | 2,237 |
+| `to_entries` | Small (~100B) | 0.0061 | 0.363 | **60x** | 0 | 14 |
+| `to_entries` | Large (~100KB) | 250 | 808 | **3.2x** | 0 | 5,847 |
+| `with_entries(select(...))` | Small (~100B) | 0.0052 | 0.484 | **93x** | 0 | 19 |
+| `with_entries(select(...))` | Large (~100KB)‡ | 643 | — | — | 2 | — |
 | Alternative `.f // "default"` | Small (~100B) | 0.0072 | 0.456 | **63x** | 0 | 17 |
 
 ## Key Takeaways
 
 - **fastjq achieves 0 allocations** across all operations in steady state when using `RunWithBuffer` or `RunFunc`
+- **‡ `with_entries` on very large inputs (100KB+ objects with large nested field values) has 2 allocs** from the entry scratch buffer growing beyond its initial 64-byte capacity. In typical log processing with field values < 64 bytes, it is 0 allocs.
+- **† For small raw arrays of primitives, gojq can be faster** — once unmarshaled to `[]interface{}`, gojq accesses elements as native Go slice operations. fastjq always scans the raw JSON bytes, which is slower for tiny arrays (~600B) of numbers.
 - **Fastest on small inputs** where gojq's marshal/unmarshal overhead dominates (up to 63x faster)
 - **Still significantly faster on large inputs** (2.5x–5x) where both engines are scanning lots of data
 - **Compound select (and/or) is ~56–60x faster**: each boolean operand is evaluated via `execSingle` with no closures; gojq must unmarshal the full object
@@ -128,6 +149,32 @@ BenchmarkGojq_Small_Startswith-16       	 2127511	       566.5 ns/op	    1801 B/
 BenchmarkGojq_Small_Endswith-16         	 2098352	       567.3 ns/op	    1801 B/op	      21 allocs/op
 BenchmarkGojq_Small_Ltrimstr-16         	 2939564	       407.9 ns/op	    1305 B/op	      16 allocs/op
 BenchmarkGojq_Small_Rtrimstr-16         	 2907825	       412.4 ns/op	    1305 B/op	      16 allocs/op
+BenchmarkFastjq_Large_Has-16            	    8361	    159283 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Length-16         	    9829	    178947 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_KeysUnsorted-16   	    5937	    190536 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_ToEntries-16      	    4755	    249561 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_WithEntries-16    	    1892	    643234 ns/op	    2368 B/op	       2 allocs/op
+BenchmarkFastjq_Large_Map-16            	   62641	     20394 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Medium_Map-16           	  112286	     10478 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Any-16            	  728576	      1613 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_AnyExpr-16        	  414074	      2807 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_AsciiDowncase-16  	    8516	    177958 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Startswith-16     	    4916	    247878 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Ltrimstr-16       	    5733	    215931 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_First-16          	  329593	      3555 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Last-16           	  378952	      3220 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Limit-16          	 1922724	       655.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Large_Has-16              	    1552	    766775 ns/op	  540078 B/op	    4652 allocs/op
+BenchmarkGojq_Large_Length-16           	    2078	    576145 ns/op	  269831 B/op	    2835 allocs/op
+BenchmarkGojq_Large_KeysUnsorted-16     	    1988	    596044 ns/op	  282871 B/op	    3039 allocs/op
+BenchmarkGojq_Large_ToEntries-16        	    1485	    808075 ns/op	  647215 B/op	    5847 allocs/op
+BenchmarkGojq_Large_Map-16              	   13191	     91313 ns/op	  118567 B/op	    2237 allocs/op
+BenchmarkGojq_Large_AnyExpr-16          	  706141	      1674 ns/op	    2818 B/op	      29 allocs/op
+BenchmarkGojq_Large_AsciiDowncase-16    	    1533	    794305 ns/op	  536389 B/op	    4652 allocs/op
+BenchmarkGojq_Large_Startswith-16       	    1516	    781300 ns/op	  536015 B/op	    4651 allocs/op
+BenchmarkGojq_Large_First-16            	  836318	      1392 ns/op	    1889 B/op	      23 allocs/op
+BenchmarkGojq_Large_Last-16             	  818823	      1488 ns/op	    2193 B/op	      24 allocs/op
+BenchmarkGojq_Large_Limit-16            	  765610	      1560 ns/op	    2200 B/op	      24 allocs/op
 ```
 
 ## CLI Throughput: fastjq vs jq
@@ -136,21 +183,27 @@ End-to-end JSONL throughput benchmarks comparing `fastjq-bench` (Go CLI using th
 
 | Operation | Input | jq (s) | fastjq (s) | Speedup |
 |-----------|-------|--------|-------------|---------|
-| Identity (`.`) | small (100K lines, ~11MB) | 0.323 | 0.031 | **10.4x** |
-| Field access (`.field_2`) | small | 0.149 | 0.024 | **6.2x** |
-| Field access (`.field_50`) | large (100 lines, ~16MB) | 0.085 | 0.022 | **3.9x** |
-| Delete field (`del(.field_2)`) | small | 0.336 | 0.033 | **10.2x** |
-| Object construction (`{field_0, field_2}`) | small | 0.246 | 0.048 | **5.1x** |
-| Select all match (`select(.field_2 == "xxx...")`) | small | 0.368 | 0.031 | **11.9x** |
-| Select none match (`select(.field_2 == "nope")`) | small | 0.131 | 0.030 | **4.4x** |
-| Alternative (`.field_2 // "default"`) | small | 0.154 | 0.029 | **5.3x** |
+| Identity (`.`) | small (100K lines, ~11MB) | 0.346 | 0.025 | **13.8x** |
+| Field access (`.field_2`) | small | 0.146 | 0.027 | **5.4x** |
+| Field access (`.field_50`) | large (100 lines, ~16MB) | 0.088 | 0.025 | **3.5x** |
+| Delete field (`del(.field_2)`) | small | 0.389 | 0.036 | **10.8x** |
+| Object construction (`{field_0, field_2}`) | small | 0.251 | 0.048 | **5.2x** |
+| Select all match (`select(.field_2 == "xxx...")`) | small | 0.368 | 0.030 | **12.3x** |
+| Select none match (`select(.field_2 == "nope")`) | small | 0.138 | 0.031 | **4.5x** |
+| Alternative (`.field_2 // "default"`) | small | 0.170 | 0.027 | **6.3x** |
+| Case-insensitive select | small | 0.650 | 0.036 | **18.1x** |
+| Prefix filter (`startswith`) | small | 0.391 | 0.030 | **13.0x** |
+| Field existence (`has`) | small | 0.364 | 0.031 | **11.7x** |
+| `to_entries` | small | 0.714 | 0.039 | **18.3x** |
+| `keys_unsorted` | small | 0.245 | 0.031 | **7.9x** |
 
 ### Key Takeaways (CLI)
 
-- **4x–12x faster** than jq across all operations on real JSONL workloads
-- **Select (all match) is 12x faster**: the most important filter for log processing
-- **Identity and deletion are 10x faster**: validates the zero-copy architecture at scale
-- **Even "large" objects (100KB each) show 4x speedup**: scanning advantage persists
+- **4x–18x faster** than jq across all operations on real JSONL workloads
+- **Case-insensitive select (`ascii_downcase`) is 18x faster**: near-zero cost for the string transform
+- **`to_entries` is 18x faster**: zero-copy reformatting vs jq's full parse + marshal cycle
+- **Identity and deletion are 11–14x faster**: validates the zero-copy architecture at scale
+- **Even "large" objects (100KB each) show 3.5x speedup**: scanning advantage persists
 
 ### Reproducing
 

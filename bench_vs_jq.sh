@@ -160,14 +160,19 @@ add_bench() {
     BENCH_INPUTS+=("$4")
 }
 
-add_bench "identity"                    "."                                "$SMALL_FILE" "small"
-add_bench "field access"                ".field_2"                         "$SMALL_FILE" "small"
-add_bench "field access (large)"        ".field_50"                        "$LARGE_FILE" "large"
-add_bench "delete field"                "del(.field_2)"                    "$SMALL_FILE" "small"
-add_bench "object construction"         "{field_0, field_2}"               "$SMALL_FILE" "small"
-add_bench "select (all match)"          'select(.field_2 == "xxxxxxxxxx")' "$SMALL_FILE" "small"
-add_bench "select (none match)"         'select(.field_2 == "nope")'       "$SMALL_FILE" "small"
-add_bench "alternative"                 '.field_2 // "default"'            "$SMALL_FILE" "small"
+add_bench "identity"                    "."                                           "$SMALL_FILE" "small"
+add_bench "field access"                ".field_2"                                    "$SMALL_FILE" "small"
+add_bench "field access (large)"        ".field_50"                                   "$LARGE_FILE" "large"
+add_bench "delete field"                "del(.field_2)"                               "$SMALL_FILE" "small"
+add_bench "object construction"         "{field_0, field_2}"                          "$SMALL_FILE" "small"
+add_bench "select (all match)"          'select(.field_2 == "xxxxxxxxxx")'            "$SMALL_FILE" "small"
+add_bench "select (none match)"         'select(.field_2 == "nope")'                  "$SMALL_FILE" "small"
+add_bench "alternative"                 '.field_2 // "default"'                       "$SMALL_FILE" "small"
+add_bench "case-insensitive select"     'select(.field_2 | ascii_downcase == "xxxxxxxxxx")' "$SMALL_FILE" "small"
+add_bench "prefix filter"               'select(.field_2 | startswith("xxxx"))'       "$SMALL_FILE" "small"
+add_bench "field existence"             'select(has("field_2"))'                      "$SMALL_FILE" "small"
+add_bench "to_entries"                  "to_entries"                                  "$SMALL_FILE" "small"
+add_bench "keys"                        "keys_unsorted"                               "$SMALL_FILE" "small"
 
 # Print header
 printf "%-24s %-6s %10s %10s %8s\n" "Operation" "Input" "jq (s)" "fastjq (s)" "Speedup"

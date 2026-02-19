@@ -4,6 +4,29 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — benchmark cleanup: Large/Medium variants + bench_vs_jq.sh update
+
+### Changed
+Added Large (and Medium for map) benchmarks for all operations that previously only had Small variants:
+- Large object benchmarks: `has`, `length`, `keys_unsorted`, `to_entries`, `with_entries`, `ascii_downcase`, `startswith`, `ltrimstr`
+- Large/Medium array benchmarks: `map`, `any`, `any(expr)`, `first(expr)`, `last(expr)`, `limit`
+
+**Fixed**: Three Large benchmarks (`has`, `ascii_downcase`, `startswith`) were showing calibration artifacts because `buf, _ = RunWithBuffer(...)` reassigned `buf` to a sub-slice of the input (for `select` operations that return input unchanged). Subsequent iterations used that sub-slice as scratch, corrupting rotation inputs. Fixed by using `_, _ = RunWithBuffer(input, scratch[:0])` with a dedicated non-reassigned scratch buffer.
+
+**Fixed**: `execWithEntries` entry scratch buffer reverted to 64-byte initial capacity (was changed to size-proportional which prevented allocator recycling). The 64-byte version recycles in steady state for typical inputs.
+
+Added 5 new CLI benchmark queries to `bench_vs_jq.sh`:
+- `select(.field_2 | ascii_downcase == "xxxxxxxxxx")` — 18x faster
+- `select(.field_2 | startswith("xxxx"))` — 13x faster
+- `select(has("field_2"))` — 12x faster
+- `to_entries` — 18x faster
+- `keys_unsorted` — 8x faster
+
+### Notable findings
+For small raw arrays of primitives (~600B, 200 ints), gojq can be faster than fastjq for `any(expr)`, `first`, `last`, `limit` because gojq accesses an in-memory `[]interface{}` slice while fastjq scans JSON bytes. For typical log processing (string/object fields, larger inputs), fastjq is consistently faster.
+
+---
+
 ## [Unreleased] — first, last, limit(n; expr)
 
 ### Added

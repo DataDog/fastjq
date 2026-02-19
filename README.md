@@ -49,11 +49,15 @@ fastjq achieves **0 allocations** on all operations above. The Large Select benc
 
 | Operation | jq | fastjq | Speedup |
 |-----------|-----|--------|---------|
-| `.` (identity) | 0.323s | 0.031s | **10x** |
-| `del(.field)` | 0.336s | 0.033s | **10x** |
-| `select(.f == "x")` (all match) | 0.368s | 0.031s | **12x** |
-| `.field` | 0.149s | 0.024s | **6x** |
-| `{f0, f2}` | 0.246s | 0.048s | **5x** |
+| `.` (identity) | 0.346s | 0.025s | **14x** |
+| `del(.field)` | 0.389s | 0.036s | **11x** |
+| `select(.f == "x")` (all match) | 0.368s | 0.030s | **12x** |
+| `select(.f \| ascii_downcase == "x")` | 0.650s | 0.036s | **18x** |
+| `select(.f \| startswith("x"))` | 0.391s | 0.030s | **13x** |
+| `select(has("field"))` | 0.364s | 0.031s | **12x** |
+| `.field` | 0.146s | 0.027s | **5x** |
+| `{f0, f2}` | 0.251s | 0.048s | **5x** |
+| `to_entries` | 0.714s | 0.039s | **18x** |
 
 ## Install
 
