@@ -32,6 +32,11 @@ const (
 	opToEntries                    // to_entries
 	opFromEntries                  // from_entries
 	opWithEntries                  // with_entries(f) — dedicated single-pass executor
+	opAdd                          // add
+	opRange                        // range(n) / range(from;to) / range(from;to;step)
+	opFlatten                      // flatten / flatten(n)
+	opSplit                        // split("s")
+	opJoin                         // join("s")
 	opAsciiDowncase                // ascii_downcase
 	opAsciiUpcase                  // ascii_upcase
 	opStartsWith                   // startswith("s")
@@ -361,6 +366,41 @@ func parseAtom(s string) (*op, string, error) {
 		return parseAnyAll(s[3:], opAll)
 	}
 
+	// add
+	if strings.HasPrefix(s, "add") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return &op{typ: opAdd}, s[3:], nil
+	}
+
+	// range(n) / range(from; to) / range(from; to; step)
+	if strings.HasPrefix(s, "range(") {
+		return parseRange(s[6:])
+	}
+
+	// flatten / flatten(n)
+	if strings.HasPrefix(s, "flatten") && (len(s) == 7 || !isIdentChar(s[7])) {
+		rest := strings.TrimSpace(s[7:])
+		if len(rest) > 0 && rest[0] == '(' {
+			depthExpr, rest2, err := parsePipeExpr(rest[1:])
+			if err != nil {
+				return nil, rest2, err
+			}
+			rest2 = strings.TrimSpace(rest2)
+			if len(rest2) == 0 || rest2[0] != ')' {
+				return nil, rest2, fmt.Errorf("expected ')' after flatten() argument")
+			}
+			return &op{typ: opFlatten, child: depthExpr}, rest2[1:], nil
+		}
+		return &op{typ: opFlatten, index: -1}, rest, nil // -1 = unlimited depth
+	}
+
+	// split(s) / join(s)
+	if strings.HasPrefix(s, "split(") {
+		return parseStringArgBuiltin(s[6:], opSplit)
+	}
+	if strings.HasPrefix(s, "join(") {
+		return parseStringArgBuiltin(s[5:], opJoin)
+	}
+
 	// ascii_downcase / ascii_upcase
 	if strings.HasPrefix(s, "ascii_downcase") && (len(s) == 14 || !isIdentChar(s[14])) {
 		return &op{typ: opAsciiDowncase}, s[14:], nil
@@ -524,6 +564,53 @@ func parseFieldChain(s string) (*op, string, error) {
 	}
 
 	return node, rest, nil
+}
+
+// parseRange parses range(n), range(from; to), or range(from; to; step).
+// s starts after the opening '(' has been consumed.
+func parseRange(s string) (*op, string, error) {
+	arg1, rest, err := parsePipeExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+
+	if len(rest) == 0 || rest[0] == ')' {
+		// range(n) — from=0, to=n, step=1 (stored as left=to only; executor special-cases)
+		if len(rest) > 0 {
+			rest = rest[1:]
+		}
+		return &op{typ: opRange, left: arg1}, rest, nil
+	}
+	if rest[0] != ';' {
+		return nil, rest, fmt.Errorf("expected ';' or ')' in range()")
+	}
+	arg2, rest, err := parsePipeExpr(strings.TrimSpace(rest[1:]))
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+
+	if len(rest) == 0 || rest[0] == ')' {
+		// range(from; to)
+		if len(rest) > 0 {
+			rest = rest[1:]
+		}
+		return &op{typ: opRange, left: arg1, right: arg2}, rest, nil
+	}
+	if rest[0] != ';' {
+		return nil, rest, fmt.Errorf("expected ';' or ')' in range()")
+	}
+	arg3, rest, err := parsePipeExpr(strings.TrimSpace(rest[1:]))
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after range() arguments")
+	}
+	// range(from; to; step)
+	return &op{typ: opRange, left: arg1, right: arg2, child: arg3}, rest[1:], nil
 }
 
 // parseAnyAll parses any/all with an optional (expr) argument.

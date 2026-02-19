@@ -4,6 +4,21 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — add, range, flatten, split, join
+
+### Added
+Five new zero-alloc operations:
+
+- **`add`** — reduces an array by summing numbers, concatenating strings/arrays, or merging object key-value pairs. Empty/null → `null`. Uses float accumulation with integer output when result is a whole number.
+- **`range(n)` / `range(from; to)` / `range(from; to; step)`** — emits integers (or floats for non-integer steps) via callback. Zero-alloc: writes directly into buf. Common use: `[range(5)]` = `[0,1,2,3,4]`.
+- **`flatten` / `flatten(n)`** — recursively flattens nested arrays. `flatten` = unlimited depth; `flatten(n)` = at most n levels. Zero-alloc recursive scanner. Fixed off-by-one (`curDepth > maxDepth` not `>=`).
+- **`split("s")`** — splits a JSON string by separator → array of strings. Zero-alloc scan for separator in raw string content.
+- **`join("s")`** — joins array elements with separator → JSON string. Numbers converted to their string form; nulls → empty.
+
+33 new tests, 397 total.
+
+---
+
 ## [Unreleased] — correctness: fuzz tests, no-panic guarantees, edge case fixes
 
 ### Added

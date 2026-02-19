@@ -196,6 +196,25 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 | `length` | String → chars, array/object → count, null → 0 | `[1,2,3]` | `3` |
 | `keys_unsorted` | Object keys in insertion order; array → indices | `{"b":1,"a":2}` | `["b","a"]` |
 
+### Reduction and Generation
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `add` | Sum numbers, concatenate strings/arrays, merge objects | `[1,2,3]` | `6` |
+| `add` | String concatenation | `["a","b","c"]` | `"abc"` |
+| `add` | Array concatenation | `[[1,2],[3,4]]` | `[1,2,3,4]` |
+| `add` | Empty/null array → null | `[]` | `null` |
+| `range(n)` | Emit 0, 1, …, n-1 | any (with `[range(3)]`) | `[0,1,2]` |
+| `range(from; to)` | Emit from, …, to-1 | any (with `[range(2;5)]`) | `[2,3,4]` |
+| `range(from; to; step)` | Emit with step | any (with `[range(0;10;3)]`) | `[0,3,6,9]` |
+| `flatten` | Fully flatten nested arrays | `[[1,[2]],3]` | `[1,2,3]` |
+| `flatten(n)` | Flatten at most n levels | `[[1,[2]],3]` with `flatten(1)` | `[1,[2],3]` |
+| `split("s")` | Split string by separator | `"a,b,c"` with `split(",")` | `["a","b","c"]` |
+| `join("s")` | Join array with separator | `["a","b","c"]` with `join(",")` | `"a,b,c"` |
+
+`range` is a generator — use `[range(n)]` to collect into an array.
+`join` converts numbers to their string representation; nulls become empty strings.
+
 ### Stream Control
 
 | Syntax | Description | Example Input | Example Output |
@@ -265,11 +284,6 @@ So `a or b and c` parses as `a or (b and c)` — `and` binds tighter than `or`.
 | `values` | Object values | Equivalent to `.[]`, already supported semantically. |
 | `has(0)` | Array index membership | Scan array length, check bounds. |
 | `in(expr)` | Reverse membership test | Same scan logic, reversed operands. |
-| `add` | Sum array elements | Parse numbers, accumulate, write result. Zero-alloc with integer math. |
-| `flatten` | Flatten nested arrays | Recursive scan, copy non-array elements. |
-| `range(n)` | Generate 0..n-1 | Write integers via callback. |
-| `split(s)` | String split | Scan for separator, build array in output buf. |
-| `join(s)` | Array join | Iterate array, interleave separator. |
 | `recurse` / `..` | Recursive descent | Walk all nested values via scanner, stream via callback. |
 | `path(expr)` | Output path as array | Emit path like `["foo","bar"]` or `["items",0]`. |
 | `debug` | Debug print, pass through | Print to stderr, forward value unchanged. |

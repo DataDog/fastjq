@@ -3,6 +3,7 @@ package fastjq
 import (
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 var (
@@ -110,6 +111,20 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execAnyAll(node, input, buf, fn, false)
 	case opAll:
 		return execAnyAll(node, input, buf, fn, true)
+	case opAdd:
+		return execAdd(input, buf, fn)
+	case opRange:
+		return execRange(node, input, buf, fn)
+	case opFlatten:
+		result, err := execFlattenInto(input, buf, node)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opSplit:
+		return fn(execSplit(input, buf, node.field))
+	case opJoin:
+		return fn(execJoin(input, buf, node.field))
 	case opAsciiDowncase:
 		result, err := execAsciiCase(input, buf, false)
 		if err != nil {
@@ -245,6 +260,14 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execAnyAllSingle(node, input, buf, false)
 	case opAll:
 		return execAnyAllSingle(node, input, buf, true)
+	case opAdd:
+		return exec(node, input, buf) // add is single-output via execMulti
+	case opFlatten:
+		return execFlattenInto(input, buf, node)
+	case opSplit:
+		return execSplit(input, buf, node.field), nil
+	case opJoin:
+		return execJoin(input, buf, node.field), nil
 	case opAsciiDowncase:
 		return execAsciiCase(input, buf, false)
 	case opAsciiUpcase:
@@ -1115,6 +1138,301 @@ func execLimit(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return nil
 	}
 	return err
+}
+
+// execAdd reduces an array by summing numbers, concatenating strings/arrays,
+// or merging objects. Returns null for empty/null input.
+func execAdd(input []byte, buf []byte, fn func([]byte) error) error {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return fn(append(buf, "null"...))
+	}
+
+	// Determine element type from first non-null element.
+	elemType := byte(0)
+	s2 := scanner{data: input}
+	s2.arrayIter(func(_ int, start, end int) bool {
+		es := scanner{data: input[start:end]}
+		es.skipWhitespace()
+		if es.pos < len(es.data) && es.data[es.pos] != 'n' {
+			elemType = es.data[es.pos]
+			return false
+		}
+		return true
+	})
+	if elemType == 0 {
+		return fn(append(buf, "null"...)) // empty or all-null
+	}
+
+	switch elemType {
+	case '"': // string concatenation
+		buf = append(buf, '"')
+		s.arrayIter(func(_ int, start, end int) bool {
+			es := scanner{data: input[start:end]}
+			es.skipWhitespace()
+			if es.pos < len(es.data) && es.data[es.pos] == '"' {
+				buf = append(buf, es.readString()...)
+			}
+			return true
+		})
+		buf = append(buf, '"')
+	case '[': // array concatenation
+		buf = append(buf, '[')
+		first := true
+		s.arrayIter(func(_ int, outerStart, outerEnd int) bool {
+			inner := scanner{data: input[outerStart:outerEnd]}
+			inner.skipWhitespace()
+			if inner.pos < len(inner.data) && inner.data[inner.pos] == '[' {
+				inner.arrayIter(func(_ int, iStart, iEnd int) bool {
+					if !first {
+						buf = append(buf, ',')
+					}
+					first = false
+					buf = append(buf, input[outerStart:outerEnd][iStart:iEnd]...)
+					return true
+				})
+			}
+			return true
+		})
+		buf = append(buf, ']')
+	case '{': // object merge (last-wins for duplicate keys — append all, JSON consumers handle)
+		buf = append(buf, '{')
+		first := true
+		s.arrayIter(func(_ int, oStart, oEnd int) bool {
+			es := scanner{data: input[oStart:oEnd]}
+			es.skipWhitespace()
+			if es.pos < len(es.data) && es.data[es.pos] == '{' {
+				es.objectIter(func(key []byte, vStart, vEnd int) bool {
+					if !first {
+						buf = append(buf, ',')
+					}
+					first = false
+					buf = append(buf, '"')
+					buf = append(buf, key...)
+					buf = append(buf, '"', ':')
+					buf = append(buf, input[oStart:oEnd][vStart:vEnd]...)
+					return true
+				})
+			}
+			return true
+		})
+		buf = append(buf, '}')
+	default: // numeric sum
+		sum := 0.0
+		s.arrayIter(func(_ int, start, end int) bool {
+			f, ok := parseJSONFloat(input[start:end])
+			if ok {
+				sum += f
+			}
+			return true
+		})
+		if sum == float64(int64(sum)) && sum >= -1e15 && sum <= 1e15 {
+			buf = appendInt(buf, int(sum))
+		} else {
+			buf = strconv.AppendFloat(buf, sum, 'f', -1, 64)
+		}
+	}
+	return fn(buf)
+}
+
+// execRange emits integers (or floats) from from..to-1 by step.
+// node.left = to (if right==nil), or from; node.right = to; node.child = step.
+func execRange(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	from, to, step := 0.0, 0.0, 1.0
+
+	if node.right == nil {
+		// range(n): 0..n-1
+		toVal, err := execSingle(node.left, input, nil)
+		if err != nil {
+			return err
+		}
+		n, ok := parseJSONFloat(toVal)
+		if !ok {
+			return fmt.Errorf("range: argument must be a number")
+		}
+		to = n
+	} else {
+		fromVal, err := execSingle(node.left, input, nil)
+		if err != nil {
+			return err
+		}
+		f, ok := parseJSONFloat(fromVal)
+		if !ok {
+			return fmt.Errorf("range: 'from' must be a number")
+		}
+		from = f
+
+		toVal, err := execSingle(node.right, input, nil)
+		if err != nil {
+			return err
+		}
+		t, ok := parseJSONFloat(toVal)
+		if !ok {
+			return fmt.Errorf("range: 'to' must be a number")
+		}
+		to = t
+
+		if node.child != nil {
+			stepVal, err := execSingle(node.child, input, nil)
+			if err != nil {
+				return err
+			}
+			s, ok := parseJSONFloat(stepVal)
+			if !ok || s == 0 {
+				return fmt.Errorf("range: 'step' must be a non-zero number")
+			}
+			step = s
+		}
+	}
+
+	for v := from; (step > 0 && v < to) || (step < 0 && v > to); v += step {
+		var result []byte
+		if v == float64(int64(v)) && v >= -1e15 && v <= 1e15 {
+			result = appendInt(buf[:0], int(v))
+		} else {
+			result = strconv.AppendFloat(buf[:0], v, 'f', -1, 64)
+		}
+		if err := fn(result); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// execFlattenInto flattens a nested array into a single-level array.
+// node.index = -1 means unlimited depth; >= 0 means flatten that many levels.
+func execFlattenInto(input []byte, buf []byte, node *op) ([]byte, error) {
+	maxDepth := node.index
+	if node.child != nil {
+		// flatten(n) — evaluate n
+		depthVal, err := execSingle(node.child, input, nil)
+		if err != nil {
+			return nil, err
+		}
+		d, ok := parseJSONFloat(depthVal)
+		if !ok {
+			return nil, fmt.Errorf("flatten: depth must be a number")
+		}
+		maxDepth = int(d)
+	}
+	buf = append(buf, '[')
+	first := true
+	flattenLevel(input, &buf, &first, maxDepth, 0)
+	buf = append(buf, ']')
+	return buf, nil
+}
+
+func flattenLevel(input []byte, buf *[]byte, first *bool, maxDepth, curDepth int) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		// Not an array — emit as-is
+		if !*first {
+			*buf = append(*buf, ',')
+		}
+		*first = false
+		*buf = append(*buf, input...)
+		return
+	}
+	if maxDepth >= 0 && curDepth > maxDepth {
+		// Exceeded max depth — emit the array as a single element unchanged.
+		if !*first {
+			*buf = append(*buf, ',')
+		}
+		*first = false
+		*buf = append(*buf, input...)
+		return
+	}
+	s.arrayIter(func(_ int, start, end int) bool {
+		elem := input[start:end]
+		es := scanner{data: elem}
+		es.skipWhitespace()
+		if es.pos < len(es.data) && es.data[es.pos] == '[' {
+			flattenLevel(elem, buf, first, maxDepth, curDepth+1)
+		} else {
+			if !*first {
+				*buf = append(*buf, ',')
+			}
+			*first = false
+			*buf = append(*buf, elem...)
+		}
+		return true
+	})
+}
+
+// execSplit splits a JSON string by a literal separator.
+// Returns a JSON array of strings. Non-string input returns null.
+func execSplit(input []byte, buf []byte, sep string) []byte {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return append(buf, "null"...)
+	}
+	content := s.readString() // raw bytes between quotes
+
+	buf = append(buf, '[')
+	first := true
+	start := 0
+	slen := len(sep)
+	for i := 0; i <= len(content)-slen; {
+		if bytesEqualStr(content[i:i+slen], sep) {
+			if !first {
+				buf = append(buf, ',')
+			}
+			first = false
+			buf = append(buf, '"')
+			buf = append(buf, content[start:i]...)
+			buf = append(buf, '"')
+			start = i + slen
+			i = start
+		} else {
+			i++
+		}
+	}
+	// Last segment
+	if !first {
+		buf = append(buf, ',')
+	}
+	buf = append(buf, '"')
+	buf = append(buf, content[start:]...)
+	buf = append(buf, '"')
+	buf = append(buf, ']')
+	return buf
+}
+
+// execJoin joins a JSON array of strings/numbers/nulls with a separator.
+// Returns a JSON string. Non-array input returns null.
+func execJoin(input []byte, buf []byte, sep string) []byte {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return append(buf, "null"...)
+	}
+	buf = append(buf, '"')
+	first := true
+	s.arrayIter(func(_ int, start, end int) bool {
+		elem := scanner{data: input[start:end]}
+		elem.skipWhitespace()
+		if elem.pos >= len(elem.data) {
+			return true
+		}
+		// Add separator between elements
+		if !first {
+			buf = append(buf, sep...)
+		}
+		first = false
+		switch elem.data[elem.pos] {
+		case '"': // string: append unquoted content
+			buf = append(buf, elem.readString()...)
+		case 'n': // null: empty string
+		default: // number/bool: append raw bytes
+			buf = append(buf, input[start:end]...)
+		}
+		return true
+	})
+	buf = append(buf, '"')
+	return buf
 }
 
 // execKeysUnsorted returns object keys (insertion order) or array indices as a JSON array.

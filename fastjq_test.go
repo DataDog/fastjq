@@ -1876,6 +1876,129 @@ func TestStringOpsComposed(t *testing.T) {
 	}
 }
 
+// --- add ---
+
+func TestAddNumbers(t *testing.T)            { assertQuery(t, "add", `[1,2,3,4,5]`, `15`) }
+func TestAddStrings(t *testing.T)            { assertQuery(t, "add", `["a","b","c"]`, `"abc"`) }
+func TestAddArrays(t *testing.T)             { assertQuery(t, "add", `[[1,2],[3,4]]`, `[1,2,3,4]`) }
+func TestAddEmpty(t *testing.T)              { assertQuery(t, "add", `[]`, `null`) }
+func TestAddNull(t *testing.T)               { assertQuery(t, "add", `null`, `null`) }
+func TestAddNullElements(t *testing.T)       { assertQuery(t, "add", `[null,null]`, `null`) }
+func TestAddFloats(t *testing.T)             { assertQuery(t, "add", `[1.5,2.5]`, `4`) }
+func TestAddMixedWithNull(t *testing.T)      { assertQuery(t, "add", `[null,1,2]`, `3`) }
+func TestAddSingleNumber(t *testing.T)       { assertQuery(t, "add", `[42]`, `42`) }
+func TestAddSingleString(t *testing.T)       { assertQuery(t, "add", `["hello"]`, `"hello"`) }
+func TestAddInPipe(t *testing.T) {
+	assertQuery(t, `[.[] | .x] | add`, `[{"x":1},{"x":2},{"x":3}]`, `6`)
+}
+
+// --- range ---
+
+func TestRangeN(t *testing.T) {
+	p, _ := Compile(`range(3)`)
+	results, err := p.RunAll([]byte(`null`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 || string(results[0]) != "0" || string(results[2]) != "2" {
+		t.Errorf("got %v", results)
+	}
+}
+func TestRangeFromTo(t *testing.T) {
+	p, _ := Compile(`range(2; 5)`)
+	results, err := p.RunAll([]byte(`null`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := []string{"2", "3", "4"}
+	for i, r := range results {
+		if string(r) != expected[i] {
+			t.Errorf("result[%d] = %s, want %s", i, r, expected[i])
+		}
+	}
+}
+func TestRangeWithStep(t *testing.T) {
+	p, _ := Compile(`range(0; 10; 3)`)
+	results, err := p.RunAll([]byte(`null`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := []string{"0", "3", "6", "9"}
+	if len(results) != len(expected) {
+		t.Fatalf("got %d results, want %d", len(results), len(expected))
+	}
+	for i, r := range results {
+		if string(r) != expected[i] {
+			t.Errorf("result[%d] = %s, want %s", i, r, expected[i])
+		}
+	}
+}
+func TestRangeEmpty(t *testing.T) {
+	assertNoOutput(t, `range(0)`, `null`)
+}
+func TestRangeCollected(t *testing.T) {
+	assertQuery(t, `[range(5)]`, `null`, `[0,1,2,3,4]`)
+}
+func TestRangeFromField(t *testing.T) {
+	assertQuery(t, `[range(.n)]`, `{"n":3}`, `[0,1,2]`)
+}
+
+// --- flatten ---
+
+func TestFlattenOnce(t *testing.T) {
+	assertQuery(t, `flatten`, `[[1,[2]],3]`, `[1,2,3]`)
+}
+func TestFlattenDeep(t *testing.T) {
+	assertQuery(t, `flatten`, `[[[1]],[[2,[3]]]]`, `[1,2,3]`)
+}
+func TestFlattenDepth1(t *testing.T) {
+	assertQuery(t, `flatten(1)`, `[[1,[2]],3]`, `[1,[2],3]`)
+}
+func TestFlattenDepth0(t *testing.T) {
+	// flatten(0) = no flattening
+	assertQuery(t, `flatten(0)`, `[[1,2],[3]]`, `[[1,2],[3]]`)
+}
+func TestFlattenEmpty(t *testing.T) {
+	assertQuery(t, `flatten`, `[]`, `[]`)
+}
+func TestFlattenAlreadyFlat(t *testing.T) {
+	assertQuery(t, `flatten`, `[1,2,3]`, `[1,2,3]`)
+}
+
+// --- split / join ---
+
+func TestSplit(t *testing.T) {
+	assertQuery(t, `split(",")`, `"a,b,c"`, `["a","b","c"]`)
+}
+func TestSplitMultiChar(t *testing.T) {
+	assertQuery(t, `split(", ")`, `"a, b, c"`, `["a","b","c"]`)
+}
+func TestSplitNoMatch(t *testing.T) {
+	assertQuery(t, `split(",")`, `"abc"`, `["abc"]`)
+}
+func TestSplitEmptyResult(t *testing.T) {
+	assertQuery(t, `split(",")`, `","`, `["",""]`)
+}
+func TestJoin(t *testing.T) {
+	assertQuery(t, `join(",")`, `["a","b","c"]`, `"a,b,c"`)
+}
+func TestJoinMultiChar(t *testing.T) {
+	assertQuery(t, `join(", ")`, `["a","b","c"]`, `"a, b, c"`)
+}
+func TestJoinEmpty(t *testing.T) {
+	assertQuery(t, `join(",")`, `[]`, `""`)
+}
+func TestJoinWithNull(t *testing.T) {
+	assertQuery(t, `join(",")`, `["a",null,"b"]`, `"a,,b"`) // null → empty
+}
+func TestJoinNumbers(t *testing.T) {
+	assertQuery(t, `join("-")`, `[1,2,3]`, `"1-2-3"`)
+}
+func TestSplitJoinRoundTrip(t *testing.T) {
+	// split then join should reproduce the original
+	assertQuery(t, `split(",") | join(",")`, `"a,b,c"`, `"a,b,c"`)
+}
+
 // --- to_entries / from_entries / with_entries ---
 
 func TestToEntries(t *testing.T) {
