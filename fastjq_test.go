@@ -2120,15 +2120,14 @@ func TestFromEntries(t *testing.T) {
 }
 
 func TestFromEntriesNameField(t *testing.T) {
-	// "name" is an alias for "key"
-	p, _ := Compile("from_entries")
-	got, err := p.Run([]byte(`[{"name":"x","value":42}]`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != `{"x":42}` {
-		t.Errorf("got %s, want {\"x\":42}", got)
-	}
+	assertQuery(t, "from_entries", `[{"name":"x","value":42}]`, `{"x":42}`)
+}
+func TestFromEntriesCapitalizedKey(t *testing.T) {
+	// jq accepts Key, Name, Value (capitalized variants)
+	assertQuery(t, "from_entries", `[{"Key":"a","Value":1}]`, `{"a":1}`)
+}
+func TestFromEntriesCapitalizedName(t *testing.T) {
+	assertQuery(t, "from_entries", `[{"Name":"b","Value":2}]`, `{"b":2}`)
 }
 
 func TestFromEntriesEmpty(t *testing.T) {

@@ -1024,13 +1024,16 @@ func parseEntryKeyValue(elem []byte) (keyContent []byte, valStart, valEnd int) {
 		s.skipValue()
 		ve := s.pos
 
-		if bytesEqualStr(k, "key") || bytesEqualStr(k, "name") {
+		// jq accepts "key", "Key", "name", "Name" as the key field,
+		// and "value", "Value" as the value field.
+		if bytesEqualStr(k, "key") || bytesEqualStr(k, "Key") ||
+			bytesEqualStr(k, "name") || bytesEqualStr(k, "Name") {
 			inner := scanner{data: elem[vs:ve]}
 			inner.skipWhitespace()
 			if inner.pos < len(inner.data) && inner.data[inner.pos] == '"' {
 				keyContent = inner.readString()
 			}
-		} else if bytesEqualStr(k, "value") {
+		} else if bytesEqualStr(k, "value") || bytesEqualStr(k, "Value") {
 			valStart, valEnd = vs, ve
 		}
 		s.skipWhitespace()

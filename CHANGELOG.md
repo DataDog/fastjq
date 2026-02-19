@@ -21,6 +21,16 @@ Five new zero-alloc operations:
 
 ---
 
+## [Unreleased] — from_entries: capitalized key variants (Key, Name, Value)
+
+### Fixed
+`from_entries` (and `parseEntryKeyValue` used by `with_entries`) now accepts all jq-documented capitalized variants: `"Key"`, `"Name"`, `"Value"` in addition to the existing `"key"`, `"name"`, `"value"`.
+
+### with_entries alloc — clarification
+The single `make([]byte, 0, 64)` alloc in `with_entries` is necessary and correct. `f` receives `{"key":"k","value":v}` as a JSON object; that object must exist as bytes in memory. Using `buf`'s spare capacity is unsafe because `exec(f, entry, nil)` may return result bytes that are sub-slices of `entry` — when we subsequently write the output to `buf`, it would overwrite the bytes we're still reading from. The 64-byte scratch is the minimum required, and the alloc is recycled by Go's allocator in steady state.
+
+---
+
 ## [Unreleased] — values, recurse/.., in, type filters, quoted object keys
 
 ### Added
