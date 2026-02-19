@@ -18,6 +18,33 @@ That round-trip dominates. For a 100KB log object, it costs ~870 µs and ~4,600 
 
 fastjq eliminates the round-trip. A `select(.level == "error")` on a 100KB object takes **7 ns** and **0 allocations** — it scans to the `level` field and exits immediately.
 
+### vs gojq (in-process, Apple M4 Max, Go 1.25)
+
+gojq times include the full `json.Unmarshal` → execute → `json.Marshal` cycle.
+
+| Operation | Input | fastjq | gojq | Speedup |
+|-----------|-------|--------|------|---------|
+| `select(.f == "x")` | Small (~100B) | 0.0074 µs | 0.527 µs | **71x** |
+| `select(.f == "x")` | Large (~100KB) | 0.0074 µs | 710 µs | **96,000x** |
+| `del(.foo)` | Small (~100B) | 0.163 µs | 0.864 µs | **5.3x** |
+| `del(.foo)` | Large (~100KB) | 130 µs | 730 µs | **5.6x** |
+| `.field` | Small (~100B) | 0.141 µs | 0.318 µs | **2.3x** |
+| `.field` | Large (~100KB) | 103 µs | 527 µs | **5.1x** |
+| `{f0, f2}` | Small (~100B) | 0.287 µs | 0.653 µs | **2.3x** |
+| `.[]` | 200-elem array | 9.2 µs | 77 µs | **8.4x** |
+
+fastjq achieves **0 allocations** on all operations above. The `select` speedup on large JSON (96,000x) is not a typo: fastjq scans forward to the compared field and exits immediately, while gojq must unmarshal the entire 170KB object first.
+
+### vs jq CLI (JSONL throughput, 100K lines, ~11MB)
+
+| Operation | jq | fastjq | Speedup |
+|-----------|-----|--------|---------|
+| `.` (identity) | 0.323s | 0.031s | **10x** |
+| `del(.field)` | 0.336s | 0.033s | **10x** |
+| `select(.f == "x")` (all match) | 0.368s | 0.031s | **12x** |
+| `.field` | 0.149s | 0.024s | **6x** |
+| `{f0, f2}` | 0.246s | 0.048s | **5x** |
+
 ## Install
 
 ```bash
@@ -99,41 +126,6 @@ The condition is evaluated via a single-result path. If the condition uses an it
 **No try-catch** (beyond `?` optional suppression).
 
 **Input must be valid, compact JSON.** Behavior on malformed input is undefined. Output is always compact (no pretty-printing).
-
-## Benchmarks
-
-All benchmarks on Apple M4 Max, Go 1.25. gojq times include the full `json.Unmarshal` → execute → `json.Marshal` cycle.
-
-### vs gojq (in-process)
-
-| Operation | Input | fastjq | gojq | Speedup |
-|-----------|-------|--------|------|---------|
-| `select(.f == "x")` | Small (~100B) | 0.0074 µs | 0.527 µs | **71x** |
-| `select(.f == "x")` | Large (~100KB) | 0.0074 µs | 710 µs | **96,000x** |
-| `del(.foo)` | Small (~100B) | 0.163 µs | 0.864 µs | **5.3x** |
-| `del(.foo)` | Large (~100KB) | 130 µs | 730 µs | **5.6x** |
-| `.field` | Small (~100B) | 0.141 µs | 0.318 µs | **2.3x** |
-| `.field` | Large (~100KB) | 103 µs | 527 µs | **5.1x** |
-| `{f0, f2}` | Small (~100B) | 0.287 µs | 0.653 µs | **2.3x** |
-| `.[]` | 200-elem array | 9.2 µs | 77 µs | **8.4x** |
-
-fastjq achieves **0 allocations** on all operations above when using `RunWithBuffer` or `RunFunc`.
-
-The `select` speedup on large JSON (96,000x) is not a typo: fastjq scans forward to the compared field and exits immediately, while gojq must unmarshal the entire 170KB object before it can evaluate the condition.
-
-### vs jq CLI (JSONL throughput)
-
-End-to-end throughput on JSONL streams (100K lines, ~11MB). Both tools read from stdin, write to `/dev/null`.
-
-| Operation | jq | fastjq | Speedup |
-|-----------|-----|--------|---------|
-| `.` (identity) | 0.323s | 0.031s | **10x** |
-| `del(.field)` | 0.336s | 0.033s | **10x** |
-| `select(.f == "x")` (all match) | 0.368s | 0.031s | **12x** |
-| `.field` | 0.149s | 0.024s | **6x** |
-| `{f0, f2}` | 0.246s | 0.048s | **5x** |
-
-Run `./bench_vs_jq.sh` to reproduce.
 
 ## How It Works
 
