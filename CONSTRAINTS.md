@@ -3,6 +3,7 @@
 ## Performance Constraints
 
 - **Zero allocations** on the hot path when using `RunWithBuffer` with a reused buffer — all operations including select, compare, and alternative achieve 0 allocs
+- **Exception — array construction with data-building element expressions**: `[.[] | f]` where `f` constructs new data (object construction `{…}`, arithmetic, string concatenation) allocates ~1 buffer per element. This is a structural limitation: `execArrayConstruct` must pass `nil` scratch to `execMulti` to prevent aliasing when an element's iterator emits multiple results across callback invocations. Elements that return input sub-slices (field access, identity, comparisons) remain 0 allocs. fastjq still uses 5–8x fewer allocations than gojq on these queries.
 - **Static error sentinels** on hot-path functions: `fmt.Errorf` with dynamic args poisons escape analysis, so hot-path error returns use pre-allocated `errors.New` values
 - **No marshal/unmarshal**: never converts to `interface{}`, `map[string]interface{}`, or any Go type — operates entirely on raw `[]byte`
 - **No data copying** except into the output buffer: scanner returns sub-slices of input, field values are copied verbatim
