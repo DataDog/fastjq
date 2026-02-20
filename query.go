@@ -107,6 +107,9 @@ const (
 	opMathAcos      // acos
 	opMathTgamma    // tgamma (gamma function, Γ(x))
 	opMathLgamma    // lgamma (log of absolute gamma, ln|Γ(x)|)
+	opStringInterp  // "\(expr)" string interpolation; elems=expressions, segs=literal segments
+	opIsEmpty       // isempty(expr) — true if expr produces no outputs
+	opNth           // nth(n; gen) — nth output of gen (0-indexed); left=n, child=gen
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -132,12 +135,13 @@ type op struct {
 	typ      opType
 	field    string  // for opField
 	fields   []op    // for opDelete: list of field-access/index paths to delete
-	left     *op     // for opPipe, opCompare, opAlternative
+	left     *op     // for opPipe, opCompare, opAlternative, opNth
 	right    *op     // for opPipe, opCompare, opAlternative
-	child    *op     // for opField chaining, opSelect condition
+	child    *op     // for opField chaining, opSelect condition, opIsEmpty, opNth body
 	index    int     // for opIndex: array index (negative = from end)
 	pairs    []pair  // for opConstruct: {key: expr} pairs
-	elems    []*op   // for opArrayConstruct: expressions
+	elems    []*op   // for opArrayConstruct, opStringInterp: expressions
+	segs     [][]byte     // for opStringInterp: literal segments between expressions
 	literal  []byte       // for opLiteral: raw JSON bytes
 	cmpOp    cmpOperator  // for opCompare: comparison operator
 	optional bool         // for opField/opIndex/opIterator: suppress errors
@@ -764,9 +768,55 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opRound}, s[5:], nil
 	}
 
-	// error — throw input as an error
+	// error — throw input as an error (0-arg) or error(expr) throw expr (1-arg)
 	if strings.HasPrefix(s, "error") && (len(s) == 5 || !isIdentChar(s[5])) {
+		if len(s) > 5 && s[5] == '(' {
+			inner, rest, err := parsePipeExpr(s[6:])
+			if err != nil {
+				return nil, rest, err
+			}
+			rest = strings.TrimSpace(rest)
+			if len(rest) == 0 || rest[0] != ')' {
+				return nil, rest, fmt.Errorf("expected ')' after error()")
+			}
+			return &op{typ: opError, child: inner}, rest[1:], nil
+		}
 		return &op{typ: opError}, s[5:], nil
+	}
+
+	// isempty(expr) — true if expr produces no outputs
+	if strings.HasPrefix(s, "isempty(") {
+		inner, rest, err := parseGeneratorExpr(s[8:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after isempty()")
+		}
+		return &op{typ: opIsEmpty, child: inner}, rest[1:], nil
+	}
+
+	// nth(n; gen) — nth output of a generator (0-indexed)
+	if strings.HasPrefix(s, "nth(") {
+		nExpr, rest, err := parsePipeExpr(s[4:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected ';' in nth(n; gen)")
+		}
+		rest = strings.TrimSpace(rest[1:])
+		genExpr, rest, err := parseGeneratorExpr(rest)
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after nth() arguments")
+		}
+		return &op{typ: opNth, left: nExpr, child: genExpr}, rest[1:], nil
 	}
 
 	// 1-arg floating-point math builtins (all take the input number, return a number).
@@ -1329,6 +1379,12 @@ func parseConstruct(s string) (*op, string, error) {
 			i := 1
 			for i < len(s) {
 				if s[i] == '\\' {
+					if i+1 < len(s) && s[i+1] == '(' {
+						// String interpolation in object key is not supported.
+						// Dynamic keys like {"key\(expr)": val} require runtime evaluation
+						// of the key name, which the current object constructor doesn't support.
+						return nil, s, fmt.Errorf("string interpolation in object key not supported")
+					}
 					i += 2
 					continue
 				}
@@ -1404,17 +1460,73 @@ func parseArrayConstruct(s string) (*op, string, error) {
 
 // parseStringLiteral parses a JSON string literal including quotes.
 // Assumes s starts with '"'.
+// If the string contains \(expr) interpolation sequences, it returns
+// opStringInterp; otherwise opLiteral.
 func parseStringLiteral(s string) (*op, string, error) {
+	var segs [][]byte  // literal segments
+	var exprs []*op    // interpolated expressions
+
 	i := 1 // skip opening '"'
+	segStart := i
+
 	for i < len(s) {
 		ch := s[i]
 		if ch == '\\' {
-			i += 2
+			if i+1 < len(s) && s[i+1] == '(' {
+				// String interpolation \(expr) found.
+				// Save literal segment up to here (not including \().
+				segs = append(segs, []byte(s[segStart:i]))
+
+				// Parse the inner expression — scan for balanced ')'.
+				j := i + 2 // skip \(
+				depth := 1
+				for j < len(s) && depth > 0 {
+					switch s[j] {
+					case '(':
+						depth++
+					case ')':
+						depth--
+					case '"':
+						// Skip inner string to avoid false paren matching.
+						j++
+						for j < len(s) && s[j] != '"' {
+							if s[j] == '\\' {
+								j++
+							}
+							j++
+						}
+					}
+					if depth > 0 {
+						j++
+					}
+				}
+				if depth != 0 {
+					return nil, s, fmt.Errorf("unterminated \\( in string interpolation")
+				}
+
+				exprStr := s[i+2 : j]
+				expr, _, err := parsePipeExpr(exprStr)
+				if err != nil {
+					return nil, s, fmt.Errorf("in string interpolation \\(...): %w", err)
+				}
+				exprs = append(exprs, expr)
+				i = j + 1 // skip past closing )
+				segStart = i
+				continue
+			}
+			i += 2 // regular escape: \n, \t, \uXXXX etc.
 			continue
 		}
 		if ch == '"' {
-			i++ // include closing '"'
-			return &op{typ: opLiteral, literal: []byte(s[:i])}, s[i:], nil
+			// End of string.
+			if len(exprs) == 0 {
+				// No interpolation: return plain literal.
+				i++ // include closing '"'
+				return &op{typ: opLiteral, literal: []byte(s[:i])}, s[i:], nil
+			}
+			// Has interpolation: save final segment and return opStringInterp.
+			segs = append(segs, []byte(s[segStart:i]))
+			return &op{typ: opStringInterp, elems: exprs, segs: segs}, s[i+1:], nil
 		}
 		i++
 	}
@@ -1475,11 +1587,12 @@ func isDigit(ch byte) bool {
 
 // parseTry parses: try expr [catch handler]
 // s is the text after "try" has been consumed.
-// The body is parsed with parseExpr (NOT parsePipeExpr), so:
-//   try .a | .b  →  (try .a) | .b
+// The body is parsed with parseOr (NOT parseAlt/parseExpr), so:
+//   try .a | .b         →  (try .a) | .b   (pipe handled above)
+//   try .a // "default" →  (try .a) // "default"   (// handled above)
 func parseTry(s string) (*op, string, error) {
 	s = strings.TrimSpace(s)
-	body, rest, err := parseExpr(s)
+	body, rest, err := parseOr(s)
 	if err != nil {
 		return nil, rest, err
 	}

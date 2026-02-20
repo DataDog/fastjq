@@ -53,8 +53,11 @@ var unsupportedOps = []string{
 	"def ",
 	// Reduce / foreach / label-break
 	"reduce", "foreach", "label", "break",
-	// String interpolation
-	`\(`,
+	// String interpolation \(expr) is now supported.
+	// @format "\(...)" combined syntax (e.g. @html "<b>\(.)</b>") is NOT supported —
+	// jq treats it as applying the format to each interpolated value separately, which
+	// requires parser support for format-string-with-template combined syntax.
+	// Dynamic string keys in objects ("key$\(n)": val) are also not supported.
 	// nan/infinite constants and their predicates: REJECTED.
 	// nan and infinite produce non-JSON output, which violates our
 	// "output is always compact JSON" constraint. isnan/isinfinite/isfinite/isnormal

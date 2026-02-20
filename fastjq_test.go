@@ -3908,6 +3908,93 @@ func TestMathJ0J1(t *testing.T) {
 	assertQuery(t, `j1`, `0`, `0`) // J1(0) = 0
 }
 
+// --- String interpolation \(expr) ---
+
+func TestStringInterpBasic(t *testing.T) {
+	assertQuery(t, `"inter\("pol" + "ation")"`, `null`, `"interpolation"`)
+}
+func TestStringInterpField(t *testing.T) {
+	assertQuery(t, `"\(.) there!"`, `"hi"`, `"hi there!"`)
+}
+func TestStringInterpNumber(t *testing.T) {
+	// Non-string expressions are embedded as their JSON text
+	assertQuery(t, `"count: \(.)"`, `42`, `"count: 42"`)
+}
+func TestStringInterpObject(t *testing.T) {
+	// Objects/arrays: JSON text is embedded with " escaped
+	assertQuery(t, `"val: \(.a)"`, `{"a":1}`, `"val: 1"`)
+}
+func TestStringInterpMultiple(t *testing.T) {
+	assertQuery(t, `"\(.a) and \(.b)"`, `{"a":"x","b":"y"}`, `"x and y"`)
+}
+func TestStringInterpInCatch(t *testing.T) {
+	// Official jq test: string interp in catch handler
+	assertQuery(t, `try (try error catch "inner catch \(.)") catch "outer catch \(.)"`,
+		`"foo"`, `"inner catch foo"`)
+}
+func TestStringInterpChained(t *testing.T) {
+	assertQuery(t, `try ((try error catch "inner catch \(.)")|error) catch "outer catch \(.)"`,
+		`"foo"`, `"outer catch inner catch foo"`)
+}
+
+// --- isempty(expr) ---
+
+func TestIsEmptyTrue(t *testing.T) {
+	assertQuery(t, `isempty(empty)`, `null`, `true`)
+}
+func TestIsEmptyFalse(t *testing.T) {
+	assertQuery(t, `isempty(1)`, `null`, `false`)
+}
+func TestIsEmptyEmptyArray(t *testing.T) {
+	assertQuery(t, `isempty(.[])`, `[]`, `true`)
+}
+func TestIsEmptyNonEmptyArray(t *testing.T) {
+	assertQuery(t, `isempty(.[])`, `[1,2,3]`, `false`)
+}
+func TestIsEmptyStopsEarly(t *testing.T) {
+	// Should stop after first output — error("foo") should never execute
+	assertQuery(t, `isempty(1,error("foo"))`, `null`, `false`)
+}
+
+// --- nth(n; gen) ---
+
+func TestNthBasic(t *testing.T) {
+	assertQuery(t, `nth(0; .[] )`, `[10,20,30]`, `10`)
+	assertQuery(t, `nth(2; .[])`, `[10,20,30]`, `30`)
+}
+func TestNthStopsEarly(t *testing.T) {
+	// Should stop at 2nd element — error("foo") never fires
+	assertQuery(t, `nth(1; 0,1,error("foo"))`, `null`, `1`)
+}
+func TestNthNotEnough(t *testing.T) {
+	// nth(5; empty) — not enough outputs → no output (produces nothing)
+	// The surrounding array construction collects the (zero) outputs → []
+	assertQuery(t, `[first(empty), last(empty), nth(5; empty)]`, `null`, `[]`)
+}
+
+// --- error(expr) 1-arg form ---
+
+func TestError1ArgString(t *testing.T) {
+	assertQuery(t, `try error("boom") catch .`, `null`, `"boom"`)
+}
+func TestError1ArgNumber(t *testing.T) {
+	assertQuery(t, `try error(42) catch .`, `null`, `42`)
+}
+func TestError1ArgWithInterp(t *testing.T) {
+	assertQuery(t, `try error("invalid: \(.)") catch .`, `42`, `"invalid: 42"`)
+}
+
+// --- try / // precedence fix ---
+
+func TestTryAltPrecedence(t *testing.T) {
+	// try error(0) // 1  should parse as (try error(0)) // 1 = 1
+	assertQuery(t, `try error(0) // 1`, `null`, `1`)
+}
+func TestTryAltPrecedenceSucceeds(t *testing.T) {
+	// try .a // "d"  — .a succeeds → result, // not triggered
+	assertQuery(t, `try .a // "default"`, `{"a":42}`, `42`)
+}
+
 func TestMathNonNumberInput(t *testing.T) {
 	// Non-number input → null (not an error)
 	assertQuery(t, `sqrt`, `null`, `null`)

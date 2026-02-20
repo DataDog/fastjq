@@ -366,10 +366,95 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opMathLgamma:
 		return fn(execMathFunc(input, buf, mathLgamma))
 	case opError:
-		// Throw the input as a jsonError, preserving the JSON value so that
-		// try-catch handlers receive the actual value (not a string representation).
-		payload := append([]byte(nil), trimWhitespace(input)...)
+		// Throw as a jsonError so try-catch handlers receive the original JSON value.
+		// 0-arg: throw input. 1-arg error(expr): throw the evaluated expression.
+		var payload []byte
+		if node.child != nil {
+			val, err := execSingle(node.child, input, nil)
+			if err != nil {
+				return err
+			}
+			payload = append([]byte(nil), trimWhitespace(val)...)
+		} else {
+			payload = append([]byte(nil), trimWhitespace(input)...)
+		}
 		return &jsonError{payload: payload}
+	case opStringInterp:
+		// String interpolation "\(expr1)...\(expr2)".
+		// Each segs[i] is a literal segment; each elems[i] is an expression.
+		// Segments and expressions are interleaved: segs[0] expr[0] segs[1] ... segs[n].
+		buf = append(buf, '"')
+		for i, expr := range node.elems {
+			buf = append(buf, node.segs[i]...)
+			result, err := execSingle(expr, input, nil)
+			if err != nil {
+				return err
+			}
+			result = trimWhitespace(result)
+			if len(result) > 0 && result[0] == '"' {
+				// JSON string: embed raw content bytes (already valid JSON string content).
+				sc := scanner{data: result}
+				buf = append(buf, sc.readString()...)
+			} else {
+				// Non-string (number, bool, null, object, array): embed bytes, escaping " and \.
+				for _, b := range result {
+					if b == '"' {
+						buf = append(buf, '\\', '"')
+					} else if b == '\\' {
+						buf = append(buf, '\\', '\\')
+					} else {
+						buf = append(buf, b)
+					}
+				}
+			}
+		}
+		buf = append(buf, node.segs[len(node.elems)]...) // final literal segment
+		buf = append(buf, '"')
+		return fn(buf)
+	case opIsEmpty:
+		// isempty(expr): true if expr produces no outputs, false otherwise.
+		produced := false
+		err := execMulti(node.child, input, buf, func(_ []byte) error {
+			produced = true
+			return errBreak
+		})
+		if err != nil && err != errBreak {
+			return err
+		}
+		if produced {
+			return fn(append(buf, "false"...))
+		}
+		return fn(append(buf, "true"...))
+	case opNth:
+		// nth(n; gen): emit the nth output of gen (0-indexed). No output if not enough.
+		nf, ok := parseJSONFloat(trimWhitespace(func() []byte {
+			v, _ := execSingle(node.left, input, nil)
+			return v
+		}()))
+		if !ok {
+			return nil
+		}
+		nInt := int(nf)
+		if nInt < 0 {
+			return nil
+		}
+		count := 0
+		var found []byte
+		err := execMulti(node.child, input, nil, func(val []byte) error {
+			if count == nInt {
+				found = val
+				return errBreak
+			}
+			count++
+			return nil
+		})
+		if err != nil && err != errBreak {
+			return err
+		}
+		if found == nil {
+			return nil // not enough outputs — produce nothing
+		}
+		return fn(append(buf, found...))
 	case opGenerator:
 		for _, elem := range node.elems {
 			if err := execMulti(elem, input, buf, fn); err != nil {

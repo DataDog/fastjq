@@ -31,7 +31,8 @@
       "Bash(# Check:*)",
       "Bash(/tmp/test_error.go:*)",
       "Bash(python3:*)",
-      "Bash(/tmp/man_debug.go:*)"
+      "Bash(/tmp/man_debug.go:*)",
+      "Bash(/tmp/debug_interp.go:*)"
     ]
   }
 }

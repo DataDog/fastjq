@@ -149,6 +149,9 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `try expr` / `try expr catch handler` | Suppress errors; `catch` receives the original JSON value when thrown via `error`, or a string for built-in errors |
 | `.foo // "default"` | Alternative — right if left is null/false |
 | `empty` | Produce zero outputs |
+| `"\(expr)"` | String interpolation — embed any expression in a string literal |
+| `isempty(expr)` | `true` if expr produces no outputs; `false` if it produces any |
+| `nth(n; gen)` | nth output of generator `gen` (0-indexed); no output if not enough |
 
 **Arithmetic**
 
@@ -232,14 +235,15 @@ fastjq is validated against two official jq test files (`go test ./jqtest/`).
 
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
-| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 332 | 189 | **186 (98.4%)** | 3 |
-| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 118 | 112 | **109 (97.3%)** | 3 |
-| **Combined** | **751** | **450** | **301** | **295 (98.0%)** | **6** |
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 321 | 200 | **194 (97.0%)** | 6 |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 112 | 118 | **115 (97.5%)** | 3 |
+| **Combined** | **751** | **433** | **318** | **309 (97.2%)** | **9** |
 
-The 6 failures are all known, intentional differences — not bugs:
+The 9 failures are all known, intentional differences — not bugs:
 
-- **3 (jq.test)**: jq normalises string escape sequences on output (`\r` → `\u000d`, `\u0020` → literal space). fastjq passes bytes through unchanged to preserve zero-copy.
-- **3 (man.test)**: Structural differences — object construction emits one output even when a value expression is a multi-output iterator; `==` uses `execSingle` on operands; `[a, b | f]` parses as `[a, (b|f)]` rather than `[(a,b)|f]`.
+- **3 (jq.test — string normalisation)**: jq normalises escape sequences (`\r` → `\u000d`, `\u0020` → literal space); fastjq passes bytes through unchanged (zero-copy constraint).
+- **3 (jq.test — architectural)**: Error message format (`"expected object for field access"` vs jq's verbose form); `try body catch h` catches errors from the entire callback chain not just the body (see CHANGELOG for details).
+- **3 (man.test)**: Object construction with multi-output iterator value; `==` uses `execSingle` on both operands; `[a, b | f]` parses as `[a, (b|f)]`.
 
 The 454 skipped tests cover operations outside fastjq's scope: recursive descent (`..`), `sort`/`group_by`/`unique`, path operations, `reduce`/`foreach`, string interpolation, regex, math builtins, date functions, `env`, and others listed in the [Limitations](#limitations) section.
 

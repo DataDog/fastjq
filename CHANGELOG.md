@@ -4,6 +4,32 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — string interpolation, isempty, nth (295 → 309 passing)
+
+### Added
+
+- **String interpolation `"\(expr)"`** — zero-alloc: literal segments stored at compile time, each expression evaluated via `execSingle` and its string content written directly into `buf`. Multi-output expressions in interpolation produce only the first result.
+- **`isempty(expr)`** — true if expr produces no outputs, false if it produces any. Zero-alloc: uses early-exit via `errBreak`.
+- **`nth(n; gen)`** — nth output of a generator (0-indexed). No output if the generator has fewer than n+1 results. Zero-alloc: counter + `errBreak`.
+- **`error(expr)` 1-arg form** — `error("msg")` throws `expr` as the error value (the 0-arg form `error` already existed; this adds the 1-arg variant).
+
+### Fixed
+
+- **`try` / `//` precedence**: `try error(0) // 1` now correctly parses as `(try error(0)) // 1 = 1` rather than `try (error(0) // 1) = empty`. The `parseTry` body now uses `parseOr` (stopping before `//`) instead of `parseExpr` (`parseAlt`).
+
+### Not supported (rejected / documented)
+
+- **`@format "template"`** combined syntax (e.g. `@html "<b>\(.)</b>"`, `@sh "echo \(.)"`) applies the format to each interpolated value separately — requires parser and executor changes beyond basic interpolation. Compile-errors gracefully (auto-skip).
+- **Dynamic string keys in objects** (`{"key\(expr)": val}`) requires runtime evaluation of the key name. Compile-errors gracefully.
+
+### Known architectural limitations (surfaced by expanded coverage)
+
+Two pre-existing limitations are now visible because `\(` is no longer in the skip list:
+1. **try-catch scope**: `(try body catch h) | right` — fastjq's try catches errors from the entire callback chain including `right`, not just from `body`. In jq, the catch only covers the body. Tests jq.test:2320 and jq.test:2325 expose this.
+2. **Error message format**: fastjq uses static error sentinels for zero-alloc behaviour; jq produces verbose messages like `"Cannot index number with string \"a\""`. Test jq.test:1431 exposes this.
+
+---
+
 ## [Unreleased] — 21 math builtins (jq test suite: 291 → 295 passing)
 
 ### Added
