@@ -3812,3 +3812,104 @@ func TestTextFormat(t *testing.T) {
 	assertQuery(t, `@text`, `"hello"`, `"hello"`)
 	assertQuery(t, `@text`, `42`, `"42"`)
 }
+
+// --- 1-arg math builtins ---
+
+func TestMathSqrt(t *testing.T) {
+	assertQuery(t, `sqrt`, `4`, `2`)
+	assertQuery(t, `sqrt`, `9`, `3`)
+	assertQuery(t, `sqrt`, `2`, `1.4142135623730951`)
+	assertQuery(t, `[.[]|sqrt]`, `[4,9]`, `[2,3]`) // official jq test
+}
+
+func TestMathFabs(t *testing.T) {
+	assertQuery(t, `fabs`, `3`, `3`)
+	assertQuery(t, `fabs`, `-3`, `3`)
+	assertQuery(t, `fabs`, `-1.5`, `1.5`)
+	assertQuery(t, `map(fabs)`, `[-0, 0, -10, -1.1]`, `[0,0,10,1.1]`) // official jq test
+}
+
+func TestMathAtan(t *testing.T) {
+	// atan(1) * 4 = pi
+	assertQuery(t, `atan * 4 * 1000000|floor / 1000000`, `1`, `3.141592`) // official jq test
+}
+
+func TestMathLog(t *testing.T) {
+	assertQuery(t, `log`, `1`, `0`)    // ln(1) = 0
+	assertQuery(t, `exp | log`, `1`, `1`) // round-trip
+}
+
+func TestMathLog2(t *testing.T) {
+	assertQuery(t, `log2`, `1`, `0`)
+	assertQuery(t, `log2`, `8`, `3`)
+}
+
+func TestMathLog10(t *testing.T) {
+	assertQuery(t, `log10`, `1`, `0`)
+	assertQuery(t, `log10`, `1000`, `3`)
+}
+
+func TestMathExp(t *testing.T) {
+	assertQuery(t, `log | exp`, `1`, `1`) // e^ln(1) = 1
+}
+
+func TestMathExp2(t *testing.T) {
+	assertQuery(t, `exp2`, `0`, `1`)
+	assertQuery(t, `exp2`, `3`, `8`)
+}
+
+func TestMathExp10(t *testing.T) {
+	assertQuery(t, `exp10`, `0`, `1`)
+	assertQuery(t, `exp10`, `3`, `1000`)
+}
+
+func TestMathCbrt(t *testing.T) {
+	assertQuery(t, `cbrt`, `8`, `2`)
+	assertQuery(t, `cbrt`, `27`, `3`)
+}
+
+func TestMathSinCosTan(t *testing.T) {
+	// sin(0)=0, cos(0)=1, tan(0)=0
+	assertQuery(t, `sin`, `0`, `0`)
+	assertQuery(t, `cos`, `0`, `1`)
+	assertQuery(t, `tan`, `0`, `0`)
+}
+
+func TestMathAsinAcos(t *testing.T) {
+	assertQuery(t, `asin`, `0`, `0`)
+	assertQuery(t, `acos`, `1`, `0`)
+}
+
+func TestMathLogb(t *testing.T) {
+	assertQuery(t, `logb`, `8`, `3`)  // 2^3 = 8
+	assertQuery(t, `logb`, `1`, `0`)
+}
+
+func TestMathNearbyint(t *testing.T) {
+	assertQuery(t, `nearbyint`, `3.2`, `3`)
+	assertQuery(t, `nearbyint`, `3.7`, `4`)
+	assertQuery(t, `nearbyint`, `-1.9`, `-2`)
+}
+
+func TestMathTgamma(t *testing.T) {
+	assertQuery(t, `tgamma`, `1`, `1`) // Γ(1) = 1
+	assertQuery(t, `tgamma`, `5`, `24`) // Γ(5) = 4! = 24
+}
+
+func TestMathNaNInfOutput(t *testing.T) {
+	// NaN/Inf results are output as null to preserve valid JSON output constraint.
+	assertQuery(t, `sqrt`, `-1`, `null`)   // sqrt of negative → null
+	assertQuery(t, `log`, `-1`, `null`)    // log of negative → null
+	assertQuery(t, `asin`, `2`, `null`)    // asin out of domain → null
+}
+
+func TestMathJ0J1(t *testing.T) {
+	assertQuery(t, `j0`, `0`, `1`) // J0(0) = 1
+	assertQuery(t, `j1`, `0`, `0`) // J1(0) = 0
+}
+
+func TestMathNonNumberInput(t *testing.T) {
+	// Non-number input → null (not an error)
+	assertQuery(t, `sqrt`, `null`, `null`)
+	assertQuery(t, `sqrt`, `"hello"`, `null`)
+}

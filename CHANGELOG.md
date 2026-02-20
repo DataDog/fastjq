@@ -4,6 +4,31 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — 21 math builtins (jq test suite: 291 → 295 passing)
+
+### Added
+
+21 zero-alloc 1-arg floating-point math builtins. All take the input number, apply
+a Go `math` function, and write the result directly into the output buffer via
+`strconv.AppendFloat`/`AppendInt` — no heap allocations at steady state.
+
+- **Rounding**: `nearbyint` (round to nearest; uses round-half-away as approximation)
+- **Powers/logs**: `sqrt`, `log` (natural), `log2`, `log10`, `exp` (e^x), `exp2` (2^x), `exp10` (10^x), `cbrt`, `logb`
+- **Trig**: `sin`, `cos`, `tan`, `asin`, `acos`, `atan` (1-arg)
+- **Special**: `fabs`, `tgamma` (Γ(x)), `lgamma` (ln|Γ(x)|), `j0`, `j1` (Bessel functions)
+
+NaN/Infinity results are output as `null` to preserve valid JSON output.
+
+### Rejected — documented in SYNTAX.md
+
+- **`nan` / `infinite` constants**: produce non-JSON output; violates "output is always compact JSON"
+- **`isnan`, `isinfinite`, `isfinite`, `isnormal`**: depend on nan/infinite representation; meaningless without it
+- **`pow(x;y)`, `hypot(x;y)`, `atan(y;x)`, `fma(x;y;z)`**: 2/3-arg forms; every test blocked by `as $` or `range(`(0 exclusive tests); deferred
+- **`frexp`, `modf`**: return array pairs; 0 exclusive tests
+- **`ldexp`, `scalb`, `scalbln`, `significand`**: complex; 0 exclusive tests
+
+---
+
 ## [Unreleased] — man.test coverage + 3 bug fixes
 
 Added `tests/man.test` (jq manual examples, 230 tests) to the official test harness.

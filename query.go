@@ -83,6 +83,30 @@ const (
 	opTSVEncode                    // @tsv
 	opShEncode                     // @sh
 	opURIDecode                    // @urid
+	// 1-arg floating-point math builtins — all zero-alloc, all take number input.
+	// 2-arg forms (pow, hypot, atan2, fma) and nan/infinite constants are rejected;
+	// see docs/SYNTAX.md "Rejected" section for rationale.
+	opMathSqrt      // sqrt
+	opMathFabs      // fabs  (absolute value of number; distinct from length)
+	opMathAtan      // atan  (1-arg: atan(x); 2-arg atan(y;x) not supported)
+	opMathLog       // log   (natural log)
+	opMathLog2      // log2
+	opMathLog10     // log10
+	opMathExp       // exp   (e^x)
+	opMathExp2      // exp2  (2^x)
+	opMathExp10     // exp10 (10^x; implemented as pow(10,x))
+	opMathCbrt      // cbrt  (cube root)
+	opMathLogb      // logb  (base-2 exponent)
+	opMathNearbyint // nearbyint (round; approximation: uses round-half-away-from-zero)
+	opMathJ0        // j0   (Bessel function of first kind, order 0)
+	opMathJ1        // j1   (Bessel function of first kind, order 1)
+	opMathSin       // sin
+	opMathCos       // cos
+	opMathTan       // tan
+	opMathAsin      // asin
+	opMathAcos      // acos
+	opMathTgamma    // tgamma (gamma function, Γ(x))
+	opMathLgamma    // lgamma (log of absolute gamma, ln|Γ(x)|)
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -745,6 +769,72 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opError}, s[5:], nil
 	}
 
+	// 1-arg floating-point math builtins (all take the input number, return a number).
+	// 2-arg forms (pow, hypot, atan2, fma) and nan/infinite constants are NOT supported;
+	// see docs/SYNTAX.md for the full rejection rationale.
+	if strings.HasPrefix(s, "sqrt") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opMathSqrt}, s[4:], nil
+	}
+	if strings.HasPrefix(s, "fabs") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opMathFabs}, s[4:], nil
+	}
+	if strings.HasPrefix(s, "atan") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opMathAtan}, s[4:], nil
+	}
+	if strings.HasPrefix(s, "lgamma") && (len(s) == 6 || !isIdentChar(s[6])) {
+		return &op{typ: opMathLgamma}, s[6:], nil
+	}
+	if strings.HasPrefix(s, "log2") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opMathLog2}, s[4:], nil
+	}
+	if strings.HasPrefix(s, "log10") && (len(s) == 5 || !isIdentChar(s[5])) {
+		return &op{typ: opMathLog10}, s[5:], nil
+	}
+	if strings.HasPrefix(s, "log") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return &op{typ: opMathLog}, s[3:], nil
+	}
+	if strings.HasPrefix(s, "exp10") && (len(s) == 5 || !isIdentChar(s[5])) {
+		return &op{typ: opMathExp10}, s[5:], nil
+	}
+	if strings.HasPrefix(s, "exp2") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opMathExp2}, s[4:], nil
+	}
+	if strings.HasPrefix(s, "exp") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return &op{typ: opMathExp}, s[3:], nil
+	}
+	if strings.HasPrefix(s, "cbrt") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opMathCbrt}, s[4:], nil
+	}
+	if strings.HasPrefix(s, "logb") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opMathLogb}, s[4:], nil
+	}
+	if strings.HasPrefix(s, "nearbyint") && (len(s) == 9 || !isIdentChar(s[9])) {
+		return &op{typ: opMathNearbyint}, s[9:], nil
+	}
+	if strings.HasPrefix(s, "j0") && (len(s) == 2 || !isIdentChar(s[2])) {
+		return &op{typ: opMathJ0}, s[2:], nil
+	}
+	if strings.HasPrefix(s, "j1") && (len(s) == 2 || !isIdentChar(s[2])) {
+		return &op{typ: opMathJ1}, s[2:], nil
+	}
+	if strings.HasPrefix(s, "asin") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opMathAsin}, s[4:], nil
+	}
+	if strings.HasPrefix(s, "acos") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opMathAcos}, s[4:], nil
+	}
+	if strings.HasPrefix(s, "sin") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return &op{typ: opMathSin}, s[3:], nil
+	}
+	if strings.HasPrefix(s, "cos") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return &op{typ: opMathCos}, s[3:], nil
+	}
+	if strings.HasPrefix(s, "tan") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return &op{typ: opMathTan}, s[3:], nil
+	}
+	if strings.HasPrefix(s, "tgamma") && (len(s) == 6 || !isIdentChar(s[6])) {
+		return &op{typ: opMathTgamma}, s[6:], nil
+	}
 
 	// Dot expressions
 	if s[0] == '.' {

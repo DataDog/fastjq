@@ -214,7 +214,14 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `tonumber` | Numbers pass through; strings parsed as floats |
 | `null`, `true`, `false`, `"str"`, `123` | Literals |
 | `debug` | Print value to stderr, pass through unchanged |
-| `floor` / `ceil` / `round` | Numeric rounding (toward −∞ / +∞ / nearest) |
+| `floor` / `ceil` / `round` / `nearbyint` | Numeric rounding |
+| `sqrt`, `fabs`, `atan` | Square root, absolute value, arctangent (1-arg) |
+| `log`, `log2`, `log10` | Natural / base-2 / base-10 logarithm |
+| `exp`, `exp2`, `exp10` | e^x, 2^x, 10^x |
+| `cbrt`, `logb` | Cube root; base-2 exponent |
+| `sin`, `cos`, `tan`, `asin`, `acos` | Trig functions (radians) |
+| `tgamma`, `lgamma` | Gamma Γ(x) and ln\|Γ(x)\| |
+| `j0`, `j1` | Bessel functions of first kind, orders 0 and 1 |
 | `contains(val)` | `true` if input recursively contains val (string substring, object key-value subset) |
 | `inside(val)` | Reverse: `a \| inside(b)` ≡ `b \| contains(a)` |
 | `error` | Throw input as error; `catch` receives the original JSON value |
@@ -225,9 +232,9 @@ fastjq is validated against two official jq test files (`go test ./jqtest/`).
 
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
-| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 335 | 186 | **183 (98.4%)** | 3 |
-| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 119 | 111 | **108 (97.3%)** | 3 |
-| **Combined** | **751** | **454** | **297** | **291 (98.0%)** | **6** |
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 332 | 189 | **186 (98.4%)** | 3 |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 118 | 112 | **109 (97.3%)** | 3 |
+| **Combined** | **751** | **450** | **301** | **295 (98.0%)** | **6** |
 
 The 6 failures are all known, intentional differences — not bugs:
 
@@ -268,7 +275,7 @@ fastjq does not normalise string escapes on output (`\r` stays `\r`, not `\u000d
 
 **No `reduce` / `foreach` / `label-break` / variable binding** (`as $x`) / **user-defined functions** (`def`).
 
-**No math beyond rounding** — `sin`, `cos`, `pow`, `log`, `sqrt`, etc. are not supported. `floor`, `ceil`, `round` are available.
+**`nan` / `infinite` constants not supported** — they produce non-JSON output, violating the compact-JSON output constraint. All 1-arg math functions (`sqrt`, `sin`, `cos`, `log`, etc.) are supported; NaN/Inf *results* are output as `null`. 2-arg forms (`pow(x;y)`, `hypot(x;y)`, `atan(y;x)`) are not yet supported.
 
 **No Unicode codepoint conversion** (`explode`, `implode`).
 
