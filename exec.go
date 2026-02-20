@@ -626,7 +626,7 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opAll:
 		return execAnyAllSingle(node, input, buf, true)
 	case opAdd:
-		return exec(node, input, buf)
+		return execFirstResult(node, input, buf)
 	case opIndex1:
 		return execFindIndex(node, input, buf, false, false), nil
 	case opRIndex1:
@@ -696,10 +696,10 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	// opScan is intentionally absent — it is multi-output only; falls through to exec()
 	case opAlternative:
 		// Fall through to execMulti — alternative needs multi-output left side support
-		return exec(node, input, buf)
+		return execFirstResult(node, input, buf)
 	case opTry:
 		// Fall through to execMulti for try (handles errBreak propagation correctly)
-		return exec(node, input, buf)
+		return execFirstResult(node, input, buf)
 	case opToJSON:
 		return execToJSON(input, buf), nil
 	case opFromJSON:
@@ -709,15 +709,16 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opToNumber:
 		return execToNumber(input, buf)
 	default:
-		return exec(node, input, buf)
+		return execFirstResult(node, input, buf)
 	}
 }
 
-// exec executes an op against input, writing the result into buf.
-// Returns the result as a sub-slice of buf. For single-output ops only.
-func exec(node *op, input []byte, buf []byte) ([]byte, error) {
+// execFirstResult executes node via the full execMulti callback machinery and
+// returns the first result. Used as the fallback for multi-output ops (iterators,
+// pipes with multi-output left sides, scan, etc.) that execSingle cannot handle
+// directly without closures.
+func execFirstResult(node *op, input []byte, buf []byte) ([]byte, error) {
 	var result []byte
-	var firstErr error
 	err := execMulti(node, input, buf, func(r []byte) error {
 		if result == nil {
 			result = r
@@ -727,13 +728,19 @@ func exec(node *op, input []byte, buf []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if firstErr != nil {
-		return nil, firstErr
-	}
 	if result == nil {
 		return append(buf, "null"...), nil
 	}
 	return result, nil
+}
+
+// exec returns the first result of executing node against input.
+// It routes through execSingle which has a direct (no-closure) fast path for
+// all common single-output operations (field access, comparison, arithmetic,
+// math, etc.). Multi-output ops fall back to execFirstResult via execSingle's
+// default case.
+func exec(node *op, input []byte, buf []byte) ([]byte, error) {
+	return execSingle(node, input, buf)
 }
 
 // execIdentity copies the input to the output buffer (trimmed of whitespace).
@@ -764,8 +771,7 @@ func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 		return errExpectedObjectField
 	}
 
-	fieldName := []byte(node.field)
-	vs, ve := s.findField(fieldName)
+	vs, ve := s.findFieldStr(node.field)
 	if vs == -1 {
 		// Missing field: return null without following the child chain.
 		if buf == nil {
@@ -798,8 +804,7 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 		return nil, errExpectedObjectField
 	}
 
-	fieldName := []byte(node.field)
-	vs, ve := s.findField(fieldName)
+	vs, ve := s.findFieldStr(node.field)
 	if vs == -1 {
 		if buf == nil {
 			return bNull, nil

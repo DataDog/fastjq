@@ -247,16 +247,80 @@ func (s *scanner) arrayLen() int {
 // findField scans an object for a specific field name and returns
 // the start and end positions of its value. Returns -1, -1 if not found.
 // Assumes pos is at the opening '{'.
+// Stops scanning immediately when the field is found — does NOT scan the
+// rest of the object. When the scanner position after the call doesn't matter,
+// this avoids wasted work proportional to the remaining fields.
 func (s *scanner) findField(name []byte) (valueStart, valueEnd int) {
-	valueStart, valueEnd = -1, -1
-	s.objectIter(func(key []byte, vs, ve int) bool {
-		if bytesEqual(key, name) {
-			valueStart, valueEnd = vs, ve
-			return false // found it, stop
+	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
+		return -1, -1
+	}
+	s.pos++ // skip '{'
+	for s.pos < len(s.data) {
+		s.skipWhitespace()
+		if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+			return -1, -1
 		}
-		return true
-	})
-	return
+		key := s.readString()
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ':' {
+			s.pos++
+		}
+		s.skipWhitespace()
+		vs := s.pos
+		s.skipValue()
+		ve := s.pos
+
+		if bytesEqual(key, name) {
+			return vs, ve // found — stop here, no need to scan the rest
+		}
+
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ',' {
+			s.pos++
+		} else {
+			break
+		}
+	}
+	return -1, -1
+}
+
+// findFieldStr is like findField but takes a string key directly, avoiding the
+// []byte(string) conversion at each call site. Crucially, it also stops scanning
+// as soon as the field is found — it does NOT call skipToEndOfObject, saving the
+// cost of scanning all remaining fields in the object.
+// Assumes pos is at the opening '{'.
+func (s *scanner) findFieldStr(name string) (valueStart, valueEnd int) {
+	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
+		return -1, -1
+	}
+	s.pos++ // skip '{'
+	for s.pos < len(s.data) {
+		s.skipWhitespace()
+		if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+			return -1, -1
+		}
+		key := s.readString()
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ':' {
+			s.pos++
+		}
+		s.skipWhitespace()
+		vs := s.pos
+		s.skipValue()
+		ve := s.pos
+
+		if bytesEqualStr(key, name) {
+			return vs, ve // found — stop here, skip scanning the rest of the object
+		}
+
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ',' {
+			s.pos++
+		} else {
+			break
+		}
+	}
+	return -1, -1
 }
 
 // bytesEqual compares two byte slices for equality without allocation.
