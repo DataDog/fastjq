@@ -75,8 +75,9 @@ var unsupportedOps = []string{
 	// All 1-arg math functions below are NOW SUPPORTED and removed from this list:
 	// sqrt, fabs, atan(1-arg), log, log2, log10, exp, exp2, exp10, cbrt, logb,
 	// nearbyint, j0, j1, sin, cos, tan, asin, acos, tgamma, lgamma
-	// Regex (Go's regexp allocates internally — cannot be made zero-alloc)
-	"test(", "match(", "scan(", "sub(", "gsub(", "splits(",
+	// test(, match(, scan(, sub(, gsub(, capture( are now SUPPORTED.
+	// splits( is not supported (streaming split variant — 0 exclusive tests).
+	"splits(",
 	// Date/time operations
 	"strftime", "strptime", "mktime", "gmtime", "dateadd", "todate", "fromdate",
 	"date", "now",

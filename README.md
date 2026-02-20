@@ -197,6 +197,12 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `@tsv` | Format array as a TSV line (tab/newline/backslash escaped) |
 | `@sh` | POSIX shell-quote a string |
 | `@text` / `tostring` | Strings pass through; non-strings serialized via `tojson` |
+| `test(re)` / `test(re; flags)` | `true` if input string matches regex (0 allocs — Go RE2) |
+| `match(re)` / `match(re; flags)` | Match object with offset, length, string, captures |
+| `capture(re)` / `capture(re; flags)` | Named captures as a flat JSON object |
+| `scan(re)` / `scan(re; flags)` | Stream all non-overlapping matches (strings or capture arrays) |
+| `sub(re; rep)` | Replace first match with literal `rep` |
+| `gsub(re; rep)` | Replace all matches with literal `rep` |
 
 **Objects**
 
@@ -245,7 +251,7 @@ The 9 failures are all known, intentional differences — not bugs:
 - **3 (jq.test — architectural)**: Error message format (`"expected object for field access"` vs jq's verbose form); `try body catch h` catches errors from the entire callback chain not just the body (see CHANGELOG for details).
 - **3 (man.test)**: Object construction with multi-output iterator value; `==` uses `execSingle` on both operands; `[a, b | f]` parses as `[a, (b|f)]`.
 
-The 454 skipped tests cover operations outside fastjq's scope: recursive descent (`..`), `sort`/`group_by`/`unique`, path operations, `reduce`/`foreach`, string interpolation, regex, math builtins, date functions, `env`, and others listed in the [Limitations](#limitations) section.
+The skipped tests cover operations outside fastjq's scope: recursive descent (`..`), `sort`/`group_by`/`unique`, path operations, `reduce`/`foreach`, string interpolation (jq's `onig.test` regex tests use PCRE/Oniguruma syntax), math builtins, date functions, `env`, and others listed in the [Limitations](#limitations) section.
 
 ## Limitations
 
@@ -271,7 +277,7 @@ fastjq does not normalise string escapes on output (`\r` stays `\r`, not `\u000d
 
 **No recursive descent** (`..|..` / `recurse`).
 
-**No regex** (`test`, `match`, `capture`, `scan`, `sub`, `gsub`).
+**Regex uses Go RE2** (not PCRE/Oniguruma). Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are unsupported. `test(re)` is 0-alloc; `match`/`capture` allocate one `[]int` on a hit; `scan`/`gsub` allocate proportional to match count. Replacement strings in `sub`/`gsub` are literals — `\(.field)` capture group references are not supported.
 
 **No sorting, grouping, or deduplication** — `sort`, `sort_by`, `group_by`, `unique`, `unique_by` all require O(n) auxiliary index structures, which violates the zero-alloc constraint.
 
