@@ -355,27 +355,28 @@ End-to-end JSONL throughput benchmarks comparing `fastjq-bench` (Go CLI using th
 
 | Operation | Input | jq (s) | fastjq (s) | Speedup |
 |-----------|-------|--------|-------------|---------|
-| Identity (`.`) | small (100K lines, ~11MB) | 0.344 | 0.025 | **14x** |
-| Field access (`.field_2`) | small | 0.145 | 0.024 | **6x** |
-| Field access (`.field_50`) | large (100 lines, ~16MB) | 0.088 | 0.023 | **4x** |
-| Delete field (`del(.field_2)`) | small | 0.369 | 0.036 | **10x** |
-| Object construction (`{field_0, field_2}`) | small | 0.268 | 0.051 | **5x** |
-| Select all match (`select(.field_2 == "xxx...")`) | small | 0.370 | 0.028 | **13x** |
-| Select none match (`select(.field_2 == "nope")`) | small | 0.138 | 0.027 | **5x** |
-| Alternative (`.field_2 // "default"`) | small | 0.166 | 0.026 | **6x** |
-| Case-insensitive select (`ascii_downcase`) | small | 0.651 | 0.038 | **17x** |
-| Prefix filter (`startswith`) | small | 0.363 | 0.029 | **13x** |
-| Field existence (`has`) | small | 0.366 | 0.027 | **14x** |
+| Identity (`.`) | small (100K lines, ~11MB) | 0.343 | 0.026 | **13x** |
+| Field access (`.field_2`) | small | 0.151 | 0.021 | **7x** |
+| Field access (`.field_50`) | large (100 lines, ~16MB) | 0.093 | 0.013 | **7x** |
+| Delete field (`del(.field_2)`) | small | 0.365 | 0.034 | **11x** |
+| Object construction (`{field_0, field_2}`) | small | 0.247 | 0.032 | **8x** |
+| Select all match (`select(.field_2 == "xxx...")`) | small | 0.372 | 0.023 | **16x** |
+| Select none match (`select(.field_2 == "nope")`) | small | 0.141 | 0.023 | **6x** |
+| Alternative (`.field_2 // "default"`) | small | 0.168 | 0.022 | **8x** |
+| Case-insensitive select (`ascii_downcase`) | small | 0.679 | 0.033 | **21x** |
+| Prefix filter (`startswith`) | small | 0.366 | 0.026 | **14x** |
+| Field existence (`has`) | small | 0.365 | 0.023 | **16x** |
 | `to_entries` | small | 0.717 | 0.040 | **18x** |
-| `keys_unsorted` | small | 0.247 | 0.029 | **9x** |
+| `keys_unsorted` | small | 0.243 | 0.031 | **8x** |
 
 ### Key Takeaways (CLI)
 
-- **4x–18x faster** than jq across all operations on real JSONL workloads
-- **`to_entries` and `ascii_downcase` are 17–18x faster**: near-zero cost reformatting vs jq's parse + marshal cycle
-- **Identity and deletion are 10–14x faster**: validates the zero-copy architecture at scale
-- **Even "large" objects (100KB each, 100 lines) show 4x speedup**: scanning advantage persists
-- **Select (none match) is only 5x faster** — both engines scan the full document; fastjq's advantage is smaller here
+- **6x–21x faster** than jq across all operations on real JSONL workloads
+- **Case-insensitive select (`ascii_downcase`) is 21x faster**: near-zero cost for the string transform
+- **`to_entries` is 18x faster**: zero-copy reformatting vs jq's full parse + marshal cycle
+- **Field access improved to 7x** (both small and large) from the `findFieldStr` optimization
+- **Object construction up to 8x faster**: early-exit scan means no wasted work on remaining fields
+- **Select (none match) is only 6x faster** — both engines scan the full document; fastjq's advantage is smaller here
 
 ### Reproducing
 

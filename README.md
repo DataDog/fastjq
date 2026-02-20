@@ -46,19 +46,19 @@ The speedup is largest on small inputs where gojq's marshal/unmarshal overhead d
 
 | Operation | Input | jq (s) | fastjq (s) | Speedup |
 |-----------|-------|--------|------------|---------|
-| `.` (identity) | small | 0.344 | 0.025 | **14x** |
-| `.field` | small | 0.145 | 0.024 | **6x** |
-| `.field` | large (~16MB, 100 lines) | 0.088 | 0.023 | **4x** |
-| `del(.field)` | small | 0.369 | 0.036 | **10x** |
-| `{field_0, field_2}` (construct) | small | 0.268 | 0.051 | **5x** |
-| `select(.f == "x")` (all match) | small | 0.370 | 0.028 | **13x** |
-| `select(.f == "x")` (none match) | small | 0.138 | 0.027 | **5x** |
-| `.field // "default"` | small | 0.166 | 0.026 | **6x** |
-| `select(.f \| ascii_downcase == "x")` | small | 0.651 | 0.038 | **17x** |
-| `select(.f \| startswith("x"))` | small | 0.363 | 0.029 | **13x** |
-| `select(has("field"))` | small | 0.366 | 0.027 | **14x** |
+| `.` (identity) | small | 0.343 | 0.026 | **13x** |
+| `.field` | small | 0.151 | 0.021 | **7x** |
+| `.field` | large (~16MB, 100 lines) | 0.093 | 0.013 | **7x** |
+| `del(.field)` | small | 0.365 | 0.034 | **11x** |
+| `{field_0, field_2}` (construct) | small | 0.247 | 0.032 | **8x** |
+| `select(.f == "x")` (all match) | small | 0.372 | 0.023 | **16x** |
+| `select(.f == "x")` (none match) | small | 0.141 | 0.023 | **6x** |
+| `.field // "default"` | small | 0.168 | 0.022 | **8x** |
+| `select(.f \| ascii_downcase == "x")` | small | 0.679 | 0.033 | **21x** |
+| `select(.f \| startswith("x"))` | small | 0.366 | 0.026 | **14x** |
+| `select(has("field"))` | small | 0.365 | 0.023 | **16x** |
 | `to_entries` | small | 0.717 | 0.040 | **18x** |
-| `keys_unsorted` | small | 0.247 | 0.029 | **9x** |
+| `keys_unsorted` | small | 0.243 | 0.031 | **8x** |
 
 See [BENCHMARKS.md](docs/BENCHMARKS.md) for the complete table.
 
