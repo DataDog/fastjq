@@ -1,7 +1,16 @@
-# Build artifacts
+# Build artifacts — compiled binaries and test binaries
 fastjq
 fastjq-bench
 *.test
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
 
 # Local Claude Code settings
 .claude/settings.local.json

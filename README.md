@@ -51,7 +51,7 @@ The speedup is largest on small inputs where gojq's marshal/unmarshal overhead d
 | `.field` | 0.146s | 0.027s | **5x** |
 | `to_entries` | 0.714s | 0.039s | **18x** |
 
-See [BENCHMARKS.md](BENCHMARKS.md) for the complete table.
+See [BENCHMARKS.md](docs/BENCHMARKS.md) for the complete table.
 
 ## Try it out (CLI)
 
@@ -225,14 +225,14 @@ In jq, `null | .field` returns `null`. In fastjq it errors. Missing fields retur
 
 **No regex** (`test`, `match`, `capture`, `scan`, `sub`, `gsub`).
 
-**Other missing builtins:** `sort`, `sort_by`, `group_by`, `unique`, `reduce`, `foreach`, `path`, `env`, `@csv`, `@tsv`, `@html`. See [SYNTAX.md](SYNTAX.md) for the full roadmap.
+**Other missing builtins:** `sort`, `sort_by`, `group_by`, `unique`, `reduce`, `foreach`, `path`, `env`, `@csv`, `@tsv`, `@html`. See [SYNTAX.md](docs/SYNTAX.md) for the full roadmap.
 
 **Output is always compact JSON.** Input can be pretty-printed or compact. fastjq never panics — malformed input may produce wrong results but the process is always safe.
 
 ## Further reading
 
-- [SYNTAX.md](SYNTAX.md) — Full operation reference with examples, and a roadmap of unimplemented operations categorised by feasibility
-- [BENCHMARKS.md](BENCHMARKS.md) — Complete benchmark tables, raw output, and CLI throughput results
-- [DESIGN.md](DESIGN.md) — Architecture details and key design decisions
-- [CONSTRAINTS.md](CONSTRAINTS.md) — Performance and scope constraints
+- [SYNTAX.md](docs/SYNTAX.md) — Full operation reference with examples, and a roadmap of unimplemented operations categorised by feasibility
+- [BENCHMARKS.md](docs/BENCHMARKS.md) — Complete benchmark tables, raw output, and CLI throughput results
+- [DESIGN.md](docs/DESIGN.md) — Architecture details and key design decisions
+- [CONSTRAINTS.md](docs/CONSTRAINTS.md) — Performance and scope constraints
 - [CHANGELOG.md](CHANGELOG.md) — Change history with tradeoffs and benchmark notes

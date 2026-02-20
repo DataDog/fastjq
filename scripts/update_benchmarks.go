@@ -267,7 +267,7 @@ func main() {
 		goVer, date, strings.Join(benchLines, "\n"),
 	)
 
-	content, err := os.ReadFile("BENCHMARKS.md")
+	content, err := os.ReadFile("docs/BENCHMARKS.md")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -277,7 +277,7 @@ func main() {
 	s = replaceSection(s, "## Summary\n", "\n## Key Takeaways", "\n"+buildTable(results))
 	s = replaceSection(s, "## Raw Output\n", "\n## CLI Throughput", "\n"+rawBlock)
 
-	if err := os.WriteFile("BENCHMARKS.md", []byte(s), 0644); err != nil {
+	if err := os.WriteFile("docs/BENCHMARKS.md", []byte(s), 0644); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

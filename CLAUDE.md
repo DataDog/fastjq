@@ -3,9 +3,9 @@
 ## Before you start
 
 Read these files to understand the project before making any changes:
-- `DESIGN.md` — architecture, supported operations, key design decisions
-- `CONSTRAINTS.md` — performance and scope constraints; what the library will and won't do
-- `SYNTAX.md` — full operation reference with examples, and the roadmap of unimplemented ops
+- `docs/DESIGN.md` — architecture, supported operations, key design decisions
+- `docs/CONSTRAINTS.md` — performance and scope constraints; what the library will and won't do
+- `docs/SYNTAX.md` — full operation reference with examples, and the roadmap of unimplemented ops
 
 ## Workflow
 
@@ -27,7 +27,7 @@ No regressions. Every new feature needs tests. If something is hard to test, tha
 ```bash
 go run scripts/update_benchmarks.go
 ```
-This runs the full benchmark suite (~3 minutes) and **automatically regenerates both the summary comparison table and raw output section** of `BENCHMARKS.md`. Never edit `BENCHMARKS.md` by hand — always use this script.
+This runs the full benchmark suite (~3 minutes) and **automatically regenerates both the summary comparison table and raw output section** of `docs/BENCHMARKS.md`. Never edit `docs/BENCHMARKS.md` by hand — always use this script.
 
 **Every new operation must have a fastjq benchmark AND a matching gojq benchmark.** Add them to `bench_test.go` following the existing helper pattern (`benchFastjqObj`, `benchGojqObj`, etc.) before committing. Also add a corresponding `row{}` entry to `tableRows` in `scripts/update_benchmarks.go` so it appears in the summary table.
 
@@ -37,7 +37,7 @@ This runs the full benchmark suite (~3 minutes) and **automatically regenerates 
 - Document it explicitly as a known edge case. Only accept if the alloc is a single fixed-size buffer recycled by the allocator. Reject if allocs scale with input structure (see `range` and `recurse` in SYNTAX.md Rejected section).
 
 **Known structural exception — array construction with data-building elements:**
-`[.[] | f]` / `map(f)` where `f` constructs new data (object `{…}`, arithmetic, string concat) allocates ~1 buffer per element. Root cause: `execArrayConstruct` must pass `nil` scratch to `execMulti` to prevent aliasing — an iterator calls the callback multiple times, and if all invocations share the same scratch position they overwrite each other. Elements that return input sub-slices (field access, identity) are still 0 allocs. See `CONSTRAINTS.md` and the `execArrayConstruct` comment for the full explanation. fastjq uses 5–8x fewer allocs than gojq on these queries even with this limitation.
+`[.[] | f]` / `map(f)` where `f` constructs new data (object `{…}`, arithmetic, string concat) allocates ~1 buffer per element. Root cause: `execArrayConstruct` must pass `nil` scratch to `execMulti` to prevent aliasing — an iterator calls the callback multiple times, and if all invocations share the same scratch position they overwrite each other. Elements that return input sub-slices (field access, identity) are still 0 allocs. See `docs/CONSTRAINTS.md` and the `execArrayConstruct` comment for the full explanation. fastjq uses 5–8x fewer allocs than gojq on these queries even with this limitation.
 
 ### 5. Update ALL the docs
 Every code change that affects the public surface, supported operations, or performance characteristics must update:
@@ -45,10 +45,10 @@ Every code change that affects the public surface, supported operations, or perf
 | File | What to update |
 |------|----------------|
 | `README.md` | Supported operations table, benchmark tables if numbers changed |
-| `DESIGN.md` | Supported operations list, file structure, new design decisions |
-| `CONSTRAINTS.md` | Scope constraints (supported ops), any new design constraints |
-| `SYNTAX.md` | Add new operations with examples; move from "Not Yet Supported" to supported |
-| `BENCHMARKS.md` | Run `go run scripts/update_benchmarks.go` — regenerates summary table + raw output automatically |
+| `docs/DESIGN.md` | Supported operations list, file structure, new design decisions |
+| `docs/CONSTRAINTS.md` | Scope constraints (supported ops), any new design constraints |
+| `docs/SYNTAX.md` | Add new operations with examples; move from "Not Yet Supported" to supported |
+| `docs/BENCHMARKS.md` | Run `go run scripts/update_benchmarks.go` — regenerates summary table + raw output automatically |
 | `bench_test.go` | Add fastjq + gojq benchmarks for every new operation (required, not optional) |
 | `CHANGELOG.md` | Add an entry for every meaningful change (see format below) |
 
@@ -70,7 +70,7 @@ These are non-negotiable. Any change that violates them needs explicit discussio
 - **No marshal/unmarshal.** Never convert input to `interface{}`, `map[string]interface{}`, or any Go type. Operate on raw `[]byte` only.
 - **No data copying except into the output buffer.** The scanner returns sub-slices of input. Field values are copied verbatim. Nothing else.
 - **Compile once, run many times.** `Compile` may allocate. `Run`/`RunWithBuffer`/`RunFunc` must not (with reused buffer).
-- **Scope is intentionally limited.** fastjq is not a full jq implementation. Before adding an operation, check `SYNTAX.md` — if it's in the "Not Yet Supported" section, check the notes there. If it's "Challenging — likely require allocation", discuss with the user first.
+- **Scope is intentionally limited.** fastjq is not a full jq implementation. Before adding an operation, check `docs/SYNTAX.md` — if it's in the "Not Yet Supported" section, check the notes there. If it's "Challenging — likely require allocation", discuss with the user first.
 - **Output is always compact JSON.** No pretty-printing.
 
 ## Key files
