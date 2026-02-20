@@ -323,11 +323,138 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(execRoundMode(input, buf, roundCeil))
 	case opRound:
 		return fn(execRoundMode(input, buf, roundNearest))
+	case opMathSqrt:
+		return fn(execMathFunc(input, buf, mathSqrt))
+	case opMathFabs:
+		return fn(execMathFunc(input, buf, mathFabs))
+	case opMathAtan:
+		return fn(execMathFunc(input, buf, mathAtan))
+	case opMathLog:
+		return fn(execMathFunc(input, buf, mathLog))
+	case opMathLog2:
+		return fn(execMathFunc(input, buf, mathLog2))
+	case opMathLog10:
+		return fn(execMathFunc(input, buf, mathLog10))
+	case opMathExp:
+		return fn(execMathFunc(input, buf, mathExp))
+	case opMathExp2:
+		return fn(execMathFunc(input, buf, mathExp2))
+	case opMathExp10:
+		return fn(execMathFunc(input, buf, mathExp10))
+	case opMathCbrt:
+		return fn(execMathFunc(input, buf, mathCbrt))
+	case opMathLogb:
+		return fn(execMathFunc(input, buf, mathLogb))
+	case opMathNearbyint:
+		return fn(execMathFunc(input, buf, mathNearbyint))
+	case opMathJ0:
+		return fn(execMathFunc(input, buf, mathJ0))
+	case opMathJ1:
+		return fn(execMathFunc(input, buf, mathJ1))
+	case opMathSin:
+		return fn(execMathFunc(input, buf, mathSin))
+	case opMathCos:
+		return fn(execMathFunc(input, buf, mathCos))
+	case opMathTan:
+		return fn(execMathFunc(input, buf, mathTan))
+	case opMathAsin:
+		return fn(execMathFunc(input, buf, mathAsin))
+	case opMathAcos:
+		return fn(execMathFunc(input, buf, mathAcos))
+	case opMathTgamma:
+		return fn(execMathFunc(input, buf, mathTgamma))
+	case opMathLgamma:
+		return fn(execMathFunc(input, buf, mathLgamma))
 	case opError:
-		// Throw the input as a jsonError, preserving the JSON value so that
-		// try-catch handlers receive the actual value (not a string representation).
-		payload := append([]byte(nil), trimWhitespace(input)...)
+		// Throw as a jsonError so try-catch handlers receive the original JSON value.
+		// 0-arg: throw input. 1-arg error(expr): throw the evaluated expression.
+		var payload []byte
+		if node.child != nil {
+			val, err := execSingle(node.child, input, nil)
+			if err != nil {
+				return err
+			}
+			payload = append([]byte(nil), trimWhitespace(val)...)
+		} else {
+			payload = append([]byte(nil), trimWhitespace(input)...)
+		}
 		return &jsonError{payload: payload}
+	case opStringInterp:
+		// String interpolation "\(expr1)...\(expr2)".
+		// Each segs[i] is a literal segment; each elems[i] is an expression.
+		// Segments and expressions are interleaved: segs[0] expr[0] segs[1] ... segs[n].
+		buf = append(buf, '"')
+		for i, expr := range node.elems {
+			buf = append(buf, node.segs[i]...)
+			result, err := execSingle(expr, input, nil)
+			if err != nil {
+				return err
+			}
+			result = trimWhitespace(result)
+			if len(result) > 0 && result[0] == '"' {
+				// JSON string: embed raw content bytes (already valid JSON string content).
+				sc := scanner{data: result}
+				buf = append(buf, sc.readString()...)
+			} else {
+				// Non-string (number, bool, null, object, array): embed bytes, escaping " and \.
+				for _, b := range result {
+					if b == '"' {
+						buf = append(buf, '\\', '"')
+					} else if b == '\\' {
+						buf = append(buf, '\\', '\\')
+					} else {
+						buf = append(buf, b)
+					}
+				}
+			}
+		}
+		buf = append(buf, node.segs[len(node.elems)]...) // final literal segment
+		buf = append(buf, '"')
+		return fn(buf)
+	case opIsEmpty:
+		// isempty(expr): true if expr produces no outputs, false otherwise.
+		produced := false
+		err := execMulti(node.child, input, buf, func(_ []byte) error {
+			produced = true
+			return errBreak
+		})
+		if err != nil && err != errBreak {
+			return err
+		}
+		if produced {
+			return fn(append(buf, "false"...))
+		}
+		return fn(append(buf, "true"...))
+	case opNth:
+		// nth(n; gen): emit the nth output of gen (0-indexed). No output if not enough.
+		nf, ok := parseJSONFloat(trimWhitespace(func() []byte {
+			v, _ := execSingle(node.left, input, nil)
+			return v
+		}()))
+		if !ok {
+			return nil
+		}
+		nInt := int(nf)
+		if nInt < 0 {
+			return nil
+		}
+		count := 0
+		var found []byte
+		err := execMulti(node.child, input, nil, func(val []byte) error {
+			if count == nInt {
+				found = val
+				return errBreak
+			}
+			count++
+			return nil
+		})
+		if err != nil && err != errBreak {
+			return err
+		}
+		if found == nil {
+			return nil // not enough outputs — produce nothing
+		}
+		return fn(append(buf, found...))
 	case opGenerator:
 		for _, elem := range node.elems {
 			if err := execMulti(elem, input, buf, fn); err != nil {
@@ -3651,6 +3778,109 @@ func execRoundMode(input, buf []byte, mode roundMode) []byte {
 		return strconv.AppendInt(buf, int64(result), 10)
 	}
 	return strconv.AppendFloat(buf, result, 'g', -1, 64)
+}
+
+// --- 1-arg floating-point math builtins ---
+
+type mathFuncType int
+
+const (
+	mathSqrt      mathFuncType = iota
+	mathFabs
+	mathAtan
+	mathLog
+	mathLog2
+	mathLog10
+	mathExp
+	mathExp2
+	mathExp10
+	mathCbrt
+	mathLogb
+	mathNearbyint
+	mathJ0
+	mathJ1
+	mathSin
+	mathCos
+	mathTan
+	mathAsin
+	mathAcos
+	mathTgamma
+	mathLgamma
+)
+
+// appendJSONFloat appends a float64 to buf as a JSON number.
+// NaN and Inf are not valid JSON; both are serialised as null (matching tojson behaviour).
+// Whole-number results are emitted as integers to match jq output.
+func appendJSONFloat(buf []byte, f float64) []byte {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return append(buf, "null"...)
+	}
+	if f == math.Trunc(f) && f >= -1e15 && f <= 1e15 {
+		return strconv.AppendInt(buf, int64(f), 10)
+	}
+	return strconv.AppendFloat(buf, f, 'g', -1, 64)
+}
+
+// execMathFunc applies a 1-arg floating-point function to a JSON number input.
+// Non-number input produces null. Zero-alloc: uses appendJSONFloat into buf.
+func execMathFunc(input, buf []byte, fn mathFuncType) []byte {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || !isNumberByte(s.data[s.pos]) {
+		return append(buf, "null"...)
+	}
+	f, ok := parseJSONFloat(input)
+	if !ok {
+		return append(buf, "null"...)
+	}
+	var result float64
+	switch fn {
+	case mathSqrt:
+		result = math.Sqrt(f)
+	case mathFabs:
+		result = math.Abs(f)
+	case mathAtan:
+		result = math.Atan(f)
+	case mathLog:
+		result = math.Log(f)
+	case mathLog2:
+		result = math.Log2(f)
+	case mathLog10:
+		result = math.Log10(f)
+	case mathExp:
+		result = math.Exp(f)
+	case mathExp2:
+		result = math.Exp2(f)
+	case mathExp10:
+		result = math.Pow(10, f) // Go has no math.Exp10
+	case mathCbrt:
+		result = math.Cbrt(f)
+	case mathLogb:
+		result = math.Logb(f)
+	case mathNearbyint:
+		// nearbyint uses round-to-nearest-even in IEEE 754; Go's math.Round uses
+		// round-half-away-from-zero. They differ only for exactly .5 values.
+		result = math.Round(f)
+	case mathJ0:
+		result = math.J0(f)
+	case mathJ1:
+		result = math.J1(f)
+	case mathSin:
+		result = math.Sin(f)
+	case mathCos:
+		result = math.Cos(f)
+	case mathTan:
+		result = math.Tan(f)
+	case mathAsin:
+		result = math.Asin(f)
+	case mathAcos:
+		result = math.Acos(f)
+	case mathTgamma:
+		result = math.Gamma(f)
+	case mathLgamma:
+		result, _ = math.Lgamma(f)
+	}
+	return appendJSONFloat(buf, result)
 }
 
 // --- @html ---

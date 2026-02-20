@@ -120,6 +120,21 @@ var tableRows = []row{
 	// Search
 	{"`index(\",\")`", "short string", "Small_IndexFind", "Small_IndexFind"},
 	{"`indices(\",\")`", "short string", "Small_IndicesAll", "Small_IndicesAll"},
+	// Math builtins
+	{"`sqrt`", "float (e≈2.718)", "Small_Sqrt", "Small_Sqrt"},
+	{"`log`", "float (e≈2.718)", "Small_Log", "Small_Log"},
+	{"`sin`", "float (e≈2.718)", "Small_Sin", "Small_Sin"},
+	{"`atan`", "integer 1", "Small_Atan", "Small_Atan"},
+	{"`exp`", "integer 1", "Small_Exp", "Small_Exp"},
+	{"`tgamma`", "integer 5", "Small_Tgamma", "Small_Tgamma"},
+	{"`fabs`", "float -3.14", "Small_Fabs", "Small_Fabs"},
+	// String interpolation
+	{"``\"\\(.level): \\(.svc)\"``", "~45B object", "Small_StringInterp", "Small_StringInterp"},
+	{"``\"user \\(.name) …\"``", "~45B object", "Small_StringInterpNum", "Small_StringInterpNum"},
+	// Stream ops
+	{"`isempty(empty)`", "null", "Small_IsEmptyTrue", "Small_IsEmptyTrue"},
+	{"`isempty(.[])`", "5-elem array", "Small_IsEmptyFalse", "Small_IsEmptyFalse"},
+	{"`nth(2; .[])`", "5-elem array", "Small_Nth", "Small_Nth"},
 }
 
 type result struct {

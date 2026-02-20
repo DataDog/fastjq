@@ -223,13 +223,51 @@ When `error` is thrown, the `catch` handler receives the **actual JSON value** (
 `@base64d` accepts standard (`+/`), URL-safe (`-_`), padded and unpadded input. Non-printable decoded bytes are escaped as `\uXXXX`.
 All format strings (`@base64`, `@uri`, `@html`, `@csv`, `@tsv`, `@sh`) decode JSON string escape sequences before encoding — `\n` becomes byte `0x0a`, `\uXXXX` is decoded to its UTF-8 bytes — matching jq behaviour.
 
-### Numeric Rounding
+### Numeric Rounding and Math
+
+All math functions are zero-alloc. NaN/Infinity results are output as `null` to preserve valid JSON output.
+
+**Rounding**
 
 | Syntax | Description | Example Input | Example Output |
 |--------|-------------|---------------|----------------|
 | `floor` | Round toward −∞ | `-1.9` | `-2` |
 | `ceil` | Round toward +∞ | `-1.1` | `-1` |
-| `round` | Round to nearest integer (half away from zero) | `1.5` | `2` |
+| `round` | Round to nearest (half away from zero) | `1.5` | `2` |
+| `nearbyint` | Round to nearest integer (uses `math.Round`; differs from IEEE nearbyint only for exactly .5) | `3.5` | `4` |
+| `trunc` | Truncate toward zero | `-1.9` | `-1` |
+
+**1-arg floating-point functions** (all take the input number)
+
+| Syntax | Description | Example | Output |
+|--------|-------------|---------|--------|
+| `sqrt` | Square root | `4 \| sqrt` | `2` |
+| `fabs` | Absolute value | `-3.5 \| fabs` | `3.5` |
+| `log` | Natural logarithm (ln) | `1 \| log` | `0` |
+| `log2` | Base-2 logarithm | `8 \| log2` | `3` |
+| `log10` | Base-10 logarithm | `1000 \| log10` | `3` |
+| `exp` | e^x | `0 \| exp` | `1` |
+| `exp2` | 2^x | `3 \| exp2` | `8` |
+| `exp10` | 10^x | `3 \| exp10` | `1000` |
+| `cbrt` | Cube root | `27 \| cbrt` | `3` |
+| `logb` | Base-2 exponent (integer, as float) | `8 \| logb` | `3` |
+| `sin`, `cos`, `tan` | Trigonometric functions (radians) | `0 \| sin` | `0` |
+| `asin`, `acos` | Inverse trig | `0 \| asin` | `0` |
+| `atan` | 1-arg arctangent | `1 \| atan` | `0.7853981633974483` |
+| `tgamma` | Gamma function Γ(x) | `5 \| tgamma` | `24` |
+| `lgamma` | ln\|Γ(x)\| | `1 \| lgamma` | `0` |
+| `j0`, `j1` | Bessel functions of first kind, orders 0 and 1 | `0 \| j0` | `1` |
+
+**Not supported (rejected)**
+
+| Syntax | Reason |
+|--------|--------|
+| `nan`, `infinite` | Produce non-JSON output, violating the "output is always compact JSON" constraint |
+| `isnan`, `isinfinite`, `isfinite`, `isnormal` | Depend on nan/infinite representation; meaningless without it |
+| `pow(x; y)`, `hypot(x; y)`, `atan(y; x)`, `fma(x;y;z)` | 2/3-arg forms. Every test for these is blocked by `as $` or `range(` (0 exclusive tests). Parser would need 2-arg semicolon-separated forms. |
+| `frexp`, `modf` | Return array pairs `[mantissa, exponent]`; 0 exclusive tests |
+| `ldexp`, `scalb`, `scalbln` | Take a float + integer exponent; 0 exclusive tests |
+| `significand` | Complex semantics (mantissa in [1,2)); 0 exclusive tests |
 
 ### Containment
 

@@ -53,15 +53,28 @@ var unsupportedOps = []string{
 	"def ",
 	// Reduce / foreach / label-break
 	"reduce", "foreach", "label", "break",
-	// String interpolation
-	`\(`,
-	// Math builtins (trig, exponential, etc.)
+	// String interpolation \(expr) is now supported.
+	// @format "\(...)" combined syntax (e.g. @html "<b>\(.)</b>") is NOT supported —
+	// jq treats it as applying the format to each interpolated value separately, which
+	// requires parser support for format-string-with-template combined syntax.
+	// Dynamic string keys in objects ("key$\(n)": val) are also not supported.
+	// nan/infinite constants and their predicates: REJECTED.
+	// nan and infinite produce non-JSON output, which violates our
+	// "output is always compact JSON" constraint. isnan/isinfinite/isfinite/isnormal
+	// are meaningless without a coherent nan/infinite representation.
 	"nan", "infinite", "isinfinite", "isnan", "isfinite", "isnormal",
-	"fabs", "sqrt(", "pow(", "log(", "log2(",
-	"exp(", "exp2(", "exp10(", "log10(",
-	"logb", "nearbyint", "frexp", "modf", "ldexp", "scalb", "scalbln",
-	"tgamma", "lgamma", "j0", "j1", "atan", "sin(", "cos(", "tan(",
-	"asin", "acos", "significand", "cbrt", "hypot", "fma",
+	// 2-arg and 3-arg math functions: REJECTED.
+	// Every test for these is also blocked by as-$ or range(); 0 exclusive tests.
+	// pow(x;y), hypot(x;y), atan(y;x), fma(x;y;z) require a 2/3-arg parser.
+	"pow(", "hypot", "fma",
+	// frexp / modf return array pairs; ldexp/scalb/scalbln require an integer arg.
+	// All have 0 exclusive tests. Reject.
+	"frexp", "modf", "ldexp", "scalb", "scalbln",
+	// significand: complex semantics (mantissa in [1,2)), 0 exclusive tests. Reject.
+	"significand",
+	// All 1-arg math functions below are NOW SUPPORTED and removed from this list:
+	// sqrt, fabs, atan(1-arg), log, log2, log10, exp, exp2, exp10, cbrt, logb,
+	// nearbyint, j0, j1, sin, cos, tan, asin, acos, tgamma, lgamma
 	// Regex (Go's regexp allocates internally — cannot be made zero-alloc)
 	"test(", "match(", "scan(", "sub(", "gsub(", "splits(",
 	// Date/time operations

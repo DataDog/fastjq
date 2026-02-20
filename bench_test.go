@@ -764,3 +764,76 @@ func BenchmarkGojq_Complex_EntryFilter(b *testing.B) {
 		`to_entries | map(select(.value | type == "string" or type == "number")) | from_entries`,
 		complexLogEvent)
 }
+
+// --- Math builtins (1-arg float ops) ---
+// All zero-alloc: parseJSONFloat → math.* → appendJSONFloat into buf.
+
+var mathInput = []byte(`2.718281828459045`) // e
+
+func BenchmarkFastjq_Small_Sqrt(b *testing.B) { benchFastjqObj(b, `sqrt`, mathInput) }
+func BenchmarkGojq_Small_Sqrt(b *testing.B)   { benchGojqObj(b, `sqrt`, mathInput) }
+
+func BenchmarkFastjq_Small_Log(b *testing.B) { benchFastjqObj(b, `log`, mathInput) }
+func BenchmarkGojq_Small_Log(b *testing.B)   { benchGojqObj(b, `log`, mathInput) }
+
+func BenchmarkFastjq_Small_Sin(b *testing.B) { benchFastjqObj(b, `sin`, mathInput) }
+func BenchmarkGojq_Small_Sin(b *testing.B)   { benchGojqObj(b, `sin`, mathInput) }
+
+func BenchmarkFastjq_Small_Atan(b *testing.B) { benchFastjqObj(b, `atan`, []byte(`1`)) }
+func BenchmarkGojq_Small_Atan(b *testing.B)   { benchGojqObj(b, `atan`, []byte(`1`)) }
+
+func BenchmarkFastjq_Small_Exp(b *testing.B) { benchFastjqObj(b, `exp`, []byte(`1`)) }
+func BenchmarkGojq_Small_Exp(b *testing.B)   { benchGojqObj(b, `exp`, []byte(`1`)) }
+
+func BenchmarkFastjq_Small_Tgamma(b *testing.B) { benchFastjqObj(b, `tgamma`, []byte(`5`)) }
+func BenchmarkGojq_Small_Tgamma(b *testing.B)   { benchGojqObj(b, `tgamma`, []byte(`5`)) }
+
+func BenchmarkFastjq_Small_Fabs(b *testing.B) { benchFastjqObj(b, `fabs`, []byte(`-3.14`)) }
+func BenchmarkGojq_Small_Fabs(b *testing.B)   { benchGojqObj(b, `fabs`, []byte(`-3.14`)) }
+
+// --- String interpolation ---
+// Zero-alloc for field-access expressions (sub-slices of input).
+// The literal segs are compiled into the AST at parse time.
+
+var stringInterpInput = []byte(`{"name":"alice","level":"error","svc":"api"}`)
+
+func BenchmarkFastjq_Small_StringInterp(b *testing.B) {
+	benchFastjqObj(b, `"\(.level): \(.svc)"`, stringInterpInput)
+}
+func BenchmarkGojq_Small_StringInterp(b *testing.B) {
+	benchGojqObj(b, `"\(.level): \(.svc)"`, stringInterpInput)
+}
+
+func BenchmarkFastjq_Small_StringInterpNum(b *testing.B) {
+	benchFastjqObj(b, `"user \(.name) at level \(.level)"`, stringInterpInput)
+}
+func BenchmarkGojq_Small_StringInterpNum(b *testing.B) {
+	benchGojqObj(b, `"user \(.name) at level \(.level)"`, stringInterpInput)
+}
+
+// --- isempty ---
+// Zero-alloc: early-exit via errBreak, no heap closure.
+
+func BenchmarkFastjq_Small_IsEmptyTrue(b *testing.B) {
+	benchFastjqObj(b, `isempty(empty)`, []byte(`null`))
+}
+func BenchmarkGojq_Small_IsEmptyTrue(b *testing.B) {
+	benchGojqObj(b, `isempty(empty)`, []byte(`null`))
+}
+
+func BenchmarkFastjq_Small_IsEmptyFalse(b *testing.B) {
+	benchFastjqObj(b, `isempty(.[])`, []byte(`[1,2,3,4,5]`))
+}
+func BenchmarkGojq_Small_IsEmptyFalse(b *testing.B) {
+	benchGojqObj(b, `isempty(.[])`, []byte(`[1,2,3,4,5]`))
+}
+
+// --- nth ---
+// Zero-alloc: counter + errBreak, no heap closure.
+
+func BenchmarkFastjq_Small_Nth(b *testing.B) {
+	benchFastjqObj(b, `nth(2; .[])`, []byte(`[10,20,30,40,50]`))
+}
+func BenchmarkGojq_Small_Nth(b *testing.B) {
+	benchGojqObj(b, `nth(2; .[])`, []byte(`[10,20,30,40,50]`))
+}
