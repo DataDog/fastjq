@@ -1229,6 +1229,17 @@ func execLengthSingle(input []byte, buf []byte) ([]byte, error) {
 	case 'n': // null
 		return appendInt(buf, 0), nil
 	default:
+		// Number: return absolute value (|n|), matching jq semantics.
+		if isNumberByte(s.data[s.pos]) {
+			f, ok := parseJSONFloat(input)
+			if ok {
+				abs := math.Abs(f)
+				if abs == math.Trunc(abs) && !math.IsInf(abs, 0) && !math.IsNaN(abs) {
+					return appendInt(buf, int(abs)), nil
+				}
+				return strconv.AppendFloat(buf, abs, 'g', -1, 64), nil
+			}
+		}
 		return appendInt(buf, 0), nil
 	}
 }
@@ -1929,15 +1940,13 @@ func execPlusValues(leftVal, rightVal, buf []byte) ([]byte, error) {
 			buf = append(buf, ']')
 			return buf, nil
 		}
-	case '{': // object merge (right wins for duplicate keys)
+	case '{': // object merge (right wins for duplicate keys, left key order preserved)
 		if rs.pos < len(rs.data) && rs.data[rs.pos] == '{' {
 			buf = append(buf, '{')
 			first := true
-			// Emit left keys not overridden by right
+			// Emit ALL left keys — use right's value when it exists (right wins).
+			// This preserves left-object key order even when right overrides a value.
 			ls.objectIter(func(key []byte, vStart, vEnd int) bool {
-				if objectContainsKey(rightVal, key) {
-					return true // right wins, skip
-				}
 				if !first {
 					buf = append(buf, ',')
 				}
@@ -1945,11 +1954,22 @@ func execPlusValues(leftVal, rightVal, buf []byte) ([]byte, error) {
 				buf = append(buf, '"')
 				buf = append(buf, key...)
 				buf = append(buf, '"', ':')
-				buf = append(buf, leftVal[vStart:vEnd]...)
+				// Look up this key in right; use its value if present.
+				rs2 := scanner{data: rightVal}
+				rs2.skipWhitespace()
+				rvStart, rvEnd := rs2.findField(key)
+				if rvStart != -1 {
+					buf = append(buf, rightVal[rvStart:rvEnd]...)
+				} else {
+					buf = append(buf, leftVal[vStart:vEnd]...)
+				}
 				return true
 			})
-			// Emit all right keys
+			// Emit right keys not already in left (new keys added by right)
 			rs.objectIter(func(key []byte, vStart, vEnd int) bool {
+				if objectContainsKey(leftVal, key) {
+					return true // already emitted with right's value in the left pass
+				}
 				if !first {
 					buf = append(buf, ',')
 				}

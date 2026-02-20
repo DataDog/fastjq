@@ -4,6 +4,28 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — man.test coverage + 3 bug fixes
+
+Added `tests/man.test` (jq manual examples, 230 tests) to the official test harness.
+Combined coverage: 751 tests across both files, 291/297 attempted passing (98.0%).
+
+### Fixed
+
+Three bugs surfaced by man.test:
+
+- **`length` on negative numbers**: previously returned 0; now returns the absolute value (`-5 | length` → `5`), matching jq semantics.
+- **Object `+` key order**: left-object key order is now preserved when merging with `+`. Previously, keys duplicated by the right operand were dropped from the left pass and appended at the end (`{a:1} + {a:2}` produced `{"a":2}` correctly but `{a:1,b:2} + {a:99}` incorrectly produced `{"b":2,"a":99}` instead of `{"a":99,"b":2}`).
+- **`jsonEqual` object comparison**: objects now compare equal regardless of key order. Previously `{"a":1,"b":2} == {"b":2,"a":1}` returned `false`; now correctly returns `true`.
+
+### Known differences (man.test failures)
+
+Three man.test failures are structural differences from jq, not bugs:
+1. Object construction emits one output even when a value expression produces multiple (e.g. `{key: .items[]}`).
+2. `==` uses `execSingle` on operands, so `.[] == 1` returns one result, not one per element.
+3. `[a, b | f]` parses as `[a, (b|f)]` in fastjq; jq parses it as `[(a,b)|f]`.
+
+---
+
 ## [Unreleased] — new operations & iterator error propagation (98.2% → 98.4%)
 
 ### Added

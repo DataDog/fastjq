@@ -1,14 +1,18 @@
-// Package jqtest runs the official jq test suite against fastjq and reports
+// Package jqtest runs the official jq test suites against fastjq and reports
 // coverage + any bugs found.
+//
+// Two test files are loaded:
+//   - tests/jq.test  — the main regression suite
+//   - tests/man.test — tests extracted from the jq manual
 //
 // Usage:
 //
 //	go test ./jqtest/
 //
-// The test file is fetched from the jqlang/jq repository (or from a local
-// copy in testdata/jq.test if present).  Tests that use operations not
-// supported by fastjq are skipped and counted separately — they are NOT
-// treated as failures.  Any test that fastjq attempts but gets wrong is a bug.
+// Files are fetched from the jqlang/jq repository on first run and cached in
+// testdata/.  Tests that use operations not supported by fastjq are skipped and
+// counted separately — they are NOT treated as failures.  Any test that fastjq
+// attempts but gets wrong is a bug.
 package jqtest
 
 import (
@@ -28,8 +32,10 @@ import (
 	"github.com/brianfloersch/fastjq"
 )
 
-const jqTestURL = "https://raw.githubusercontent.com/jqlang/jq/master/tests/jq.test"
-const localCachePath = "testdata/jq.test"
+const jqTestURL         = "https://raw.githubusercontent.com/jqlang/jq/master/tests/jq.test"
+const jqTestLocalCache  = "testdata/jq.test"
+const manTestURL        = "https://raw.githubusercontent.com/jqlang/jq/master/tests/man.test"
+const manTestLocalCache = "testdata/man.test"
 
 // unsupportedOps lists functions/syntax that fastjq does not implement.
 // A test whose program contains any of these tokens is skipped — NOT counted
@@ -49,13 +55,6 @@ var unsupportedOps = []string{
 	"reduce", "foreach", "label", "break",
 	// String interpolation
 	`\(`,
-	// Format strings not yet implemented (the ones below ARE supported now)
-	// "@text" — supported (same as tostring)
-	// "@html" — supported
-	// "@csv"  — supported
-	// "@tsv"  — supported
-	// "@sh"   — supported
-	// "@urid" — supported
 	// Math builtins (trig, exponential, etc.)
 	"nan", "infinite", "isinfinite", "isnan", "isfinite", "isnormal",
 	"fabs", "sqrt(", "pow(", "log(", "log2(",
@@ -63,6 +62,11 @@ var unsupportedOps = []string{
 	"logb", "nearbyint", "frexp", "modf", "ldexp", "scalb", "scalbln",
 	"tgamma", "lgamma", "j0", "j1", "atan", "sin(", "cos(", "tan(",
 	"asin", "acos", "significand", "cbrt", "hypot", "fma",
+	// Regex (Go's regexp allocates internally — cannot be made zero-alloc)
+	"test(", "match(", "scan(", "sub(", "gsub(", "splits(",
+	// Date/time operations
+	"strftime", "strptime", "mktime", "gmtime", "dateadd", "todate", "fromdate",
+	"date", "now",
 	// Streaming / IO
 	"input", "inputs", "stderr", "debug(",
 	// env
@@ -78,45 +82,54 @@ var unsupportedOps = []string{
 	// ascii() function (not ascii_downcase/upcase)
 	"ascii(",
 	// Object construction with dynamic keys: {(expr): val}
-	// We detect this by looking for the pattern
 	// transpose
 	"transpose",
-	// floor/ceil/round are now supported — removed from skip list
-	// contains()/inside() are now supported — removed from skip list
-	// limit(1; a, b) generator body is now supported — removed from skip list
+	// limit(n; ...) is supported; limit(1; a, b) generator body is also supported
+	// contains()/inside() are supported
+	// floor/ceil/round are supported
+	// @html/@csv/@tsv/@sh/@urid are supported
 }
 
-// test represents one parsed test case from jq.test.
+// test represents one parsed test case.
 type test struct {
-	program  string
-	input    string
-	expected []string // one or more expected output lines
-	expectFail bool   // %%FAIL — fastjq should produce an error or different output
-	line     int      // line number in source file for debugging
+	program    string
+	input      string
+	expected   []string // one or more expected output lines
+	expectFail bool     // %%FAIL — fastjq should produce an error or different output
+	line       int      // line number in source file for debugging
+	source     string   // filename, e.g. "jq.test" or "man.test"
 }
 
-// loadTests fetches (or reads from cache) the official jq test file and parses it.
+// loadTests fetches (or reads from cache) both official jq test files and
+// returns all tests combined with source attribution.
 func loadTests(t *testing.T) []test {
 	t.Helper()
-	data := fetchTestFile(t)
-	return parseTests(data)
+	var all []test
+	for _, spec := range []struct{ url, cache, name string }{
+		{jqTestURL, jqTestLocalCache, "jq.test"},
+		{manTestURL, manTestLocalCache, "man.test"},
+	} {
+		data := fetchOrCache(t, spec.url, spec.cache)
+		all = append(all, parseTests(data, spec.name)...)
+	}
+	return all
 }
 
-func fetchTestFile(t *testing.T) string {
+// fetchOrCache returns the content of a remote test file, using a local cache
+// when available.
+func fetchOrCache(t *testing.T, url, localPath string) string {
 	t.Helper()
-	// Use local cache if present
-	if raw, err := os.ReadFile(localCachePath); err == nil {
+	if raw, err := os.ReadFile(localPath); err == nil {
 		return string(raw)
 	}
-	// Fetch from GitHub
-	t.Log("Fetching jq test suite from GitHub...")
-	resp, err := http.Get(jqTestURL)
+	t.Logf("Fetching %s from GitHub...", filepath.Base(localPath))
+	resp, err := http.Get(url)
 	if err != nil {
-		t.Fatalf("failed to fetch jq test suite: %v", err)
+		t.Fatalf("failed to fetch %s: %v", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		t.Fatalf("unexpected status %d fetching jq test suite", resp.StatusCode)
+		t.Fatalf("unexpected status %d fetching %s", resp.StatusCode, url)
 	}
 	var sb strings.Builder
 	scanner := bufio.NewScanner(resp.Body)
@@ -125,14 +138,13 @@ func fetchTestFile(t *testing.T) string {
 		sb.WriteByte('\n')
 	}
 	raw := sb.String()
-	// Cache locally for future runs
-	if err := os.MkdirAll(filepath.Dir(localCachePath), 0755); err == nil {
-		os.WriteFile(localCachePath, []byte(raw), 0644)
+	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err == nil {
+		os.WriteFile(localPath, []byte(raw), 0644)
 	}
 	return raw
 }
 
-func parseTests(data string) []test {
+func parseTests(data, source string) []test {
 	var tests []test
 	lines := strings.Split(data, "\n")
 
@@ -197,6 +209,7 @@ func parseTests(data string) []test {
 			expected:   expected,
 			expectFail: expectFail,
 			line:       startLine,
+			source:     source,
 		})
 	}
 	return tests
@@ -218,19 +231,20 @@ func isUnsupported(program string) string {
 	return ""
 }
 
-// TestJQOfficialSuite runs the official jq test suite and reports coverage.
+// suiteStats tracks pass/fail/skip counts for one test file.
+type suiteStats struct {
+	total, skipped, passed, failed, errorOnly int
+}
+
+// TestJQOfficialSuite runs both official jq test suites and reports coverage.
 func TestJQOfficialSuite(t *testing.T) {
 	tests := loadTests(t)
 
-	var (
-		total     int
-		skipped   int
-		passed    int
-		failed    int
-		errorOnly int // tests where both sides errored (compatible errors)
-	)
+	// Per-source stats
+	bySource := make(map[string]*suiteStats)
 
 	type failure struct {
+		source   string
 		line     int
 		program  string
 		input    string
@@ -241,11 +255,16 @@ func TestJQOfficialSuite(t *testing.T) {
 	var failures []failure
 
 	for _, tc := range tests {
-		total++
+		s := bySource[tc.source]
+		if s == nil {
+			s = &suiteStats{}
+			bySource[tc.source] = s
+		}
+		s.total++
 
 		// Skip unsupported operations
 		if reason := isUnsupported(tc.program); reason != "" {
-			skipped++
+			s.skipped++
 			continue
 		}
 
@@ -254,29 +273,26 @@ func TestJQOfficialSuite(t *testing.T) {
 		if tc.expectFail {
 			p, compileErr := fastjq.Compile(tc.program)
 			if compileErr != nil {
-				// Both error at compile time — compatible
-				errorOnly++
-				passed++
+				s.errorOnly++
+				s.passed++
 				continue
 			}
 			_, runErr := p.Run([]byte(tc.input))
 			if runErr != nil {
-				// Both produce a runtime error — compatible
-				errorOnly++
-				passed++
+				s.errorOnly++
+				s.passed++
 				continue
 			}
-			// fastjq succeeded where jq fails — note but don't fail the suite
-			skipped++
+			// fastjq succeeded where jq fails — count as skip, not failure
+			s.skipped++
 			continue
 		}
 
 		// Normal test: compile and run
 		p, compileErr := fastjq.Compile(tc.program)
 		if compileErr != nil {
-			// Compile error on a test we should support — report as unsupported
-			// (might be syntax we don't support yet)
-			skipped++
+			// Compile error — unsupported syntax, not a bug
+			s.skipped++
 			continue
 		}
 
@@ -284,63 +300,90 @@ func TestJQOfficialSuite(t *testing.T) {
 		if runErr != nil {
 			errMsg := runErr.Error()
 			if strings.Contains(errMsg, "timeout") {
-				// Timed out — skip rather than fail (likely unsupported recursive op)
-				skipped++
+				s.skipped++
 				continue
 			}
-			// Runtime error — fastjq errored but jq succeeded
-			failed++
+			s.failed++
 			got := []string{"ERROR: " + errMsg}
-			failures = append(failures, failure{tc.line, tc.program, tc.input, tc.expected, got, runErr})
+			failures = append(failures, failure{tc.source, tc.line, tc.program, tc.input, tc.expected, got, runErr})
 			continue
 		}
 
-		// Compare outputs
 		got := make([]string, len(results))
 		for i, r := range results {
 			got[i] = string(r)
 		}
 
 		if !outputsMatch(got, tc.expected) {
-			failed++
-			failures = append(failures, failure{tc.line, tc.program, tc.input, tc.expected, got, nil})
+			s.failed++
+			failures = append(failures, failure{tc.source, tc.line, tc.program, tc.input, tc.expected, got, nil})
 			continue
 		}
 
-		passed++
+		s.passed++
 	}
 
-	attempted := total - skipped
-	var coveragePct float64
-	if attempted > 0 {
-		coveragePct = float64(passed) / float64(attempted) * 100
+	// Compute combined totals
+	var combined suiteStats
+	for _, s := range bySource {
+		combined.total += s.total
+		combined.skipped += s.skipped
+		combined.passed += s.passed
+		combined.failed += s.failed
+		combined.errorOnly += s.errorOnly
 	}
 
-	// Print summary
+	pct := func(s *suiteStats) float64 {
+		attempted := s.total - s.skipped
+		if attempted == 0 {
+			return 0
+		}
+		return float64(s.passed) / float64(attempted) * 100
+	}
+
 	t.Logf("\n=== Official jq Test Suite Results ===")
-	t.Logf("Total tests:     %d", total)
-	t.Logf("Skipped:         %d (unsupported operations — not failures)", skipped)
-	t.Logf("Attempted:       %d", attempted)
-	t.Logf("Passed:          %d (%.1f%% of attempted)", passed, coveragePct)
-	t.Logf("Failed:          %d", failed)
-	if errorOnly > 0 {
-		t.Logf("  of which %d are compatible error cases (both sides errored)", errorOnly)
+
+	// Per-file breakdown
+	for _, name := range []string{"jq.test", "man.test"} {
+		s := bySource[name]
+		if s == nil {
+			continue
+		}
+		attempted := s.total - s.skipped
+		t.Logf("\n  %s", name)
+		t.Logf("    Total:     %d", s.total)
+		t.Logf("    Skipped:   %d", s.skipped)
+		t.Logf("    Attempted: %d   Passed: %d (%.1f%%)", attempted, s.passed, pct(s))
+		t.Logf("    Failed:    %d", s.failed)
+		if s.errorOnly > 0 {
+			t.Logf("    (compatible errors: %d)", s.errorOnly)
+		}
+	}
+
+	// Combined totals
+	combinedAttempted := combined.total - combined.skipped
+	t.Logf("\n  Combined (both files)")
+	t.Logf("    Total tests:     %d", combined.total)
+	t.Logf("    Skipped:         %d (unsupported operations — not failures)", combined.skipped)
+	t.Logf("    Attempted:       %d", combinedAttempted)
+	t.Logf("    Passed:          %d (%.1f%% of attempted)", combined.passed, pct(&combined))
+	t.Logf("    Failed:          %d", combined.failed)
+	if combined.errorOnly > 0 {
+		t.Logf("      of which %d are compatible error cases (both sides errored)", combined.errorOnly)
 	}
 
 	if len(failures) > 0 {
 		t.Logf("\n=== Failures (%d) ===", len(failures))
-		t.Logf("(see below for categorized analysis)")
 		for _, f := range failures {
-			t.Logf("\n  [line %d] %s", f.line, f.program)
+			t.Logf("\n  [%s line %d] %s", f.source, f.line, f.program)
 			t.Logf("    input:    %s", f.input)
 			t.Logf("    expected: %v", f.expected)
 			t.Logf("    got:      %v", f.got)
 		}
 	}
 
-	// Mark test failed if there are actual bugs (not just unsupported features)
-	if failed > 0 {
-		t.Errorf("%d tests failed — see details above", failed)
+	if combined.failed > 0 {
+		t.Errorf("%d tests failed — see details above", combined.failed)
 	}
 }
 
@@ -360,16 +403,14 @@ func runWithTimeout(p *fastjq.Program, input []byte, timeout time.Duration) ([][
 	case r := <-ch:
 		return r.out, r.err
 	case <-time.After(timeout):
-		// Goroutine leaked intentionally — it will exit when the test binary exits.
-		_ = runtime.NumGoroutine() // suppress unused import
+		_ = runtime.NumGoroutine()
 		return nil, fmt.Errorf("timeout after %v", timeout)
 	}
 }
 
 // outputsMatch compares fastjq outputs to jq expected outputs leniently:
 //  1. Exact string match
-//  2. JSON-normalized match (removes whitespace differences: jq sometimes
-//     emits `[true, true]` while fastjq emits `[true,true]`)
+//  2. JSON-normalized match (removes whitespace differences)
 //  3. Numeric equivalence (1.5E+10 vs 1.5e10 vs 15000000000)
 func outputsMatch(got, expected []string) bool {
 	if len(got) != len(expected) {
@@ -390,8 +431,6 @@ func outputsMatch(got, expected []string) bool {
 	return true
 }
 
-// jsonNormalized compacts a JSON value to remove insignificant whitespace.
-// Falls back to the original string if the value is not valid JSON.
 func jsonNormalized(s string) string {
 	var buf bytes.Buffer
 	if err := json.Compact(&buf, []byte(s)); err == nil {
@@ -400,8 +439,6 @@ func jsonNormalized(s string) string {
 	return s
 }
 
-// numericEquiv returns true if two strings represent the same float64
-// under formatting differences (e.g. 1e10 vs 1E+10 vs 10000000000).
 func numericEquiv(a, b string) bool {
 	var fa, fb float64
 	if _, err := fmt.Sscanf(a, "%g", &fa); err != nil {

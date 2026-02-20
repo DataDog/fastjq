@@ -341,7 +341,33 @@ func jsonEqual(a, b []byte) bool {
 		return compareNumbers(a, b)
 	}
 
-	// Objects/arrays: byte-for-byte comparison (already tried above)
+	// Objects: order-independent key-value comparison.
+	// Every key in a must exist in b with an equal value, and both must have
+	// the same number of keys. Arrays still use byte comparison (order matters).
+	if aCh == '{' && bCh == '{' {
+		// Count b's keys first, then verify each of a's keys matches.
+		countB := 0
+		bCount := scanner{data: b}
+		bCount.objectIter(func(_ []byte, _, _ int) bool { countB++; return true })
+
+		countA := 0
+		equal := true
+		sa2 := scanner{data: a}
+		sa2.objectIter(func(key []byte, vStart, vEnd int) bool {
+			countA++
+			sb2 := scanner{data: b}
+			sb2.skipWhitespace()
+			bvStart, bvEnd := sb2.findField(key)
+			if bvStart == -1 || !jsonEqual(a[vStart:vEnd], b[bvStart:bvEnd]) {
+				equal = false
+				return false
+			}
+			return true
+		})
+		return equal && countA == countB
+	}
+
+	// Arrays and other types: byte-for-byte only (already tried above)
 	return false
 }
 

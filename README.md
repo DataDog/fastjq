@@ -217,19 +217,20 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 
 ## Official jq test suite coverage
 
-fastjq is validated against the [official jq test suite](https://github.com/jqlang/jq/blob/master/tests/jq.test) (`go test ./jqtest/`).
+fastjq is validated against two official jq test files (`go test ./jqtest/`).
 
-| Category | Count |
-|----------|-------|
-| Total tests in suite | 521 |
-| Skipped (use operations outside fastjq's scope) | 335 |
-| **Attempted** | **186** |
-| **Passed** | **183 (98.4%)** |
-| Failed | 3 |
+| File | Total | Skipped | Attempted | Passed | Failed |
+|------|-------|---------|-----------|--------|--------|
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 335 | 186 | **183 (98.4%)** | 3 |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 119 | 111 | **108 (97.3%)** | 3 |
+| **Combined** | **751** | **454** | **297** | **291 (98.0%)** | **6** |
 
-The 3 remaining failures are a known, intentional difference: jq normalises string escape sequences in its output (e.g. `\r` → `\u000d`, `\u0020` → literal space), whereas fastjq passes string bytes through unchanged to preserve the zero-copy constraint.
+The 6 failures are all known, intentional differences — not bugs:
 
-The 353 skipped tests cover operations outside fastjq's scope: recursive descent (`..`), `sort`/`group_by`/`unique`, path operations, `reduce`/`foreach`, string interpolation, math builtins, `env`, and others listed in the [Limitations](#limitations) section.
+- **3 (jq.test)**: jq normalises string escape sequences on output (`\r` → `\u000d`, `\u0020` → literal space). fastjq passes bytes through unchanged to preserve zero-copy.
+- **3 (man.test)**: Structural differences — object construction emits one output even when a value expression is a multi-output iterator; `==` uses `execSingle` on operands; `[a, b | f]` parses as `[a, (b|f)]` rather than `[(a,b)|f]`.
+
+The 454 skipped tests cover operations outside fastjq's scope: recursive descent (`..`), `sort`/`group_by`/`unique`, path operations, `reduce`/`foreach`, string interpolation, regex, math builtins, date functions, `env`, and others listed in the [Limitations](#limitations) section.
 
 ## Limitations
 
