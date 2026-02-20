@@ -4,6 +4,61 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — new operations & iterator error propagation (98.2% → 98.4%)
+
+### Added
+
+Twelve new operations selected by scanning the official jq test suite for high-ROI, zero-alloc-compatible features:
+
+- **`contains(val)`** — recursive containment: string substring, object key-value subset, array element subset. Zero-alloc for read-only traversal.
+- **`inside(val)`** — reverse of `contains`: `a | inside(b)` ≡ `b | contains(a)`.
+- **`floor`** / **`ceil`** / **`round`** — numeric rounding (zero-alloc, outputs integers when result is whole).
+- **`error`** — throw the input as an error; caught by `try-catch` with the **actual JSON value** (not a string representation), matching jq semantics.
+- **`@html`** — HTML-escape `&`, `<`, `>`, `'`, `"` in a string.
+- **`@csv`** — format a JSON array as a CSV line (strings double-quoted, internal quotes doubled).
+- **`@tsv`** — format a JSON array as a TSV line (tab/newline/backslash escaped per jq convention).
+- **`@sh`** — POSIX shell-quote a string (single-quote wrapping with `'\''` for embedded quotes).
+- **`@text`** — alias for `tostring`.
+- **`@urid`** — percent-decode a URI-encoded string (non-ASCII codepoints output as `\uXXXX`).
+
+Also fixed parser to allow comma-separated generator bodies in `limit(n; a, b)`.
+
+### Fixed
+
+- **`error` value propagation through `try-catch`**: `catch` handlers now receive the actual JSON value thrown by `error`, not a string representation. Introduced `jsonError` type (allocated only on the exceptional error-throw path).
+- **Iterator error propagation**: `execIterator` now propagates `jsonError` and `errBreak` from callbacks instead of silently dropping them. Regular errors (e.g. field access on wrong type) continue to be dropped, preserving lenient multi-output behaviour.
+- **Array construction error propagation**: `execArrayConstruct` now propagates `jsonError` values unwrapped so `try-catch` can intercept them with the correct value.
+- **`limit(-1; ...)` validation**: negative count now throws `"limit doesn't support negative count"` (matches jq).
+
+### Tradeoffs
+
+`error` and the format strings allocate on their call paths (the same category as `@base64`/`@uri`). `contains()` uses recursive closures that may allocate per nesting level. Neither is on the steady-state hot path for typical log processing.
+
+The iterator change (`errBreak` propagation) enables correct early-exit for `limit`/`first` inside iterators, which was previously untested. No existing tests were broken.
+
+---
+
+## [Unreleased] — jq official test suite bug fixes (91.7% → 98.2%)
+
+### Fixed
+
+Seven correctness bugs found by the official jq test suite (`go test ./jqtest/`):
+
+- **BOM stripping** — UTF-8 BOM (`\xEF\xBB\xBF`) is now silently stripped from input before parsing, matching jq behaviour.
+- **`indices()` overlapping matches** — `indices("aba")` on `"xababababax"` now returns `[1,3,5,7]` instead of `[1,5]`. Previously the search advanced by `len(needle)` after each match, skipping overlapping occurrences.
+- **`index`/`rindex`/`indices` Unicode codepoint positions** — String search functions now report Unicode codepoint offsets rather than raw byte offsets. Multi-byte UTF-8 sequences and JSON escape sequences each count as one codepoint, matching jq's behaviour.
+- **`indices([1,2])` array subsequence search** — When the search value is an array, `indices`/`index`/`rindex` now find all positions where that sequence occurs as a contiguous subsequence. Previously only single-element searches were supported.
+- **`del()` with slice ranges** — `del(.[2:4])`, `del(.[-2:])`, and mixed index/slice arguments are now supported. Previously any slice argument in `del()` returned an error.
+- **Array comparison in `min`/`max`** — `compareJSONOrder` now compares arrays element-by-element (zero-alloc parallel scan). Previously arrays always compared equal, so `min` on `[[4,...],[1,...]]` returned the first element instead of the minimum.
+- **`max_by` tie-breaking** — When multiple elements share the minimum key value, `max_by` now returns the last such element (stable-sort semantics). `min_by` continues to return the first.
+- **`@base64` / `@uri` JSON string decoding** — Both format functions now decode JSON escape sequences (e.g. `\n` → `0x0a`, `\uXXXX` → UTF-8 bytes) before encoding. Previously they operated on raw JSON bytes, producing wrong output for any string with escape sequences.
+
+### Tradeoffs
+
+The 3 remaining failures after these fixes are intentional: jq normalises string escape sequences on output (`\r` → `\u000d`, `\u0020` → literal space). fastjq passes string bytes through unchanged — a fundamental consequence of the zero-copy constraint. These are documented as known incompatibilities.
+
+---
+
 ## [Unreleased] — try/catch, elif, object merge, tojson/fromjson, tostring/tonumber, any/all two-arg
 
 ### Added

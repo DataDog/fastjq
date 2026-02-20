@@ -49,11 +49,16 @@ var unsupportedOps = []string{
 	"reduce", "foreach", "label", "break",
 	// String interpolation
 	`\(`,
-	// Format strings not yet implemented
-	"@text", "@html", "@csv", "@tsv", "@sh", "@urid",
+	// Format strings not yet implemented (the ones below ARE supported now)
+	// "@text" — supported (same as tostring)
+	// "@html" — supported
+	// "@csv"  — supported
+	// "@tsv"  — supported
+	// "@sh"   — supported
+	// "@urid" — supported
 	// Math builtins (trig, exponential, etc.)
 	"nan", "infinite", "isinfinite", "isnan", "isfinite", "isnormal",
-	"floor", "ceil", "round", "fabs", "sqrt(", "pow(", "log(", "log2(",
+	"fabs", "sqrt(", "pow(", "log(", "log2(",
 	"exp(", "exp2(", "exp10(", "log10(",
 	"logb", "nearbyint", "frexp", "modf", "ldexp", "scalb", "scalbln",
 	"tgamma", "lgamma", "j0", "j1", "atan", "sin(", "cos(", "tan(",
@@ -68,8 +73,6 @@ var unsupportedOps = []string{
 	"builtins", "modulemeta", "$__loc__",
 	// Generators not supported in our form
 	"range(",
-	// Recursive contains / inside
-	"contains(", "inside(",
 	// walk
 	"walk(",
 	// ascii() function (not ascii_downcase/upcase)
@@ -78,8 +81,9 @@ var unsupportedOps = []string{
 	// We detect this by looking for the pattern
 	// transpose
 	"transpose",
-	// Object constructor with computed key
-	"limit(1",
+	// floor/ceil/round are now supported — removed from skip list
+	// contains()/inside() are now supported — removed from skip list
+	// limit(1; a, b) generator body is now supported — removed from skip list
 }
 
 // test represents one parsed test case from jq.test.

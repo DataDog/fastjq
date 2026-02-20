@@ -19,11 +19,21 @@ func Compile(query string) (*Program, error) {
 	return &Program{root: root}, nil
 }
 
+// stripBOM removes a UTF-8 BOM (EF BB BF) prefix if present.
+// jq silently strips the BOM before parsing; we do the same.
+func stripBOM(b []byte) []byte {
+	if len(b) >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF {
+		return b[3:]
+	}
+	return b
+}
+
 // Run executes the compiled query against the input JSON bytes.
 // Returns the first result as a new byte slice. For multi-output queries
 // (e.g. .[]), only the first result is returned; use RunAll or RunFunc
 // for all results.
 func (p *Program) Run(input []byte) ([]byte, error) {
+	input = stripBOM(input)
 	buf := make([]byte, 0, len(input))
 	return exec(p.root, input, buf)
 }
@@ -34,13 +44,14 @@ func (p *Program) Run(input []byte) ([]byte, error) {
 // For multi-output queries, only the first result is returned.
 func (p *Program) RunWithBuffer(input []byte, buf []byte) ([]byte, error) {
 	buf = buf[:0]
-	return exec(p.root, input, buf)
+	return exec(p.root, stripBOM(input), buf)
 }
 
 // RunAll executes the compiled query and collects all results.
 // For single-output queries this returns a slice of length 1.
 // For iterators (.[] etc) this returns one result per element.
 func (p *Program) RunAll(input []byte) ([][]byte, error) {
+	input = stripBOM(input)
 	var results [][]byte
 	err := execMulti(p.root, input, nil, func(result []byte) error {
 		// Copy result since buf may be reused
@@ -60,5 +71,5 @@ func (p *Program) RunAll(input []byte) ([][]byte, error) {
 // result slices. The result bytes passed to fn are only valid for the
 // duration of the callback.
 func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error {
-	return execMulti(p.root, input, nil, fn)
+	return execMulti(p.root, stripBOM(input), nil, fn)
 }

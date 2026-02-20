@@ -7,6 +7,8 @@ func FuzzCompile(f *testing.F) {
 	seeds := []string{
 		".", ".foo", ".foo.bar", ".[0]", ".[-1]", ".[]",
 		"del(.foo)", "del(.foo, .bar)", "del(.[0])",
+		// del with slice ranges
+		"del(.[1:3])", "del(.[:2])", "del(.[-1:])", "del(.[2:4],.[0])",
 		`select(.x == "y")`, `select(.x != null)`,
 		`select(.x > 0 and .y < 10)`,
 		"{a, b}", "{a: .b}", "[.a, .b]",
@@ -34,6 +36,8 @@ func FuzzCompile(f *testing.F) {
 		"values", "numbers", "strings", "arrays", "objects", "booleans", "nulls",
 		"iterables", "scalars",
 		`index(",")`, `rindex(",")`, `indices(",")`,
+		// indices with array needle (subsequence search)
+		`indices([1,2])`, `index([1,2])`, `rindex([1,2])`,
 		`in({"a":1})`,
 		".[1:3]", ".[:2]", ".[1:]",
 		"debug",
@@ -80,6 +84,20 @@ func FuzzRunFixed(f *testing.F) {
 		`"aGVsbG8="`,
 		`"{\"a\":1}"`,
 		`"42"`,
+		// Unicode strings (multi-byte UTF-8, for index/indices codepoint tests)
+		`"здравствуй мир!"`,
+		`"ƒoo"`,
+		`"\u03bc"`,
+		// Strings with JSON escape sequences (for @base64/@uri decode correctness)
+		`"foo\nbar"`,
+		`"tab\there"`,
+		// Arrays for subsequence search
+		`[0,1,2,3,1,4,2,5,1,2,6,7]`,
+		`[1,2,1,2,1,2]`,
+		// Inputs with UTF-8 BOM
+		"\xEF\xBB\xBF\"hello\"",
+		"\xEF\xBB\xBF{\"a\":1}",
+		"\xEF\xBB\xBF[1,2,3]",
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -88,6 +106,8 @@ func FuzzRunFixed(f *testing.F) {
 	queries := []string{
 		".", ".a", ".a.b", ".[0]", ".[-1]", ".[]",
 		"del(.a)", "del(.a, .b)", "del(.[0])",
+		// del with slice ranges — new functionality
+		"del(.[1:3])", "del(.[:2])", "del(.[-1:])", "del(.[2:4],.[0],.[-2:])",
 		`select(.a == "x")`, `select(.a != null)`,
 		`select(.a > 0)`, `select(has("a"))`,
 		`select(.a | not)`, `select(any)`, `select(all)`,
@@ -117,6 +137,8 @@ func FuzzRunFixed(f *testing.F) {
 		"values", "numbers", "strings", "arrays", "objects",
 		"booleans", "nulls", "iterables", "scalars",
 		`index(",")`, `rindex(",")`, `indices(",")`,
+		// indices with array needle — new functionality
+		`indices([1,2])`, `index([1,2])`, `rindex([0])`,
 		".[1:3]", ".[:2]", ".[1:]",
 		"debug",
 		`try (.a / .b) catch 0`,
@@ -165,6 +187,27 @@ func FuzzBoth(f *testing.F) {
 	f.Add(`if .a == 1 then "x" elif .a == 2 then "y" else "z" end`, `{"a":1}`)
 	f.Add(`[.[] | try .x catch null]`, `[{"x":1},42,{"x":3}]`)
 	f.Add(`any(.[]; . > 5)`, `[1,2,3,4,5,6]`)
+	// del with slice ranges
+	f.Add(`del(.[1:3])`, `[0,1,2,3,4,5]`)
+	f.Add(`del(.[:2],.[-1:])`, `[10,20,30,40,50]`)
+	f.Add(`del(.[2:4],.[0],.[-2:])`, `[0,1,2,3,4,5,6,7]`)
+	// indices with array needle
+	f.Add(`indices([1,2])`, `[0,1,2,3,1,4,2,5,1,2,6,7]`)
+	f.Add(`index([1,2])`, `[1,2,3,4,1,2]`)
+	f.Add(`rindex([1,2])`, `[1,2,3,4,1,2]`)
+	// overlapping substring indices
+	f.Add(`indices("aba")`, `"xababababax"`)
+	// Unicode index/indices
+	f.Add(`index("!")`, `"здравствуй мир!"`)
+	f.Add(`indices("o")`, `"ƒoo"`)
+	// @base64 / @uri with escape sequences
+	f.Add(`@base64`, `"foo\nbar"`)
+	f.Add(`@uri`, "\"\u03bc\"")
+	// min/max on array of arrays
+	f.Add(`min`, `[[4,2],[1,3],[2,4]]`)
+	f.Add(`max_by(.[1])`, `[[4,2,"a"],[3,1,"a"],[2,4,"a"]]`)
+	// BOM-prefixed input (via identity)
+	f.Add(`.`, "\xEF\xBB\xBF{\"a\":1}")
 	f.Fuzz(func(t *testing.T, query, input string) {
 		p, err := Compile(query)
 		if err != nil {

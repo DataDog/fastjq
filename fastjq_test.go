@@ -3543,3 +3543,272 @@ func TestAnyTwoArgGenerator(t *testing.T) {
 	assertQuery(t, `any(.items[]; .active)`,
 		`{"items":[{"active":false},{"active":true},{"active":false}]}`, `true`)
 }
+
+// --- BOM stripping (UTF-8 Byte Order Mark) ---
+
+func TestBOMStrip(t *testing.T) {
+	// UTF-8 BOM prefix should be transparently stripped before parsing
+	p, err := Compile(".")
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	bom := []byte{0xEF, 0xBB, 0xBF}
+	input := append(bom, `"hello"`...)
+	got, err := p.Run(input)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if string(got) != `"hello"` {
+		t.Errorf("BOM strip: got %q, want %q", got, `"hello"`)
+	}
+}
+func TestBOMStripNoBOM(t *testing.T) {
+	// Input without BOM should work unchanged
+	assertQuery(t, ".", `"hello"`, `"hello"`)
+}
+
+// --- indices() overlapping substring matches ---
+
+func TestIndicesOverlapping(t *testing.T) {
+	// jq finds overlapping matches: "aba" in "xababababax" → [1,3,5,7]
+	assertQuery(t, `indices("aba")`, `"xababababax"`, `[1,3,5,7]`)
+}
+func TestIndicesNonOverlapping(t *testing.T) {
+	// Non-overlapping needle: normal case still works
+	assertQuery(t, `indices("ab")`, `"ababab"`, `[0,2,4]`)
+}
+func TestIndicesSingleChar(t *testing.T) {
+	assertQuery(t, `indices("a")`, `"banana"`, `[1,3,5]`)
+}
+
+// --- indices([needle]) array subsequence search ---
+
+func TestIndicesArraySubseq(t *testing.T) {
+	// jq test: indices([1,2]) on [0,1,2,3,1,4,2,5,1,2,6,7] → [1,8]
+	assertQuery(t, `indices([1,2])`, `[0,1,2,3,1,4,2,5,1,2,6,7]`, `[1,8]`)
+}
+func TestIndexArraySubseq(t *testing.T) {
+	assertQuery(t, `index([1,2])`, `[0,1,2,3,1,4,2,5,1,2,6,7]`, `1`)
+}
+func TestRindexArraySubseq(t *testing.T) {
+	assertQuery(t, `rindex([1,2])`, `[0,1,2,3,1,4,2,5,1,2,6,7]`, `8`)
+}
+func TestIndicesArraySubseqNotFound(t *testing.T) {
+	assertQuery(t, `indices([1,2])`, `[3,4,5]`, `[]`)
+}
+func TestIndicesArraySubseqSingleElem(t *testing.T) {
+	// Single-element array needle still works (falls into subsequence path)
+	assertQuery(t, `indices([2])`, `[1,2,3,2,1]`, `[1,3]`)
+}
+
+// --- index/indices Unicode codepoint positions ---
+
+func TestIndexUnicodeCyrillic(t *testing.T) {
+	// "здравствуй мир!" — "!" is codepoint 14, not byte 27
+	assertQuery(t, `index("!")`, `"здравствуй мир!"`, `14`)
+}
+func TestIndicesUnicodeFlagEmoji(t *testing.T) {
+	// 🇬🇧 is 2 codepoints (regional indicators), then oo at codepoints 2,3
+	assertQuery(t, `indices("o")`, `"🇬🇧oo"`, `[2,3]`)
+}
+func TestIndicesUnicodeMultibyte(t *testing.T) {
+	// ƒ is 1 codepoint (2 UTF-8 bytes), then oo at codepoints 1,2
+	assertQuery(t, `indices("o")`, `"ƒoo"`, `[1,2]`)
+}
+func TestRindexUnicode(t *testing.T) {
+	assertQuery(t, `rindex("o")`, `"ƒoo"`, `2`)
+}
+
+// --- del() with slice range arguments ---
+
+func TestDeleteSliceMiddle(t *testing.T) {
+	// del(.[2:4]) removes indices 2 and 3
+	assertQuery(t, `del(.[2:4])`, `[0,1,2,3,4,5]`, `[0,1,4,5]`)
+}
+func TestDeleteSliceFromStart(t *testing.T) {
+	assertQuery(t, `del(.[:2])`, `[0,1,2,3,4]`, `[2,3,4]`)
+}
+func TestDeleteSliceToEnd(t *testing.T) {
+	assertQuery(t, `del(.[3:])`, `[0,1,2,3,4]`, `[0,1,2]`)
+}
+func TestDeleteSliceNegative(t *testing.T) {
+	// del(.[-2:]) removes last two elements
+	assertQuery(t, `del(.[-2:])`, `[0,1,2,3,4,5,6,7]`, `[0,1,2,3,4,5]`)
+}
+func TestDeleteMixedIndexAndSlice(t *testing.T) {
+	// From official jq test: del(.[2:4],.[0],.[-2:]) on [0..7] → [1,4,5]
+	assertQuery(t, `del(.[2:4],.[0],.[-2:])`, `[0,1,2,3,4,5,6,7]`, `[1,4,5]`)
+}
+func TestDeleteMultipleSlices(t *testing.T) {
+	// del(.[1], .[-6], .[2], .[-3:9]) on [0..9] → [0,3,5,6,9]
+	assertQuery(t, `del(.[1], .[-6], .[2], .[-3:9])`, `[0,1,2,3,4,5,6,7,8,9]`, `[0,3,5,6,9]`)
+}
+
+// --- min on arrays-of-arrays + max_by tie-breaking ---
+
+func TestMinArrayOfArrays(t *testing.T) {
+	// min compares arrays element-by-element; [1,...] wins
+	assertQuery(t, `min`, `[[4,2,"a"],[3,1,"a"],[2,4,"a"],[1,3,"a"]]`, `[1,3,"a"]`)
+}
+func TestMaxArrayOfArrays(t *testing.T) {
+	assertQuery(t, `max`, `[[1,2],[3,4],[2,5]]`, `[3,4]`)
+}
+func TestMaxByTieBreaking(t *testing.T) {
+	// When all keys are equal, max_by returns the last element
+	assertQuery(t, `max_by(.[2])`, `[[4,2,"a"],[3,1,"a"],[2,4,"a"],[1,3,"a"]]`, `[1,3,"a"]`)
+}
+func TestMinByTieBreaking(t *testing.T) {
+	// When all keys are equal, min_by returns the first element
+	assertQuery(t, `min_by(.[2])`, `[[4,2,"a"],[3,1,"a"],[2,4,"a"],[1,3,"a"]]`, `[4,2,"a"]`)
+}
+func TestMinMaxArraysOfficialSuite(t *testing.T) {
+	// Exact check from jq official test suite line 1667
+	assertQuery(t,
+		`[min, max, min_by(.[1]), max_by(.[1]), min_by(.[2]), max_by(.[2])]`,
+		`[[4,2,"a"],[3,1,"a"],[2,4,"a"],[1,3,"a"]]`,
+		`[[1,3,"a"],[4,2,"a"],[3,1,"a"],[2,4,"a"],[4,2,"a"],[1,3,"a"]]`)
+}
+
+// --- @base64 / @uri decode JSON string escapes before encoding ---
+
+func TestBase64EncodeNewline(t *testing.T) {
+	// "foóbar\n" — \n must be decoded to 0x0a before base64
+	assertQuery(t, `@base64`, `"foóbar\n"`, `"Zm/Ds2Jhcgo="`)
+}
+func TestBase64EncodeUnicodeEscape(t *testing.T) {
+	// \u03bc must be decoded to UTF-8 bytes 0xce 0xbc before base64
+	assertQuery(t, `@base64`, `"\u03bc"`, `"zrw="`)
+}
+func TestURIEncodeUnicode(t *testing.T) {
+	// \u03bc must be decoded to UTF-8 bytes %CE%BC
+	assertQuery(t, `@uri`, `"\u03bc"`, `"%CE%BC"`)
+}
+func TestURIEncodeNewline(t *testing.T) {
+	// \n must be decoded to 0x0a before percent-encoding
+	assertQuery(t, `@uri`, `"\n"`, `"%0A"`)
+}
+
+// --- contains() / inside() ---
+
+func TestContainsStringSubstring(t *testing.T) {
+	assertQuery(t, `contains("foo")`, `"foobar"`, `true`)
+	assertQuery(t, `contains("baz")`, `"foobar"`, `false`)
+	assertQuery(t, `contains("")`, `"foobar"`, `true`)
+}
+func TestContainsStringNullByte(t *testing.T) {
+	assertQuery(t, `contains("\u0000")`, `"\u0000"`, `true`)
+	assertQuery(t, `[contains(""), contains("a"), contains("ab")]`, `"ab\u0000cd"`, `[true,true,true]`)
+}
+func TestContainsObjectSubset(t *testing.T) {
+	assertQuery(t, `contains({foo: 12})`, `{"foo":12,"bar":13}`, `true`)
+	assertQuery(t, `contains({})`, `{"foo":12}`, `true`)
+	assertQuery(t, `contains({baz: 14})`, `{"foo":12,"bar":13}`, `false`)
+}
+func TestContainsObjectRecursive(t *testing.T) {
+	// Deep recursive containment check
+	assertQuery(t, `contains({bar: 14, foo: {blap: {}}})`,
+		`{"foo":{"baz":12,"blap":{"bar":13}},"bar":14}`, `true`)
+	assertQuery(t, `contains({bar: 14, foo: {blap: {bar: 14}}})`,
+		`{"foo":{"baz":12,"blap":{"bar":13}},"bar":14}`, `false`)
+}
+func TestInsideReverseContains(t *testing.T) {
+	assertQuery(t, `inside("foobar")`, `"foo"`, `true`)
+	assertQuery(t, `inside({"foo":12,"bar":13})`, `{"foo":12}`, `true`)
+}
+func TestContainsMulti(t *testing.T) {
+	// Official jq test suite case (line 1404)
+	assertQuery(t, `[("foo" | contains("foo")), ("foobar" | contains("foo")), ("foo" | contains("foobar"))]`,
+		`{}`, `[true,true,false]`)
+}
+
+// --- floor / ceil / round ---
+
+func TestFloor(t *testing.T) {
+	assertQuery(t, `[.[]|floor]`, `[-1.1,1.1,1.9]`, `[-2,1,1]`)
+}
+func TestCeil(t *testing.T) {
+	assertQuery(t, `[.[]|ceil]`, `[-1.1,1.1,1.9]`, `[-1,2,2]`)
+}
+func TestRound(t *testing.T) {
+	assertQuery(t, `[.[]|round]`, `[-1.4,-1.5,1.4,1.5]`, `[-1,-2,1,2]`)
+}
+
+// --- error builtin + limit generator body ---
+
+func TestErrorBuiltinCaught(t *testing.T) {
+	// error throws input value; catch handler receives the actual JSON value
+	assertQuery(t, `try error catch .`, `"boom"`, `"boom"`)
+	assertQuery(t, `try error catch .`, `42`, `42`)
+	assertQuery(t, `try error catch .`, `[1,2]`, `[1,2]`)
+}
+func TestErrorBuiltinArrayConstruct(t *testing.T) {
+	// Error thrown inside array construction propagates through try-catch
+	assertQuery(t, `try ["OK", (.[] | error)] catch ["KO", .]`,
+		`{"a":["b"],"c":["d"]}`, `["KO",["b"]]`)
+}
+func TestLimitNegativeCount(t *testing.T) {
+	assertQuery(t, `try limit(-1; error) catch .`, `null`, `"limit doesn't support negative count"`)
+}
+func TestLimitGeneratorBody(t *testing.T) {
+	// limit body can be a comma-separated generator
+	assertQuery(t, `[limit(1; 1, error)]`, `"badness"`, `[1]`)
+	assertQuery(t, `[limit(0; error)]`, `"badness"`, `[]`)
+}
+
+// --- @html ---
+
+func TestHTMLEncode(t *testing.T) {
+	assertQuery(t, `@html`, `"<script>hax</script>"`, `"&lt;script&gt;hax&lt;/script&gt;"`)
+}
+func TestHTMLEncodeAllEntities(t *testing.T) {
+	assertQuery(t, `@html`, `"!()<>&'\"\t"`, `"!()&lt;&gt;&amp;&apos;&quot;\t"`)
+}
+
+// --- @csv ---
+
+func TestCSVEncode(t *testing.T) {
+	assertQuery(t, `@csv`, `[1,2,"three",4.5]`, `"1,2,\"three\",4.5"`)
+	assertQuery(t, `@csv`, `[]`, `""`)
+}
+func TestCSVEncodeQuoteEscape(t *testing.T) {
+	// Internal quotes in CSV strings are doubled
+	assertQuery(t, `[1,.]|@csv`, `"!()<>&'\"\t"`, `"1,\"!()<>&'\"\"\t\""`)
+}
+
+// --- @tsv ---
+
+func TestTSVEncode(t *testing.T) {
+	assertQuery(t, `@tsv`, `[]`, `""`)
+}
+func TestTSVEncodeEscaping(t *testing.T) {
+	// Tabs in string values are escaped as \t in TSV
+	assertQuery(t, `[1,.]|@tsv`, `"!()<>&'\"\t"`, `"1\t!()<>&'\"\\t"`)
+}
+
+// --- @sh ---
+
+func TestSHEncode(t *testing.T) {
+	assertQuery(t, `@sh`, `"hello world"`, `"'hello world'"`)
+}
+func TestSHEncodeQuote(t *testing.T) {
+	// Internal single quotes become '\''
+	assertQuery(t, `@sh`, `"O'Hara"`, `"'O'\\''Hara'"`)
+}
+func TestSHEncodeAllChars(t *testing.T) {
+	assertQuery(t, `@sh`, `"!()<>&'\"\t"`, `"'!()<>&'\\''\"\t'"`)
+}
+
+// --- @urid ---
+
+func TestURIDecode(t *testing.T) {
+	assertQuery(t, `@urid`, `"%CE%BC"`, `"\u03bc"`)
+	assertQuery(t, `@uri|@urid`, `"hello world"`, `"hello world"`)
+}
+
+// --- @text ---
+
+func TestTextFormat(t *testing.T) {
+	// @text is an alias for tostring
+	assertQuery(t, `@text`, `"hello"`, `"hello"`)
+	assertQuery(t, `@text`, `42`, `"42"`)
+}

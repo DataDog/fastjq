@@ -24,14 +24,15 @@ Compared against [gojq](https://github.com/itchyny/gojq), the standard jq librar
 
 | Operation | Input | fastjq | gojq | Speedup | allocs |
 |-----------|-------|--------|------|---------|--------|
-| `select(.level == "error")` | Small (~100B) | 0.009 µs | 0.57 µs | **64x** | 0 |
-| `select(.level == "error")` | Large (~100KB)¹ | 16 µs | 770 µs | **48x** | 0 |
-| `.field` | Large (~100KB) | 109 µs | 543 µs | **5x** | 0 |
-| `del(.sensitive)` | Large (~100KB) | 155 µs | 766 µs | **5x** | 0 |
-| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 178 µs | 794 µs | **4.5x** | 0 |
-| `map(.name)` | 200-elem array (~6KB) | 20 µs | 91 µs | **4.5x** | 0 |
-| `min_by(.value)` | 100-elem array (~3KB) | 12 µs | 56 µs | **4.5x** | 0 |
-| `.a * .b` (multiply) | Small (~100B) | 0.08 µs | 0.68 µs | **8x** | 0 |
+| `select(.f == "x")` | Small (~100B) | 0.010 µs | 0.56 µs | **56x** | 0 |
+| `select(.f == "x")`¹ | Large (~100KB) | 187 µs | 770 µs | **4.1x** | 0 |
+| `.field` | Small (~100B) | 0.141 µs | 0.34 µs | **2.4x** | 0 |
+| `.field` | Large (~100KB) | 112 µs | 570 µs | **5.1x** | 0 |
+| `del(.f)` | Large (~100KB) | 192 µs | 794 µs | **4.1x** | 0 |
+| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 141 µs | 799 µs | **5.7x** | 0 |
+| `map(.name)` | 200-elem array (~6KB) | 20 µs | 92 µs | **4.6x** | 0 |
+| `min_by(.value)` | 100-elem array (~3KB) | 12 µs | 56 µs | **4.7x** | 0 |
+| `.a * .b` (multiply) | Small (~100B) | 0.087 µs | 0.71 µs | **8.1x** | 0 |
 | `first(.[] \| select(. > 100))` | 200-int array | 3.6 µs | 1.4 µs | **0.4x**² | 0 |
 
 ¹ Large select uses the last field in a 200-field object — fastjq scans the full document, no early-exit advantage.
@@ -198,10 +199,37 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `type` | Type name: `"string"`, `"number"`, `"object"`, `"array"`, `"boolean"`, `"null"` |
 | `tojson` / `@json` | Serialize any value as a JSON string |
 | `fromjson` | Parse a JSON string to its contained value |
-| `tostring` | Strings pass through; non-strings serialized via `tojson` |
+| `tostring` / `@text` | Strings pass through; non-strings serialized via `tojson` |
 | `tonumber` | Numbers pass through; strings parsed as floats |
 | `null`, `true`, `false`, `"str"`, `123` | Literals |
 | `debug` | Print value to stderr, pass through unchanged |
+| `floor` | Round toward −∞ |
+| `ceil` | Round toward +∞ |
+| `round` | Round to nearest integer |
+| `contains(val)` | `true` if input recursively contains val (string substring, object subset) |
+| `inside(val)` | Reverse of `contains`: `a \| inside(b)` == `b \| contains(a)` |
+| `error` | Throw input as an error; caught by `try-catch` with the original JSON value |
+| `@html` | HTML-escape `<>&'"` in a string |
+| `@csv` | Format an array as a CSV line (strings double-quoted, quotes doubled) |
+| `@tsv` | Format an array as a TSV line (tab/newline/backslash escaped) |
+| `@sh` | Shell-quote a string (POSIX single-quote wrapping) |
+| `@urid` | Percent-decode a URI-encoded string |
+
+## Official jq test suite coverage
+
+fastjq is validated against the [official jq test suite](https://github.com/jqlang/jq/blob/master/tests/jq.test) (`go test ./jqtest/`).
+
+| Category | Count |
+|----------|-------|
+| Total tests in suite | 521 |
+| Skipped (use operations outside fastjq's scope) | 335 |
+| **Attempted** | **186** |
+| **Passed** | **183 (98.4%)** |
+| Failed | 3 |
+
+The 3 remaining failures are a known, intentional difference: jq normalises string escape sequences in its output (e.g. `\r` → `\u000d`, `\u0020` → literal space), whereas fastjq passes string bytes through unchanged to preserve the zero-copy constraint.
+
+The 353 skipped tests cover operations outside fastjq's scope: recursive descent (`..`), `sort`/`group_by`/`unique`, path operations, `reduce`/`foreach`, string interpolation, math builtins, `env`, and others listed in the [Limitations](#limitations) section.
 
 ## Limitations
 
@@ -210,8 +238,9 @@ fastjq is intentionally scope-limited. It will not grow into a full jq implement
 **`select` conditions must be single-valued.**
 Conditions using `and`/`or` work fine. Conditions using an iterator (e.g. `select(.items[] == "x")`) silently test only the first element. Use `any(.[]; . == "x")` instead.
 
-**`del` paths must be literal field or index expressions.**
+**`del` paths must be literal field, index, or slice expressions.**
 Dynamic deletion (`del(.items[])`, `del(.items[] | select(...))`) returns an error.
+Slice ranges (`del(.[2:4])`, `del(.[-2:])`) are supported.
 
 **`.field` on `null` errors — use `.field?` for null-safe access.**
 In jq, `null | .field` returns `null`. In fastjq it errors. Missing fields return `null` and skip their child chain, but an explicitly `null` value in the middle of a chain will error. Use `.a?.b?` for full null-safety.
@@ -219,15 +248,28 @@ In jq, `null | .field` returns `null`. In fastjq it errors. Missing fields retur
 **`map(f)` / `[.[] | f]` allocates when `f` constructs new data.**
 `map(.name)` is 0 allocs (field access returns an input sub-slice). `map({name, price})` or `map(.a * .b)` allocate ~1 buffer per element — the array builder can't share scratch across multiple callback invocations without aliasing. fastjq still allocates 5–8x less than gojq on these queries.
 
+**String escape sequences pass through unchanged.**
+fastjq does not normalise string escapes on output (`\r` stays `\r`, not `\u000d`). This is intentional — re-encoding every string byte-for-byte would violate the zero-copy constraint.
+
 **No string interpolation** (`"\(.field)"` is not supported).
 
-**No recursive descent** (`..|..`).
+**No recursive descent** (`..|..` / `recurse`).
 
 **No regex** (`test`, `match`, `capture`, `scan`, `sub`, `gsub`).
 
-**Other missing builtins:** `sort`, `sort_by`, `group_by`, `unique`, `reduce`, `foreach`, `path`, `env`, `@csv`, `@tsv`, `@html`. See [SYNTAX.md](docs/SYNTAX.md) for the full roadmap.
+**No sorting, grouping, or deduplication** — `sort`, `sort_by`, `group_by`, `unique`, `unique_by` all require O(n) auxiliary index structures, which violates the zero-alloc constraint.
+
+**No `path`, `getpath`, `setpath`, `delpaths`** — not yet implemented.
+
+**No `reduce` / `foreach` / `label-break` / variable binding** (`as $x`) / **user-defined functions** (`def`).
+
+**No math beyond rounding** — `sin`, `cos`, `pow`, `log`, `sqrt`, etc. are not supported. `floor`, `ceil`, `round` are available.
+
+**No Unicode codepoint conversion** (`explode`, `implode`).
 
 **Output is always compact JSON.** Input can be pretty-printed or compact. fastjq never panics — malformed input may produce wrong results but the process is always safe.
+
+See [SYNTAX.md](docs/SYNTAX.md) for the full categorised roadmap of unimplemented operations.
 
 ## Further reading
 

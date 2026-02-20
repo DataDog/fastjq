@@ -39,6 +39,9 @@
 | `del(.[0])` | Delete array element | `[10,20,30]` | `[20,30]` |
 | `del(.[1], .[3])` | Delete multiple elements | `[10,20,30,40,50]` | `[10,30,50]` |
 | `del(.[-1])` | Delete last element | `[10,20,30]` | `[10,20]` |
+| `del(.[2:4])` | Delete slice range | `[0,1,2,3,4,5]` | `[0,1,4,5]` |
+| `del(.[-2:])` | Delete last two elements | `[0,1,2,3,4]` | `[0,1,2]` |
+| `del(.[2:4],.[0])` | Mixed index and slice | `[0,1,2,3,4,5,6,7]` | `[1,4,5,6,7]` |
 
 ### Iterator
 
@@ -195,9 +198,12 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 | Syntax | Description | Example Input | Example Output |
 |--------|-------------|---------------|----------------|
 | `try expr` | Suppress errors from expr — produce no output on failure | `[1,2] \| try .foo` | *(no output)* |
-| `try expr catch handler` | Run handler with error message (as string) on failure | `[1,2] \| try .foo catch "err"` | `"err"` |
+| `try expr catch handler` | Run handler with caught value on failure | `[1,2] \| try .foo catch "err"` | `"err"` |
+| `error` | Throw the input as an error; `catch` receives the original JSON value | `try ("boom" \| error) catch .` | `"boom"` |
 
 `try` binds tightly: `try .a \| .b` = `(try .a) \| .b`. Wrap in parens to catch a full pipeline: `try (.a \| .b)`. The `errBreak` control signal (used by `first`/`limit`) propagates through `try` unchanged.
+
+When `error` is thrown, the `catch` handler receives the **actual JSON value** (not a string), matching jq semantics. Errors from built-in operations (wrong type, division by zero, etc.) are wrapped as strings.
 
 ### Format Strings
 
@@ -205,11 +211,35 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 |--------|-------------|---------------|----------------|
 | `@base64` | Base64-encode a JSON string | `"hello"` | `"aGVsbG8="` |
 | `@base64d` | Base64-decode a JSON string | `"aGVsbG8="` | `"hello"` |
-| `@uri` | URL percent-encode a JSON string (RFC 3986 unreserved chars pass through) | `"hello world"` | `"hello%20world"` |
+| `@uri` | URL percent-encode (RFC 3986 unreserved chars pass through) | `"hello world"` | `"hello%20world"` |
+| `@urid` | URL percent-decode | `"%CE%BC"` | `"\u03bc"` |
 | `@json` / `tojson` | Serialize any value as a JSON string | `{"a":1}` | `"{\"a\":1}"` |
+| `@text` / `tostring` | Identity for strings; `tojson` for other types | `42` | `"42"` |
+| `@html` | HTML-escape `&`, `<`, `>`, `'`, `"` | `"<b>&</b>"` | `"&lt;b&gt;&amp;&lt;/b&gt;"` |
+| `@csv` | Format array as CSV (strings double-quoted, internal quotes doubled) | `[1,"a,b"]` | `"1,\"a,b\""` |
+| `@tsv` | Format array as TSV (tab/newline/backslash escaped) | `[1,"a\tb"]` | `"1\ta\\tb"` |
+| `@sh` | POSIX shell-quote a string (single-quote wrapping) | `"O'Hara"` | `"'O'\\''Hara'"` |
 
 `@base64d` accepts standard (`+/`), URL-safe (`-_`), padded and unpadded input. Non-printable decoded bytes are escaped as `\uXXXX`.
-`@base64` and `@uri` operate on the raw bytes between JSON quotes. JSON escape sequences (e.g. `\n`) are encoded as their literal characters, not as the decoded byte. For strings containing `\uXXXX` escapes, decode first with a helper before encoding.
+All format strings (`@base64`, `@uri`, `@html`, `@csv`, `@tsv`, `@sh`) decode JSON string escape sequences before encoding — `\n` becomes byte `0x0a`, `\uXXXX` is decoded to its UTF-8 bytes — matching jq behaviour.
+
+### Numeric Rounding
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `floor` | Round toward −∞ | `-1.9` | `-2` |
+| `ceil` | Round toward +∞ | `-1.1` | `-1` |
+| `round` | Round to nearest integer (half away from zero) | `1.5` | `2` |
+
+### Containment
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `contains(val)` | True if input recursively contains val | `"foobar" \| contains("foo")` | `true` |
+| `contains(val)` | String: substring check | `"ab\u0000cd" \| contains("b\u0000c")` | `true` |
+| `contains(val)` | Object: all key-value pairs of val present (recursively) | `{"a":1,"b":2} \| contains({"a":1})` | `true` |
+| `contains(val)` | Array: all elements of val contained in some element | `[1,2,3] \| contains([2,3])` | `true` |
+| `inside(val)` | Reverse of contains: `a \| inside(b)` ≡ `b \| contains(a)` | `{"a":1} \| inside({"a":1,"b":2})` | `true` |
 
 ### Type Filters
 
@@ -243,9 +273,10 @@ These are all zero-alloc parser aliases — no new ops, just desugared to existi
 | `indices("s")` | All occurrences as array | `"a,b,c"` | `[1,3]` |
 | `index(n)` | First occurrence of value n in array | `[1,2,3,2]` with `index(2)` | `1` |
 | `rindex(n)` | Last occurrence of value n in array | `[1,2,3,2]` with `rindex(2)` | `3` |
+| `indices([a,b])` | All positions where subsequence `[a,b]` starts in array | `[0,1,2,3,1,2]` with `indices([1,2])` | `[1,4]` |
 | `debug` | Print value to stderr as `[DEBUG]: value`, pass through | `{"x":1}` | `{"x":1}` |
 
-For strings, `index` and `rindex` search for raw byte sequences (escape sequences are compared as-is). Returns `null` if not found, `[]` for `indices` with no matches.
+For strings, positions are Unicode codepoint offsets (not byte offsets), matching jq behaviour for multi-byte characters. Substring matches are overlapping — `indices("aba")` on `"xababax"` returns `[1,3]`. Returns `null` if not found, `[]` for `indices` with no matches.
 
 ### Membership & Length
 
@@ -322,8 +353,8 @@ Numbers compared by value; strings lexicographically. Empty array → `null`.
 | `last(expr)` | Last output of expr | `[1,2,3,4,5]` (with `last(.[] \| select(. > 2))`) | `5` |
 | `limit(n; expr)` | First N outputs of expr as a stream | `[1,2,3,4,5]` (with `limit(3; .[])`) | `1`, `2`, `3` |
 
-`limit` emits a stream, not an array. Wrap in `[...]` if you need an array: `[limit(3; .[])]`.
-`any(generator; cond)` two-arg form is not supported.
+`limit` emits a stream, not an array. Wrap in `[...]` if you need an array: `[limit(3; .[])]`. The body can be a comma-separated generator: `limit(1; a, b)`.
+`any(generator; cond)` two-arg form is supported.
 
 ### Boolean Reduction
 
@@ -397,13 +428,9 @@ These operations are implementable at zero allocation but involve more complexit
 
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
-| `*` (objects) | Recursive merge | Deep merge two objects. Recursive descent and reconstruction. Zero-alloc possible but recursion depth can be problematic. |
-| `try-catch` | Error handling | Capture errors from sub-expressions and redirect. The callback pattern makes this viable. |
 | `as $x \| expr` | Variable binding | Store `(start, end)` offsets into original input. **Zero-alloc only if bound values reference input, not constructed output.** Binding a constructed value (e.g., `{a:1} as $x`) would need to store bytes somewhere. |
 | `def f: body; expr` | Function definitions | AST-level feature, compile-time only. But closures and recursion add parser/AST complexity. |
 | `reduce .[] as $x (init; update)` | Fold/accumulate | Needs mutable accumulator. If accumulator lives in the output buffer, works, but each step reads previous output. May require double-buffering (ping-pong between two buffer slices). |
-| `@html` | HTML entity escaping | Character-by-character transform, write to buf. |
-| `@csv`, `@tsv` | CSV/TSV formatting | Iterate array, write fields with delimiters and escaping. |
 | `label-break` | Control flow | `label $out \| foreach ...` — requires unwinding callback stack. Achievable with a sentinel error value. |
 | `foreach` | Stateful iteration | `foreach .[] as $x (init; update; extract)`. Requires mutable state across iterations. Double-buffering approach keeps it zero-alloc. |
 | String interpolation `\(expr)` | Embedded expressions in strings | Evaluate inner expression, embed in string. Non-string results need serialization. Adds parser complexity. |
@@ -414,9 +441,7 @@ These operations are implementable at zero allocation but involve more complexit
 
 ### Rejected — structurally incompatible with zero-alloc constraint
 
-These operations were evaluated, implemented, and then removed after benchmarking revealed unavoidable allocations.
-
-These operations were evaluated, implemented, and then removed after benchmarking confirmed unavoidable allocations incompatible with the zero-alloc guarantee.
+These operations were evaluated and rejected after benchmarking confirmed unavoidable allocations incompatible with the zero-alloc guarantee.
 
 | Syntax | Reason |
 |--------|--------|
@@ -449,8 +474,6 @@ These are part of jq's CLI or streaming interface, not relevant for an embedded 
 |--------|-------------|
 | `input`, `inputs` | Read from stdin |
 | `env` | Access environment |
-| `@json` | Re-encode as JSON string |
-| `@text` | Convert to text |
 | `--raw-output`, `-r` | CLI output formatting |
 | `--slurp`, `-s` | CLI input mode |
 | `--arg`, `--argjson` | CLI variable injection |

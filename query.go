@@ -72,6 +72,17 @@ const (
 	opFromJSON                     // fromjson
 	opToString                     // tostring
 	opToNumber                     // tonumber
+	opContains                     // contains(val) — recursive containment; optional=true for inside()
+	opFloor                        // floor
+	opCeil                         // ceil
+	opRound                        // round
+	opError                        // error — throw input as error
+	opGenerator                    // a, b — multi-output sequence; elems = exprs to run in order
+	opHTMLEncode                   // @html
+	opCSVEncode                    // @csv
+	opTSVEncode                    // @tsv
+	opShEncode                     // @sh
+	opURIDecode                    // @urid
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -149,6 +160,31 @@ func parsePipeExpr(s string) (*op, string, error) {
 	}
 
 	return result, rest, nil
+}
+
+// parseGeneratorExpr parses a comma-separated sequence of pipe expressions.
+// Used for generator bodies like `limit(1; a, b)` where `a, b` produces multiple outputs.
+// Returns a single op if there is only one expression, or an opGenerator if there are multiple.
+func parseGeneratorExpr(s string) (*op, string, error) {
+	first, rest, err := parsePipeExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ',' {
+		return first, rest, nil
+	}
+	elems := []*op{first}
+	for len(rest) > 0 && rest[0] == ',' {
+		rest = strings.TrimSpace(rest[1:])
+		next, rest2, err := parsePipeExpr(rest)
+		if err != nil {
+			return nil, rest2, err
+		}
+		elems = append(elems, next)
+		rest = strings.TrimSpace(rest2)
+	}
+	return &op{typ: opGenerator, elems: elems}, rest, nil
 }
 
 // parseExpr parses a single expression at the lowest precedence level.
@@ -423,7 +459,7 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opIndex, index: -1}, rest, nil // last → .[-1]
 	}
 
-	// limit(n; expr)
+	// limit(n; expr) — body can be a comma-separated generator: limit(1; a, b)
 	if strings.HasPrefix(s, "limit(") {
 		nExpr, rest, err := parsePipeExpr(s[6:])
 		if err != nil {
@@ -434,7 +470,7 @@ func parseAtom(s string) (*op, string, error) {
 			return nil, rest, fmt.Errorf("expected ';' in limit(n; expr)")
 		}
 		rest = strings.TrimSpace(rest[1:])
-		genExpr, rest, err := parsePipeExpr(rest)
+		genExpr, rest, err := parseGeneratorExpr(rest)
 		if err != nil {
 			return nil, rest, err
 		}
@@ -553,7 +589,7 @@ func parseAtom(s string) (*op, string, error) {
 		return parseUnaryExprBuiltin(s[3:], opIn)
 	}
 
-	// Format strings: @base64d, @base64, @uri, @html, @csv, @tsv
+	// Format strings: @base64d, @base64, @uri, @urid, @json, @html, @csv, @tsv, @sh, @text
 	if s[0] == '@' {
 		if strings.HasPrefix(s, "@base64d") && (len(s) == 8 || !isIdentChar(s[8])) {
 			return &op{typ: opBase64D}, s[8:], nil
@@ -561,11 +597,29 @@ func parseAtom(s string) (*op, string, error) {
 		if strings.HasPrefix(s, "@base64") && (len(s) == 7 || !isIdentChar(s[7])) {
 			return &op{typ: opBase64}, s[7:], nil
 		}
+		if strings.HasPrefix(s, "@urid") && (len(s) == 5 || !isIdentChar(s[5])) {
+			return &op{typ: opURIDecode}, s[5:], nil
+		}
 		if strings.HasPrefix(s, "@uri") && (len(s) == 4 || !isIdentChar(s[4])) {
 			return &op{typ: opURIEncode}, s[4:], nil
 		}
 		if strings.HasPrefix(s, "@json") && (len(s) == 5 || !isIdentChar(s[5])) {
 			return &op{typ: opToJSON}, s[5:], nil
+		}
+		if strings.HasPrefix(s, "@html") && (len(s) == 5 || !isIdentChar(s[5])) {
+			return &op{typ: opHTMLEncode}, s[5:], nil
+		}
+		if strings.HasPrefix(s, "@csv") && (len(s) == 4 || !isIdentChar(s[4])) {
+			return &op{typ: opCSVEncode}, s[4:], nil
+		}
+		if strings.HasPrefix(s, "@tsv") && (len(s) == 4 || !isIdentChar(s[4])) {
+			return &op{typ: opTSVEncode}, s[4:], nil
+		}
+		if strings.HasPrefix(s, "@sh") && (len(s) == 3 || !isIdentChar(s[3])) {
+			return &op{typ: opShEncode}, s[3:], nil
+		}
+		if strings.HasPrefix(s, "@text") && (len(s) == 5 || !isIdentChar(s[5])) {
+			return &op{typ: opToString}, s[5:], nil // @text == tostring
 		}
 		return nil, s, fmt.Errorf("unsupported format string %q", s[:min(len(s), 16)])
 	}
@@ -648,6 +702,49 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "type") && (len(s) == 4 || !isIdentChar(s[4])) {
 		return &op{typ: opTypeBuiltin}, s[4:], nil
 	}
+
+	// contains(val) — recursive containment check
+	if strings.HasPrefix(s, "contains(") {
+		inner, rest, err := parsePipeExpr(s[9:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after contains() argument")
+		}
+		return &op{typ: opContains, child: inner}, rest[1:], nil
+	}
+
+	// inside(val) — reverse of contains: a | inside(b) == b | contains(a)
+	if strings.HasPrefix(s, "inside(") {
+		inner, rest, err := parsePipeExpr(s[7:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after inside() argument")
+		}
+		return &op{typ: opContains, child: inner, optional: true}, rest[1:], nil
+	}
+
+	// floor / ceil / round — numeric rounding (no argument)
+	if strings.HasPrefix(s, "floor") && (len(s) == 5 || !isIdentChar(s[5])) {
+		return &op{typ: opFloor}, s[5:], nil
+	}
+	if strings.HasPrefix(s, "ceil") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opCeil}, s[4:], nil
+	}
+	if strings.HasPrefix(s, "round") && (len(s) == 5 || !isIdentChar(s[5])) {
+		return &op{typ: opRound}, s[5:], nil
+	}
+
+	// error — throw input as an error
+	if strings.HasPrefix(s, "error") && (len(s) == 5 || !isIdentChar(s[5])) {
+		return &op{typ: opError}, s[5:], nil
+	}
+
 
 	// Dot expressions
 	if s[0] == '.' {
