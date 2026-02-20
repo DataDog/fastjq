@@ -1,6 +1,6 @@
 # fastjq
 
-A fast, zero-allocation jq engine for Go, designed for high-throughput structured log processing.
+A fast, allocation-conscious jq engine for Go, designed for high-throughput structured log processing.
 
 fastjq operates directly on raw `[]byte` — no `json.Unmarshal`, no `map[string]interface{}`, no marshal/unmarshal cycle. It compiles a query once and executes it against JSON bytes by scanning byte positions, copying only what it needs into an output buffer.
 
@@ -13,14 +13,16 @@ fastjq operates directly on raw `[]byte` — no `json.Unmarshal`, no `map[string
 The standard approach costs ~870 µs and ~4,600 allocations just to parse a 100KB log object — before you've done any work. fastjq eliminates it:
 
 - **No parse tree.** Input `[]byte` is the only representation. A scanner moves through bytes tracking a position integer, skipping values by depth-counting brackets. Nothing is ever converted to Go types.
-- **Compile once, run many times.** `Compile` builds an immutable AST (allocates once). `Run`/`RunWithBuffer`/`RunFunc` walk the input guided by that AST — no allocations at runtime with a reused buffer.
+- **Compile once, run many times.** `Compile` builds an immutable AST (allocates once). `Run`/`RunWithBuffer`/`RunFunc` walk the input guided by that AST — zero allocations at runtime for core operations with a reused buffer.
 - **Copy only what you need.** Field access returns a sub-slice of input — no copy. Deletion reconstructs the object into an output buffer with its own commas. Everything else is left untouched.
-- **Caller-owned buffer.** Output is written into a `[]byte` the caller passes in. It grows if needed, then stabilises. At steady state, zero heap allocations per record.
+- **Caller-owned buffer.** Output is written into a `[]byte` the caller passes in. It grows if needed, then stabilises. At steady state, zero heap allocations per record for typical log-processing queries.
 - **Early exit.** `select(.level == "error")` on a 100KB object stops scanning the moment it finds `level` — the rest of the bytes are never read.
 
 ## Benchmarks
 
-Compared against [gojq](https://github.com/itchyny/gojq), the standard jq library for Go. gojq times include the full `json.Unmarshal → execute → json.Marshal` cycle. Apple M4 Max, Go 1.25. fastjq achieves **0 allocations** in steady state on all operations when using `RunWithBuffer` or `RunFunc`.
+Compared against [gojq](https://github.com/itchyny/gojq), the standard jq library for Go. gojq times include the full `json.Unmarshal → execute → json.Marshal` cycle. Apple M4 Max, Go 1.25.
+
+fastjq's allocation model: **core operations are 0 allocs** (access, filtering, comparison, arithmetic, construction, math, `test(re)`). Operations that return new structured data allocate proportional to their *output* size — never to input size: `@base64`/`@uri` (4 allocs; string decoding), `match`/`capture` (1 alloc on a hit; `[]int` for subgroup indices), `scan`/`gsub` (allocs per match), `map(f)` when `f` builds new data (~1 per element). See the `allocs` column in [BENCHMARKS.md](docs/BENCHMARKS.md).
 
 | Operation | Input | fastjq | gojq | Speedup | allocs |
 |-----------|-------|--------|------|---------|--------|
@@ -109,7 +111,7 @@ func (p *Program) RunAll(input []byte) ([][]byte, error)
 func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 ```
 
-`Compile` allocates. `Run`/`RunWithBuffer`/`RunFunc` achieve zero allocations at steady state with a reused buffer.
+`Compile` allocates. Core operations via `RunWithBuffer`/`RunFunc` achieve zero allocations at steady state. Operations that produce new structured output (regex matches, base64/URI encoding, `map(f)` with construction) allocate proportional to result size.
 
 ## Supported Operations
 
