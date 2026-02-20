@@ -26,14 +26,14 @@ fastjq's allocation model: **core operations are 0 allocs** (access, filtering, 
 
 | Operation | Input | fastjq | gojq | Speedup | allocs |
 |-----------|-------|--------|------|---------|--------|
-| `select(.f == "x")` | Small (~100B) | 0.010 µs | 0.56 µs | **56x** | 0 |
-| `select(.f == "x")`¹ | Large (~100KB) | 187 µs | 770 µs | **4.1x** | 0 |
-| `.field` | Small (~100B) | 0.141 µs | 0.34 µs | **2.4x** | 0 |
-| `.field` | Large (~100KB) | 112 µs | 570 µs | **5.1x** | 0 |
-| `del(.f)` | Large (~100KB) | 192 µs | 794 µs | **4.1x** | 0 |
-| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 141 µs | 799 µs | **5.7x** | 0 |
-| `map(.name)` | 200-elem array (~6KB) | 20 µs | 92 µs | **4.6x** | 0 |
-| `min_by(.value)` | 100-elem array (~3KB) | 12 µs | 56 µs | **4.7x** | 0 |
+| `select(.f == "x")` | Small (~100B) | 0.010 µs | 0.57 µs | **56x** | 0 |
+| `select(.f == "x")`¹ | Large (~100KB) | 175 µs | 770 µs | **4.4x** | 0 |
+| `.field` | Small (~100B) | 0.090 µs | 0.35 µs | **3.8x** | 0 |
+| `.field` | Large (~100KB) | 45 µs | 570 µs | **13x** | 0 |
+| `del(.f)` | Large (~100KB) | 175 µs | 794 µs | **4.5x** | 0 |
+| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 155 µs | 799 µs | **5.2x** | 0 |
+| `map(.name)` | 200-elem array (~6KB) | 14 µs | 92 µs | **6.6x** | 0 |
+| `min_by(.value)` | 100-elem array (~3KB) | 9 µs | 54 µs | **6x** | 0 |
 | `.a * .b` (multiply) | Small (~100B) | 0.087 µs | 0.71 µs | **8.1x** | 0 |
 | `first(.[] \| select(. > 100))` | 200-int array | 3.6 µs | 1.4 µs | **0.4x**² | 0 |
 
