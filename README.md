@@ -6,7 +6,7 @@ fastjq operates directly on raw `[]byte` — no `json.Unmarshal`, no `map[string
 
 **This is not a full jq implementation.** It supports a targeted subset of jq operations chosen for log processing workloads. See [Limitations](#limitations) before using.
 
-> **Input must be valid JSON.** fastjq does not validate its input — it assumes well-formed JSON and skips values using bracket depth-counting rather than full parsing. Malformed input produces undefined behaviour: wrong results, panics, or silent corruption. Validate input with `json.Valid` or `json.Unmarshal` before passing it to fastjq if you cannot guarantee its source.
+> **Input must be valid JSON.** fastjq does not validate its input — it assumes well-formed JSON and skips values using bracket depth-counting rather than full parsing. fastjq **never panics** regardless of what bytes you pass (this is enforced by fuzz tests), but malformed input may produce wrong or empty results. Validate input with `json.Valid` or `json.Unmarshal` before passing it to fastjq if you cannot guarantee its source.
 
 ## Design
 
@@ -248,7 +248,7 @@ In jq, `null | .field` returns `null`. In fastjq it errors. This affects chained
 **`map(f)` / `[.[] | f]` allocates when `f` constructs new data.**
 These queries achieve 0 allocs when `f` returns a field or sub-slice of the input (e.g. `map(.name)`). When `f` builds new bytes — object construction `{…}`, arithmetic, string concatenation — fastjq allocates ~1 buffer per element. This is a structural constraint: the array builder must keep element scratch separate from the output buffer because an iterator invokes the callback multiple times, and sharing a scratch position would cause each invocation to overwrite the previous result. fastjq still allocates 5–8x less than gojq on these queries.
 
-**Output is always compact JSON.** Input can be pretty-printed or compact.
+**Output is always compact JSON.** Input can be pretty-printed or compact. fastjq never panics — malformed input may produce wrong results but the process is always safe.
 
 ## Further reading
 

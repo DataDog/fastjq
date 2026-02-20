@@ -1,5 +1,10 @@
 # fastjq Project Constraints
 
+## Safety Constraints
+
+- **Never panics.** fastjq must never panic regardless of input — valid JSON, malformed JSON, empty input, or arbitrary bytes. A panic in a log processing pipeline is worse than wrong output. This guarantee is enforced by `TestNoPanicMalformedInput` (deterministic) and three fuzz test functions (`FuzzCompile`, `FuzzRunFixed`, `FuzzBoth`). Any code path that could panic on bad input is a bug.
+- **Correct results only guaranteed for valid JSON.** With malformed input the output is undefined, but the process remains safe.
+
 ## Performance Constraints
 
 - **Zero allocations** on the hot path when using `RunWithBuffer` with a reused buffer — all operations including select, compare, and alternative achieve 0 allocs
