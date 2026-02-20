@@ -6,27 +6,17 @@ fastjq operates directly on raw `[]byte` — no `json.Unmarshal`, no `map[string
 
 **This is not a full jq implementation.** It supports a targeted subset of jq operations chosen for log processing workloads. See [Limitations](#limitations) before using.
 
-> **Input must be valid JSON.** fastjq does not validate its input — it assumes well-formed JSON and skips values using bracket depth-counting rather than full parsing. fastjq **never panics** regardless of what bytes you pass (this is enforced by fuzz tests), but malformed input may produce wrong or empty results. Validate input with `json.Valid` or `json.Unmarshal` before passing it to fastjq if you cannot guarantee its source.
+**Requires valid JSON input.** fastjq does not validate its input — behavior on malformed JSON is undefined. It never panics (enforced by fuzz tests), but may silently produce wrong results. Use `json.Valid` if you can't guarantee the source.
 
 ## Design
 
-The standard approach to jq-style processing in Go is:
+The standard approach costs ~870 µs and ~4,600 allocations just to parse a 100KB log object — before you've done any work. fastjq eliminates it:
 
-```
-json.Unmarshal → manipulate map[string]interface{} → json.Marshal
-```
-
-That round-trip dominates. For a 100KB log object it costs ~870 µs and ~4,600 allocations per record — before you've done any actual work. fastjq eliminates it entirely.
-
-**No parse tree.** fastjq never converts JSON to Go types. The input `[]byte` is the only representation. A scanner tracks a position integer and moves forward through the bytes, skipping values by depth-counting brackets rather than recursing.
-
-**Compile once, run many times.** `Compile` parses the query string into a small AST and allocates the result. That AST is immutable and safe for concurrent use. `Run`/`RunWithBuffer`/`RunFunc` do not allocate — they walk the input bytes with the scanner, guided by the pre-compiled AST.
-
-**Copy only what you need.** Field access returns a sub-slice of the input — no copy. Deletion reconstructs the object by copying the kept fields into an output buffer and inserting its own commas, so the result is always compact regardless of how the input was formatted. Nothing else is touched.
-
-**Zero allocations via caller-owned buffer.** Output is written into a `[]byte` passed in by the caller. The caller reuses the same buffer across calls — it grows if an output exceeds its current capacity, then stabilises. At steady state, zero heap allocations occur per record.
-
-**Early exit.** Operations like `select` and field access stop scanning as soon as they have what they need. `select(.level == "error")` on a 100KB object finds `level` early in the document and exits — it never touches the rest of the bytes.
+- **No parse tree.** Input `[]byte` is the only representation. A scanner moves through bytes tracking a position integer, skipping values by depth-counting brackets. Nothing is ever converted to Go types.
+- **Compile once, run many times.** `Compile` builds an immutable AST (allocates once). `Run`/`RunWithBuffer`/`RunFunc` walk the input guided by that AST — no allocations at runtime with a reused buffer.
+- **Copy only what you need.** Field access returns a sub-slice of input — no copy. Deletion reconstructs the object into an output buffer with its own commas. Everything else is left untouched.
+- **Caller-owned buffer.** Output is written into a `[]byte` the caller passes in. It grows if needed, then stabilises. At steady state, zero heap allocations per record.
+- **Early exit.** `select(.level == "error")` on a 100KB object stops scanning the moment it finds `level` — the rest of the bytes are never read.
 
 ## Benchmarks
 
@@ -44,10 +34,10 @@ Compared against [gojq](https://github.com/itchyny/gojq), the standard jq librar
 | `.a * .b` (multiply) | Small (~100B) | 0.08 µs | 0.68 µs | **8x** | 0 |
 | `first(.[] \| select(. > 100))` | 200-int array | 3.6 µs | 1.4 µs | **0.4x**² | 0 |
 
-¹ The large select benchmark uses the **last** field in a 200-field object — fastjq scans the full document, no early-exit advantage.
-² gojq is faster on small arrays of raw integers: after unmarshal it accesses a native Go slice; fastjq always scans bytes.
+¹ Large select uses the last field in a 200-field object — fastjq scans the full document, no early-exit advantage.
+² gojq wins on small arrays of raw integers: after unmarshal, element access is native Go slice operations.
 
-The advantage is largest on small inputs, where gojq's marshal/unmarshal overhead dominates regardless of how simple the query is. On large inputs both engines are doing real work scanning bytes, and fastjq is still consistently 4–5x faster. The exception is small primitive integer arrays, where gojq's in-memory representation wins.
+The speedup is largest on small inputs where gojq's marshal/unmarshal overhead dominates. On large inputs both engines scan bytes and fastjq is still 4–5x faster. The exception is small primitive integer arrays, where gojq's in-memory representation wins.
 
 ### vs jq CLI (JSONL throughput, 100K lines, ~11MB, Apple M4 Max)
 
@@ -68,21 +58,11 @@ See [BENCHMARKS.md](BENCHMARKS.md) for the complete table.
 A minimal JSONL processor CLI is included for benchmarking and quick experimentation:
 
 ```bash
-# Build
 go build -o fastjq ./cmd/fastjq
 
-# Filter error logs from a JSONL stream
 cat app.log | ./fastjq 'select(.level == "error")'
-
-# Case-insensitive filter
 cat app.log | ./fastjq 'select(.level | ascii_downcase == "error")'
-
-# Drop sensitive fields
 cat app.log | ./fastjq 'del(.password, .token)'
-
-# Benchmark against jq CLI (requires jq in PATH)
-chmod +x bench_vs_jq.sh
-./bench_vs_jq.sh
 ```
 
 ## Install
@@ -97,18 +77,17 @@ go get github.com/brianfloersch/fastjq
 // Compile once — safe for concurrent use
 p, err := fastjq.Compile(`select(.level == "error")`)
 
-// Run against each log line
+// Stream results with zero steady-state allocations
 err = p.RunFunc(line, func(result []byte) error {
-    // called for each output (0 outputs if select doesn't match)
     _, err := w.Write(result)
     return err
 })
 
-// Or use RunWithBuffer to reuse a buffer across calls (zero steady-state allocs)
+// Or reuse a buffer across calls
 buf := make([]byte, 0, 1024)
 buf, err = p.RunWithBuffer(line, buf)
 
-// RunAll collects all outputs (allocates)
+// Collect all outputs (allocates)
 results, err := p.RunAll(line)
 ```
 
@@ -123,7 +102,7 @@ func (p *Program) RunAll(input []byte) ([][]byte, error)
 func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 ```
 
-`Compile` allocates. `Run`/`RunWithBuffer`/`RunFunc` achieve zero allocations at steady state across all supported operations.
+`Compile` allocates. `Run`/`RunWithBuffer`/`RunFunc` achieve zero allocations at steady state with a reused buffer.
 
 ## Supported Operations
 
@@ -229,32 +208,31 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 fastjq is intentionally scope-limited. It will not grow into a full jq implementation.
 
 **`select` conditions must be single-valued.**
-The condition is evaluated via a single-result path. Conditions using `and`/`or` work fine. Conditions using an iterator (e.g. `select(.items[] == "x")`) silently test only the first element. Use `any(.[]; . == "x")` instead.
+Conditions using `and`/`or` work fine. Conditions using an iterator (e.g. `select(.items[] == "x")`) silently test only the first element. Use `any(.[]; . == "x")` instead.
 
 **`del` paths must be literal field or index expressions.**
-`del(.foo)`, `del(.foo.bar)`, `del(.[0])`, and `del(.foo, .bar)` work. Dynamic deletion does not: `del(.items[])` and `del(.items[] | select(...))` both return an error.
+Dynamic deletion (`del(.items[])`, `del(.items[] | select(...))`) returns an error.
 
 **`.field` on `null` errors — use `.field?` for null-safe access.**
-In jq, `null | .field` returns `null`. In fastjq it errors. This affects chained access when an intermediate field is absent: `.a.b` where `.a` is a missing field returns `null` (absent field → null → child chain skipped), but `.a.b` where `.a` is explicitly `null` errors. Use `.a?.b?` for full null-safety.
+In jq, `null | .field` returns `null`. In fastjq it errors. Missing fields return `null` and skip their child chain, but an explicitly `null` value in the middle of a chain will error. Use `.a?.b?` for full null-safety.
 
-**No string interpolation.**
-`"\(.field)"` template syntax is not supported.
+**`map(f)` / `[.[] | f]` allocates when `f` constructs new data.**
+`map(.name)` is 0 allocs (field access returns an input sub-slice). `map({name, price})` or `map(.a * .b)` allocate ~1 buffer per element — the array builder can't share scratch across multiple callback invocations without aliasing. fastjq still allocates 5–8x less than gojq on these queries.
 
-**No higher-order functions or builtins beyond those listed.**
-`reduce`, `foreach`, `@csv`, `@html`, `env`, `path`, `sort`, `group_by`, `unique`, `test` (regex), etc. are not supported. See [SYNTAX.md](SYNTAX.md) for the full roadmap.
+**No string interpolation** (`"\(.field)"` is not supported).
 
 **No recursive descent** (`..|..`).
 
-**`map(f)` / `[.[] | f]` allocates when `f` constructs new data.**
-These queries achieve 0 allocs when `f` returns a field or sub-slice of the input (e.g. `map(.name)`). When `f` builds new bytes — object construction `{…}`, arithmetic, string concatenation — fastjq allocates ~1 buffer per element. This is a structural constraint: the array builder must keep element scratch separate from the output buffer because an iterator invokes the callback multiple times, and sharing a scratch position would cause each invocation to overwrite the previous result. fastjq still allocates 5–8x less than gojq on these queries.
+**No regex** (`test`, `match`, `capture`, `scan`, `sub`, `gsub`).
+
+**Other missing builtins:** `sort`, `sort_by`, `group_by`, `unique`, `reduce`, `foreach`, `path`, `env`, `@csv`, `@tsv`, `@html`. See [SYNTAX.md](SYNTAX.md) for the full roadmap.
 
 **Output is always compact JSON.** Input can be pretty-printed or compact. fastjq never panics — malformed input may produce wrong results but the process is always safe.
 
 ## Further reading
 
 - [SYNTAX.md](SYNTAX.md) — Full operation reference with examples, and a roadmap of unimplemented operations categorised by feasibility
-- [BENCHMARKS.md](BENCHMARKS.md) — Complete benchmark tables (Small/Medium/Large), raw output, and CLI throughput results
-- [DESIGN.md](DESIGN.md) — Architecture details, key design decisions, supported operations list
-- [CONSTRAINTS.md](CONSTRAINTS.md) — Performance and scope constraints; what the library will and won't do
+- [BENCHMARKS.md](BENCHMARKS.md) — Complete benchmark tables, raw output, and CLI throughput results
+- [DESIGN.md](DESIGN.md) — Architecture details and key design decisions
+- [CONSTRAINTS.md](CONSTRAINTS.md) — Performance and scope constraints
 - [CHANGELOG.md](CHANGELOG.md) — Change history with tradeoffs and benchmark notes
-
