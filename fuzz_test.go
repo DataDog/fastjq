@@ -52,6 +52,22 @@ func FuzzCompile(f *testing.F) {
 		`{"a":1} + {"b":2}`,
 		`.a // .b // .c // "default"`,
 		`to_entries | map(select(.value != null)) | from_entries`,
+		// Math builtins — 1-arg float ops
+		"sqrt", "fabs", "atan", "log", "log2", "log10",
+		"exp", "exp2", "exp10", "cbrt", "logb", "nearbyint",
+		"sin", "cos", "tan", "asin", "acos",
+		"tgamma", "lgamma", "j0", "j1",
+		// String interpolation
+		`"\(.name)"`, `"\(.a) and \(.b)"`, `"value: \(.)"`,
+		`"\(.level): \(.svc) [\(.status)]"`,
+		// isempty / nth / error(expr)
+		`isempty(empty)`, `isempty(.[])`, `isempty(1,2,3)`,
+		`nth(0; .[])`, `nth(2; .[])`, `[nth(1; .[])]`,
+		`try error("msg") catch .`,
+		`error("x")`, // compile fine, runtime error
+		// try / // precedence
+		`try error(0) // 1`,
+		`try .a // "default"`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -98,6 +114,14 @@ func FuzzRunFixed(f *testing.F) {
 		"\xEF\xBB\xBF\"hello\"",
 		"\xEF\xBB\xBF{\"a\":1}",
 		"\xEF\xBB\xBF[1,2,3]",
+		// Numeric inputs for math builtins
+		`0`, `1`, `-1`, `3.14159`, `-2.718`, `0.5`, `1e10`, `-0`,
+		// Domain-edge inputs: sqrt(-1)→null, log(-1)→null, asin(2)→null
+		`-1`, `-100`, `2`,
+		// Mixed objects for string interpolation
+		`{"name":"alice","level":"error","svc":"api","status":500}`,
+		// Boolean and null for isempty
+		`true`, `false`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -106,7 +130,7 @@ func FuzzRunFixed(f *testing.F) {
 	queries := []string{
 		".", ".a", ".a.b", ".[0]", ".[-1]", ".[]",
 		"del(.a)", "del(.a, .b)", "del(.[0])",
-		// del with slice ranges — new functionality
+		// del with slice ranges
 		"del(.[1:3])", "del(.[:2])", "del(.[-1:])", "del(.[2:4],.[0],.[-2:])",
 		`select(.a == "x")`, `select(.a != null)`,
 		`select(.a > 0)`, `select(has("a"))`,
@@ -137,12 +161,25 @@ func FuzzRunFixed(f *testing.F) {
 		"values", "numbers", "strings", "arrays", "objects",
 		"booleans", "nulls", "iterables", "scalars",
 		`index(",")`, `rindex(",")`, `indices(",")`,
-		// indices with array needle — new functionality
+		// indices with array needle
 		`indices([1,2])`, `index([1,2])`, `rindex([0])`,
 		".[1:3]", ".[:2]", ".[1:]",
 		"debug",
 		`try (.a / .b) catch 0`,
 		`[.[] | try .x catch null]`,
+		// Math builtins
+		"sqrt", "fabs", "atan", "log", "log2", "log10",
+		"exp", "exp2", "exp10", "cbrt", "logb", "nearbyint",
+		"sin", "cos", "tan", "asin", "acos", "tgamma", "lgamma", "j0", "j1",
+		// String interpolation
+		`"\(.a)"`, `"\(.a) and \(.b)"`,
+		// isempty / nth / error(expr)
+		`isempty(empty)`, `isempty(.[])`,
+		`nth(0; .[])`, `nth(2; .[])`,
+		`try error("msg") catch .`,
+		// try / // precedence
+		`try error(0) // 1`,
+		`try .a // "default"`,
 	}
 
 	programs := make([]*Program, 0, len(queries))
@@ -208,6 +245,49 @@ func FuzzBoth(f *testing.F) {
 	f.Add(`max_by(.[1])`, `[[4,2,"a"],[3,1,"a"],[2,4,"a"]]`)
 	// BOM-prefixed input (via identity)
 	f.Add(`.`, "\xEF\xBB\xBF{\"a\":1}")
+	// Math builtins — verify no panic on any float input including domain errors
+	f.Add(`sqrt`, `9`)
+	f.Add(`sqrt`, `-1`)   // NaN domain → null
+	f.Add(`log`, `1`)
+	f.Add(`log`, `-1`)    // NaN domain → null
+	f.Add(`sin`, `0`)
+	f.Add(`cos`, `0`)
+	f.Add(`atan`, `1`)
+	f.Add(`exp`, `0`)
+	f.Add(`exp10`, `3`)
+	f.Add(`cbrt`, `27`)
+	f.Add(`logb`, `8`)
+	f.Add(`tgamma`, `5`)
+	f.Add(`lgamma`, `1`)
+	f.Add(`fabs`, `-3.14`)
+	f.Add(`nearbyint`, `3.7`)
+	f.Add(`j0`, `0`)
+	f.Add(`j1`, `1`)
+	f.Add(`asin`, `2`)    // NaN domain → null
+	f.Add(`acos`, `2`)    // NaN domain → null
+	// String interpolation — field access (0 allocs) and number embedding
+	f.Add(`"\(.name)"`, `{"name":"alice","age":30}`)
+	f.Add(`"\(.a) + \(.b)"`, `{"a":"foo","b":"bar"}`)
+	f.Add(`"value: \(.)"`, `42`)
+	f.Add(`"\(.level): \(.svc)"`, `{"level":"error","svc":"api"}`)
+	// Nested interpolation with pipes
+	f.Add(`"\(.name | ascii_upcase)"`, `{"name":"alice"}`)
+	// isempty
+	f.Add(`isempty(empty)`, `null`)
+	f.Add(`isempty(.[])`, `[]`)
+	f.Add(`isempty(.[])`, `[1,2,3]`)
+	f.Add(`[.[] | isempty(select(. > 2))]`, `[1,2,3,4,5]`)
+	// nth
+	f.Add(`nth(0; .[])`, `[10,20,30]`)
+	f.Add(`nth(2; .[])`, `[10,20,30]`)
+	f.Add(`nth(99; .[])`, `[1,2,3]`) // past end → no output
+	// error(expr) 1-arg
+	f.Add(`try error("boom") catch .`, `null`)
+	f.Add(`try error(.) catch .`, `{"a":1}`)
+	f.Add(`try error("invalid: \(.)") catch .`, `42`)
+	// try / // precedence
+	f.Add(`try error(0) // 1`, `null`)
+	f.Add(`try .missing // "default"`, `{}`)
 	f.Fuzz(func(t *testing.T, query, input string) {
 		p, err := Compile(query)
 		if err != nil {
