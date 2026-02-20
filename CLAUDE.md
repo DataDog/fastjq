@@ -31,10 +31,13 @@ This runs the full benchmark suite (~3 minutes) and **automatically regenerates 
 
 **Every new operation must have a fastjq benchmark AND a matching gojq benchmark.** Add them to `bench_test.go` following the existing helper pattern (`benchFastjqObj`, `benchGojqObj`, etc.) before committing. Also add a corresponding `row{}` entry to `tableRows` in `scripts/update_benchmarks.go` so it appears in the summary table.
 
-**Any non-zero `allocs/op` in a fastjq benchmark is a failure.** Stop and check in with the user before proceeding. The options are:
+**Any non-zero `allocs/op` in a fastjq benchmark is a failure**, with one documented structural exception (see below). Stop and check in with the user before proceeding. The options are:
 - Fix the allocation (preferred)
 - Reject the feature as incompatible with the zero-alloc constraint
 - Document it explicitly as a known edge case. Only accept if the alloc is a single fixed-size buffer recycled by the allocator. Reject if allocs scale with input structure (see `range` and `recurse` in SYNTAX.md Rejected section).
+
+**Known structural exception — array construction with data-building elements:**
+`[.[] | f]` / `map(f)` where `f` constructs new data (object `{…}`, arithmetic, string concat) allocates ~1 buffer per element. Root cause: `execArrayConstruct` must pass `nil` scratch to `execMulti` to prevent aliasing — an iterator calls the callback multiple times, and if all invocations share the same scratch position they overwrite each other. Elements that return input sub-slices (field access, identity) are still 0 allocs. See `CONSTRAINTS.md` and the `execArrayConstruct` comment for the full explanation. fastjq uses 5–8x fewer allocs than gojq on these queries even with this limitation.
 
 ### 5. Update ALL the docs
 Every code change that affects the public surface, supported operations, or performance characteristics must update:

@@ -105,6 +105,14 @@ var tableRows = []row{
 	{"`endswith(\"s\")`", "Small (~100B)", "Small_Endswith", "Small_Endswith"},
 	{"`ltrimstr(\"s\")`", "Small (~100B)", "Small_Ltrimstr", "Small_Ltrimstr"},
 	{"`rtrimstr(\"s\")`", "Small (~100B)", "Small_Rtrimstr", "Small_Rtrimstr"},
+	// Complex multi-feature (array-building queries; allocs expected per element)
+	{"`select` + string ops + arith + construct", "~200B log event", "Complex_LogNormalize", "Complex_LogNormalize"},
+	{"`[.[] | select + arith + construct]`", "20-elem array (~1.5KB)", "Complex_ArrayPipeline", "Complex_ArrayPipeline"},
+	{"`length + map + add + min_by + any`", "20-elem array (~1.5KB)", "Complex_Aggregation", "Complex_Aggregation"},
+	{"`map(try {…} catch …)`", "20-elem array (~1.5KB)", "Complex_TolerantMap", "Complex_TolerantMap"},
+	{"`map(if … elif … else …)`", "20-elem array (~1.5KB)", "Complex_ElifRouting", "Complex_ElifRouting"},
+	{"`[.[] | str + tostring + str]`", "20-elem array (~1.5KB)", "Complex_StringBuild", "Complex_StringBuild"},
+	{"`to_entries | map(select) | from_entries`", "~200B log event", "Complex_EntryFilter", "Complex_EntryFilter"},
 	// Format strings
 	{"`@base64`", "34-char string", "Small_Base64Encode", "Small_Base64Encode"},
 	{"`@base64d`", "48-char encoded", "Small_Base64Decode", "Small_Base64Decode"},

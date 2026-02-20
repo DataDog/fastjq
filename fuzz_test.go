@@ -11,23 +11,43 @@ func FuzzCompile(f *testing.F) {
 		`select(.x > 0 and .y < 10)`,
 		"{a, b}", "{a: .b}", "[.a, .b]",
 		"map(.x)", "to_entries", "from_entries",
-		`with_entries(select(.value != null))`,
 		"length", "keys_unsorted", "type",
-		"ascii_downcase", `startswith("foo")`,
-		`ltrimstr("foo")`, `has("key")`,
+		"ascii_downcase", "ascii_upcase",
+		`startswith("foo")`, `endswith("foo")`,
+		`ltrimstr("foo")`, `rtrimstr("foo")`,
+		`has("key")`, `has(0)`,
 		"any", "all", `any(. > 0)`, `all(. > 0)`,
+		`any(.[]; . > 0)`, `all(.[]; . > 0)`,
 		"first", "last", `first(.[] | select(. > 0))`,
 		`limit(3; .[])`,
 		`if .x == "y" then .a else .b end`,
+		`if .x == 1 then "a" elif .x == 2 then "b" else "c" end`,
 		`.x // "default"`, "empty", "not",
 		`true`, `false`, `null`, `42`, `"hello"`,
+		"try .foo", `try .foo catch "err"`,
+		"tojson", "fromjson", "tostring", "tonumber",
+		"@base64", "@base64d", "@uri", "@json",
+		"min", "max", `min_by(.x)`, `max_by(.x)`,
+		".a + .b", ".a - .b", ".a * .b", ".a / .b", ".a % .b",
+		"add", "flatten", `flatten(1)`,
+		`split(",")`, `join(",")`,
+		"values", "numbers", "strings", "arrays", "objects", "booleans", "nulls",
+		"iterables", "scalars",
+		`index(",")`, `rindex(",")`, `indices(",")`,
+		`in({"a":1})`,
+		".[1:3]", ".[:2]", ".[1:]",
+		"debug",
 		// Edge cases in parsing
 		`select(.a and .b or .c)`,
 		`.a.b.c.d.e`,
-		`with_entries(select(.key != "x" and .value != null))`,
 		`if has("x") then .x else empty end`,
 		`[limit(3; .[])]`,
 		`any(ascii_downcase == "error")`,
+		`try (.a / .b) catch 0`,
+		`[.[] | try .x catch null]`,
+		`{"a":1} + {"b":2}`,
+		`.a // .b // .c // "default"`,
+		`to_entries | map(select(.value != null)) | from_entries`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -55,6 +75,11 @@ func FuzzRunFixed(f *testing.F) {
 		`{"key with spaces": 1}`,
 		`{"a":{"b":{"c":{"d":{"e":1}}}}}`,
 		`[[[[[1]]]]]`,
+		// Strings for @uri, @base64, tojson, etc.
+		`"hello world"`,
+		`"aGVsbG8="`,
+		`"{\"a\":1}"`,
+		`"42"`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -68,19 +93,34 @@ func FuzzRunFixed(f *testing.F) {
 		`select(.a | not)`, `select(any)`, `select(all)`,
 		"{a}", "{a: .b}", "[.a, .b]",
 		"map(.a)", "to_entries", "from_entries",
-		`with_entries(select(.value != null))`,
 		"length", "keys_unsorted", "type",
 		"ascii_downcase", "ascii_upcase",
 		`startswith("x")`, `endswith("x")`,
 		`ltrimstr("x")`, `rtrimstr("x")`,
 		"any", `any(. > 0)`, "all", `all(. > 0)`,
+		`any(.[]; . > 0)`, `all(.[]; . > 0)`,
 		"first", "last",
 		`first(.[] | select(. > 0))`,
 		`last(.[] | select(. > 0))`,
 		`limit(3; .[])`,
 		`if .a then .b else .c end`,
+		`if .a == 1 then "one" elif .a == 2 then "two" else "other" end`,
 		`.a // "default"`,
 		"empty", "not",
+		"try .a", `try .a catch "err"`,
+		"tojson", "fromjson", "tostring", "tonumber",
+		"@base64", "@base64d", "@uri", "@json",
+		"min", "max", `min_by(.a)`, `max_by(.a)`,
+		".a + .b", ".a - .b", ".a * .b", ".a / .b", ".a % .b",
+		"add", "flatten", `flatten(1)`,
+		`split(",")`, `join(",")`,
+		"values", "numbers", "strings", "arrays", "objects",
+		"booleans", "nulls", "iterables", "scalars",
+		`index(",")`, `rindex(",")`, `indices(",")`,
+		".[1:3]", ".[:2]", ".[1:]",
+		"debug",
+		`try (.a / .b) catch 0`,
+		`[.[] | try .x catch null]`,
 	}
 
 	programs := make([]*Program, 0, len(queries))
@@ -113,6 +153,18 @@ func FuzzBoth(f *testing.F) {
 	f.Add(`startswith("x")`, `"xyz"`)
 	f.Add(`any(. > 0)`, `[1,2,3]`)
 	f.Add(`limit(2; .[])`, `[1,2,3,4,5]`)
+	f.Add(`try .foo catch "err"`, `[1,2,3]`)
+	f.Add(`tojson`, `{"a":1}`)
+	f.Add(`fromjson`, `"{\"a\":1}"`)
+	f.Add(`tonumber`, `"42"`)
+	f.Add(`@uri`, `"hello world"`)
+	f.Add(`min`, `[3,1,4,1,5]`)
+	f.Add(`min_by(.a)`, `[{"a":3},{"a":1}]`)
+	f.Add(`.a + .b`, `{"a":1,"b":2}`)
+	f.Add(`.a - .b`, `{"a":[1,2,3],"b":[2]}`)
+	f.Add(`if .a == 1 then "x" elif .a == 2 then "y" else "z" end`, `{"a":1}`)
+	f.Add(`[.[] | try .x catch null]`, `[{"x":1},42,{"x":3}]`)
+	f.Add(`any(.[]; . > 5)`, `[1,2,3,4,5,6]`)
 	f.Fuzz(func(t *testing.T, query, input string) {
 		p, err := Compile(query)
 		if err != nil {

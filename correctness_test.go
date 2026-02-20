@@ -10,17 +10,51 @@ import (
 
 // TestNoPanicMalformedInput runs every compiled operation against a corpus of
 // malformed, truncated, and edge-case inputs. None must panic.
+// This is a hard contract: fastjq never panics, even on invalid input.
 func TestNoPanicMalformedInput(t *testing.T) {
 	queries := []string{
-		".", ".a", ".a.b", ".[0]", ".[-1]", ".[]",
-		"del(.a)", `select(.a == "x")`, `select(has("a"))`,
-		"{a}", "map(.a)", "to_entries", "from_entries",
-		`with_entries(select(.value != null))`,
-		"length", "keys_unsorted", "type",
-		"ascii_downcase", `startswith("x")`, `ltrimstr("x")`,
-		"any", `any(. > 0)`, "first", `limit(2; .[])`,
-		`if .a then .b else .c end`, `.a // "default"`,
-		"not", "empty",
+		// Core access
+		".", ".a", ".a.b", ".[0]", ".[-1]", ".[]", ".a?", ".[0]?", ".[]?",
+		".[1:3]", ".[:2]", ".[1:]",
+		// Modification
+		"del(.a)", "del(.a, .b)", "del(.[0])",
+		"{a}", "{a: .b}", "[.a, .b]",
+		// Logic & control
+		`select(.a == "x")`, `select(has("a"))`,
+		`if .a then .b else .c end`,
+		`if .a == 1 then "x" elif .a == 2 then "y" else "z" end`,
+		`.a // "default"`, "not", "empty",
+		"try .a", `try .a catch "err"`,
+		`try (.a / .b) catch 0`,
+		// Arithmetic
+		".a + .b", ".a - .b", ".a * .b", ".a / .b", ".a % .b",
+		// Array ops
+		"map(.a)", "add", "flatten", `flatten(1)`,
+		"min", "max", `min_by(.a)`, `max_by(.a)`,
+		"any", "all", `any(. > 0)`, `all(. > 0)`,
+		`any(.[]; . > 0)`, `all(.[]; . > 0)`,
+		"first", "last", `first(.[] | select(. > 0))`,
+		`limit(2; .[])`,
+		"values", "numbers", "strings", "arrays", "objects",
+		"booleans", "nulls", "iterables", "scalars",
+		`index(",")`, `rindex(",")`, `indices(",")`,
+		// Object transforms
+		"to_entries", "from_entries", "length", "keys_unsorted",
+		// Type & conversion
+		"type", "tojson", "fromjson", "tostring", "tonumber",
+		"@base64", "@base64d", "@uri", "@json",
+		// Strings
+		"ascii_downcase", "ascii_upcase",
+		`startswith("x")`, `endswith("x")`,
+		`ltrimstr("x")`, `rtrimstr("x")`,
+		`split(",")`, `join(",")`,
+		// Misc
+		`has("key")`, `has(0)`, `in({"a":1})`,
+		"debug", `.a // .b // "default"`,
+		// Complex combinations
+		`[.[] | try .x catch null]`,
+		`to_entries | map(select(.value != null)) | from_entries`,
+		`[.[] | if .a > 0 then .a elif .b > 0 then .b else 0 end]`,
 	}
 
 	malformedInputs := []string{

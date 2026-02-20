@@ -813,12 +813,22 @@ func execConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 // execArrayConstruct builds a JSON array from expressions.
 // Each element expression may produce multiple outputs (e.g. .items[]),
 // all of which are collected into the array.
+//
+// Allocation note: nil scratch is REQUIRED here. If we passed buf's spare
+// capacity as scratch, an iterator element (e.g. .items[]) would call the
+// callback multiple times. Callback #1 writes result1 to buf[k:], extends
+// buf to cover it. Callback #2 would then write result2 ALSO starting at
+// buf[k:], overwriting result1 before the comma is inserted. This aliasing
+// cannot be avoided structurally.
+//
+// Consequence: element expressions that BUILD new data (object construction,
+// arithmetic, string concatenation) allocate ~1 buffer per element. Elements
+// that return INPUT sub-slices (field access, identity, comparisons) remain
+// zero-alloc because they don't use the scratch at all.
 func execArrayConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 	buf = append(buf, '[')
 	first := true
 	for _, elem := range node.elems {
-		// nil scratch avoids aliasing when multiple outputs are collected
-		// into buf within a single execMulti call.
 		err := execMulti(elem, input, nil, func(val []byte) error {
 			if !first {
 				buf = append(buf, ',')
