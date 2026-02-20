@@ -152,38 +152,36 @@ The skipped tests cover operations outside fastjq's scope: recursive descent (`.
 fastjq is intentionally scope-limited. It will not grow into a full jq implementation.
 
 **`select` conditions must be single-valued.**
-Conditions using `and`/`or` work fine. Conditions using an iterator (e.g. `select(.items[] == "x")`) silently test only the first element. Use `any(.[]; . == "x")` instead.
-
-**`del` paths must be literal field, index, or slice expressions.**
-Dynamic deletion (`del(.items[])`, `del(.items[] | select(...))`) returns an error.
-Slice ranges (`del(.[2:4])`, `del(.[-2:])`) are supported.
+`select(.items[] == "x")` silently tests only the first element. Use `any(.[]; . == "x")` instead.
 
 **`.field` on `null` errors — use `.field?` for null-safe access.**
-In jq, `null | .field` returns `null`. In fastjq it errors. Missing fields return `null` and skip their child chain, but an explicitly `null` value in the middle of a chain will error. Use `.a?.b?` for full null-safety.
+`null | .field` errors in fastjq (jq returns null). Use `.a?.b?` for full null-safety.
 
 **`map(f)` / `[.[] | f]` allocates when `f` constructs new data.**
-`map(.name)` is 0 allocs (field access returns an input sub-slice). `map({name, price})` or `map(.a * .b)` allocate ~1 buffer per element — the array builder can't share scratch across multiple callback invocations without aliasing. fastjq still allocates 5–8x less than gojq on these queries.
+`map(.name)` is 0 allocs. `map({name, price})` allocates ~1 buffer per element. fastjq still uses 5–8x fewer allocations than gojq on these queries.
 
 **String escape sequences pass through unchanged.**
-fastjq does not normalise string escapes on output (`\r` stays `\r`, not `\u000d`). This is intentional — re-encoding every string byte-for-byte would violate the zero-copy constraint.
+fastjq does not normalise string escapes on output (`\r` stays `\r`, not `\u000d`). Re-encoding every string would violate the zero-copy constraint.
 
-**No string interpolation** (`"\(.field)"` is not supported).
+**Regex uses Go RE2, not PCRE/Oniguruma.**
+Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are unsupported. `test(re)` is 0-alloc; `match`/`capture` alloc one `[]int` on a hit; `scan`/`gsub` alloc per match. Replacement strings in `sub`/`gsub` are literals (no `\(...)` references).
+
+**`@format "template"` combined syntax not supported.**
+`@html "<b>\(.)</b>"` applies the format to each interpolated value — not yet implemented. Plain string interpolation `"\(.field)"` and standalone format strings (`@html`, `@csv`, `@sh`, etc.) both work fine.
+
+**try-catch catches errors from the full callback chain, not just the body.**
+`(try . catch h) | right` — if `right` errors, the try catches it. jq scopes the catch to the body only. Complex nested try patterns may behave differently.
+
+**`[a, b | f]` parses as `[a, (b|f)]`.**
+jq treats `[a, b | f]` as `[(a,b) | f]`. fastjq parses array elements independently, so `[true, false | not]` gives `[true, true]` not `[false, true]`.
 
 **No recursive descent** (`..|..` / `recurse`).
 
-**Regex uses Go RE2** (not PCRE/Oniguruma). Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are unsupported. `test(re)` is 0-alloc; `match`/`capture` allocate one `[]int` on a hit; `scan`/`gsub` allocate proportional to match count. Replacement strings in `sub`/`gsub` are literals — `\(.field)` capture group references are not supported.
+**No sorting, grouping, or deduplication** — `sort`, `sort_by`, `group_by`, `unique`, `unique_by` require O(n) auxiliary storage.
 
-**No sorting, grouping, or deduplication** — `sort`, `sort_by`, `group_by`, `unique`, `unique_by` all require O(n) auxiliary index structures, which violates the zero-alloc constraint.
+**Not yet implemented:** `path`, `getpath`, `setpath`, `delpaths`, `reduce`, `foreach`, `label-break`, variable binding (`as $x`), user-defined functions (`def`), `explode`/`implode`, `nan`/`infinite` constants, 2-arg math forms (`pow(x;y)`, `hypot(x;y)`, `atan(y;x)`).
 
-**No `path`, `getpath`, `setpath`, `delpaths`** — not yet implemented.
-
-**No `reduce` / `foreach` / `label-break` / variable binding** (`as $x`) / **user-defined functions** (`def`).
-
-**`nan` / `infinite` constants not supported** — they produce non-JSON output, violating the compact-JSON output constraint. All 1-arg math functions (`sqrt`, `sin`, `cos`, `log`, etc.) are supported; NaN/Inf *results* are output as `null`. 2-arg forms (`pow(x;y)`, `hypot(x;y)`, `atan(y;x)`) are not yet supported.
-
-**No Unicode codepoint conversion** (`explode`, `implode`).
-
-**Output is always compact JSON.** Input can be pretty-printed or compact. fastjq never panics — malformed input may produce wrong results but the process is always safe.
+**Output is always compact JSON.** fastjq never panics — malformed input may produce wrong results but the process is always safe.
 
 See [SYNTAX.md](docs/SYNTAX.md) for the full categorised roadmap of unimplemented operations.
 
