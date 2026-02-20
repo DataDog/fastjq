@@ -34,7 +34,7 @@ fastjq is a fast, minimal JQ engine for Go that avoids the expensive marshal/unm
 - `length` (string → char count, array/object → element count, null → 0)
 - `map(expr)` (apply expr to every array element; desugars to `[.[] | expr]` at parse time)
 - `expr - expr` (number subtraction; array difference)
-- `expr * expr` (number multiplication; string × n = repeat)
+- `expr * expr` (number multiplication; string × n or n × string = repeat; `string * 0` = `""`; negative = null; `object * object` = recursive merge)
 - `expr / expr` (number division; string / string = split)
 - `expr % expr` (number modulo)
 - `min`, `max` (array extrema — numbers by value, strings lexicographically)
@@ -42,18 +42,18 @@ fastjq is a fast, minimal JQ engine for Go that avoids the expensive marshal/unm
 - `@uri` (URL percent-encode a JSON string)
 - `to_entries` (object → `[{"key":k,"value":v}]` array)
 - `from_entries` (`[{"key":k,"value":v}]` → object; also accepts `"name"` as key field)
-- `if cond then expr else expr end` (conditional; else is optional, defaults to identity)
+- `if cond then expr else expr end` (conditional; else is optional, defaults to identity; condition can produce multiple outputs — each independently selects its branch; empty condition produces no outputs)
 - `empty` (produce zero outputs — useful as else branch to drop records)
 - `(expr)` (parenthesized grouping)
 - `select(.level == "error")` (filter — emit input if condition truthy, nothing if falsy)
-- `.foo // "default"` (alternative — use right if left is null/false)
+- `.foo // "default"` (alternative — collect all truthy outputs from left; if none, use right)
 - `.foo?`, `.[0]?`, `.[]?` (optional — suppress errors, produce nothing)
 - `type` (type name builtin — returns `"string"`, `"number"`, etc.)
 - `try expr` / `try expr catch handler` (error suppression; handler receives error message as JSON string)
 - `elif` branches in `if-then-elif-...-else-end` (desugars to nested if-then-else)
 - `. + .` object merge (`expr + expr` on two objects; right wins for duplicate keys)
 - `tojson` / `@json` (wrap value as a JSON string, escaping `"` and `\`)
-- `fromjson` (parse a JSON string to its contained value; unescapes `\"` and `\\`)
+- `fromjson` (parse a JSON string to its contained value; validates result is valid JSON; errors with jq-compatible message on invalid input)
 - `tostring` (pass strings through unchanged; wrap non-strings with `tojson`)
 - `tonumber` (numbers pass through; strings are parsed as floats)
 - `any(gen; cond)` / `all(gen; cond)` (two-arg forms: generator + condition)
@@ -107,6 +107,22 @@ Literals like `"error"`, `42`, `null` store raw JSON bytes (`[]byte`) at compile
 ### 12. execSingle Fast Path
 
 `execSingle` handles common single-result op types (literal, identity, field, index, compare, type) without creating closures, avoiding heap allocations in hot paths like `select(.field == "value")`.
+
+### 13. Multi-Output Arithmetic Operands
+
+`execMulti` uses `execMulti` for the left side of arithmetic operators (`+`, `-`, `*`, `/`, `%`). This supports `.[] % 7` and similar generators as operands. The right side is still evaluated once per left output. A `execArithValues` helper function holds the core arithmetic logic, decoupled from operand evaluation.
+
+### 14. execObjectMerge for obj * obj
+
+`object * object` performs recursive merge: left keys come first (keeping right value if overridden), right-only keys appended. Both sides recurse if both values are objects.
+
+### 15. add Object Deduplication
+
+`add` on an array of objects uses last-wins deduplication with first-occurrence key ordering. Keys appear in the order of their first occurrence across all objects; the value used is the last one seen across all objects for that key.
+
+### 16. isSingleOutputOp Fast Path
+
+`execIf` has a fast path for single-output conditions (the common case) using `execSingle` directly to avoid closure allocation. Complex/multi-output conditions fall through to `execMulti`.
 
 ## File Structure
 

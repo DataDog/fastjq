@@ -1300,7 +1300,7 @@ func parseTry(s string) (*op, string, error) {
 	var handler *op
 	if strings.HasPrefix(rest, "catch") && (len(rest) == 5 || !isIdentChar(rest[5])) {
 		rest = strings.TrimSpace(rest[5:])
-		handler, rest, err = parseExpr(rest)
+		handler, rest, err = parseMulExpr(rest)
 		if err != nil {
 			return nil, rest, err
 		}

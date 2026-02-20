@@ -3311,7 +3311,7 @@ func TestArithMultiply(t *testing.T) {
 func TestArithMultiplyStringRepeat(t *testing.T) {
 	assertQuery(t, `"ab" * 3`, `null`, `"ababab"`)
 	assertQuery(t, `"x" * 1`, `null`, `"x"`)
-	assertQuery(t, `"x" * 0`, `null`, `null`)
+	assertQuery(t, `"x" * 0`, `null`, `""`)
 }
 func TestArithDivide(t *testing.T) {
 	assertQuery(t, `10 / 4`, `null`, `2.5`)
