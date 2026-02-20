@@ -317,6 +317,34 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return fn(append(buf, "true"...))
 		}
 		return fn(append(buf, "false"...))
+	case opTest:
+		return fn(boolResult(buf, execTest(node, input)))
+	case opMatchRe:
+		result, err := execMatchRe(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opCapture:
+		result, err := execCapture(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opScan:
+		return execScan(node, input, buf, fn)
+	case opSub:
+		result, err := execSub(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opGSub:
+		result, err := execGSub(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opFloor:
 		return fn(execRoundMode(input, buf, roundFloor))
 	case opCeil:
@@ -655,6 +683,17 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execMinMax(input, buf, node, true)
 	case opURIEncode:
 		return execURIEncode(input, buf)
+	case opTest:
+		return boolResult(buf, execTest(node, input)), nil
+	case opMatchRe:
+		return execMatchRe(node, input, buf)
+	case opCapture:
+		return execCapture(node, input, buf)
+	case opSub:
+		return execSub(node, input, buf)
+	case opGSub:
+		return execGSub(node, input, buf)
+	// opScan is intentionally absent — it is multi-output only; falls through to exec()
 	case opAlternative:
 		// Fall through to execMulti — alternative needs multi-output left side support
 		return exec(node, input, buf)
@@ -4150,5 +4189,216 @@ func execURIDecode(input, buf []byte) ([]byte, error) {
 
 	buf = append(buf, '"')
 	buf = appendJSONStringContentUnicodeEscaped(buf, decoded)
+	return append(buf, '"'), nil
+}
+
+// --- Regex operations ---
+// All patterns are compiled once at Compile() time (stored in node.re).
+// Go's RE2 engine guarantees linear-time matching — immune to ReDoS.
+
+// execTest implements test(re) / test(re; flags).
+// Zero-alloc: re.Match operates on the raw string content bytes without
+// converting to string. Simple patterns use a one-pass NFA with no heap use;
+// complex patterns use a pooled machine managed by the standard library.
+// Non-string input returns false (not an error) so test() composes cleanly
+// with select(): select(.msg | test("error")).
+func execTest(node *op, input []byte) bool {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return false
+	}
+	return node.re.Match(s.readString())
+}
+
+// execMatchRe implements match(re) / match(re; flags).
+// Returns a JSON object: {"offset":N,"length":M,"string":"...","captures":[...]}.
+// Non-string input → null. No match → null.
+// Allocation: FindSubmatchIndex allocates one []int on a match; nil on miss (0 allocs).
+func execMatchRe(node *op, input []byte, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return append(buf, "null"...), nil
+	}
+	content := s.readString()
+
+	idx := node.re.FindSubmatchIndex(content)
+	if idx == nil {
+		return append(buf, "null"...), nil
+	}
+
+	offset, end := idx[0], idx[1]
+	buf = append(buf, `{"offset":`...)
+	buf = appendInt(buf, offset)
+	buf = append(buf, `,"length":`...)
+	buf = appendInt(buf, end-offset)
+	buf = append(buf, `,"string":"`...)
+	buf = append(buf, content[offset:end]...)
+	buf = append(buf, `","captures":[`...)
+
+	names := node.re.SubexpNames()
+	first := true
+	for i := 1; i < len(idx)/2; i++ {
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		capStart, capEnd := idx[2*i], idx[2*i+1]
+		buf = append(buf, `{"offset":`...)
+		if capStart == -1 {
+			buf = append(buf, "-1"...)
+			buf = append(buf, `,"length":0,"string":"","name":`...)
+		} else {
+			buf = appendInt(buf, capStart)
+			buf = append(buf, `,"length":`...)
+			buf = appendInt(buf, capEnd-capStart)
+			buf = append(buf, `,"string":"`...)
+			buf = append(buf, content[capStart:capEnd]...)
+			buf = append(buf, `","name":`...)
+		}
+		if names[i] == "" {
+			buf = append(buf, "null"...)
+		} else {
+			buf = append(buf, '"')
+			buf = append(buf, names[i]...)
+			buf = append(buf, '"')
+		}
+		buf = append(buf, '}')
+	}
+	return append(buf, ']', '}'), nil
+}
+
+// execCapture implements capture(re) / capture(re; flags).
+// Returns only named captures as a flat JSON object.
+// Non-string input → null. No match → null.
+// Allocation: FindSubmatchIndex allocates one []int on a match; nil on miss.
+func execCapture(node *op, input []byte, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return append(buf, "null"...), nil
+	}
+	content := s.readString()
+
+	idx := node.re.FindSubmatchIndex(content)
+	if idx == nil {
+		return append(buf, "null"...), nil
+	}
+
+	names := node.re.SubexpNames()
+	buf = append(buf, '{')
+	first := true
+	for i := 1; i < len(idx)/2; i++ {
+		if names[i] == "" {
+			continue
+		}
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		capStart, capEnd := idx[2*i], idx[2*i+1]
+		buf = append(buf, '"')
+		buf = append(buf, names[i]...)
+		buf = append(buf, `":"`...)
+		if capStart >= 0 {
+			buf = append(buf, content[capStart:capEnd]...)
+		}
+		buf = append(buf, '"')
+	}
+	return append(buf, '}'), nil
+}
+
+// execScan implements scan(re) / scan(re; flags).
+// Emits all non-overlapping matches as a stream. No groups → JSON strings.
+// With groups → JSON arrays of captured strings. Non-string input → no outputs.
+// Allocation: FindAllSubmatch allocates per match — inherently multi-output, unavoidable.
+func execScan(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return nil
+	}
+	content := s.readString()
+
+	numGroups := node.re.NumSubexp()
+	for _, match := range node.re.FindAllSubmatch(content, -1) {
+		var out []byte
+		if numGroups == 0 {
+			out = append(out, '"')
+			out = append(out, match[0]...)
+			out = append(out, '"')
+		} else {
+			out = append(out, '[')
+			for i, cap := range match[1:] {
+				if i > 0 {
+					out = append(out, ',')
+				}
+				if cap == nil {
+					out = append(out, "null"...)
+				} else {
+					out = append(out, '"')
+					out = append(out, cap...)
+					out = append(out, '"')
+				}
+			}
+			out = append(out, ']')
+		}
+		if err := fn(out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// execSub implements sub(re; "literal").
+// Replaces the first match with node.field (the literal replacement).
+// Non-string input → pass through unchanged. No match → pass through unchanged.
+// Allocation: FindIndex allocates one []int on a match; nil on miss (0 allocs).
+func execSub(node *op, input []byte, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	start := s.pos
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		s.skipValue()
+		return append(buf, input[start:s.pos]...), nil
+	}
+	content := s.readString()
+	idx := node.re.FindIndex(content)
+	if idx == nil {
+		return append(buf, input[start:s.pos]...), nil
+	}
+	buf = append(buf, '"')
+	buf = append(buf, content[:idx[0]]...)
+	buf = append(buf, node.field...)
+	buf = append(buf, content[idx[1]:]...)
+	return append(buf, '"'), nil
+}
+
+// execGSub implements gsub(re; "literal").
+// Replaces all matches with node.field (the literal replacement).
+// Non-string input → pass through unchanged.
+// Allocation: FindAllIndex allocates proportional to match count.
+func execGSub(node *op, input []byte, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	start := s.pos
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		s.skipValue()
+		return append(buf, input[start:s.pos]...), nil
+	}
+	content := s.readString()
+	indices := node.re.FindAllIndex(content, -1)
+	if indices == nil {
+		return append(buf, input[start:s.pos]...), nil
+	}
+	buf = append(buf, '"')
+	prev := 0
+	for _, idx := range indices {
+		buf = append(buf, content[prev:idx[0]]...)
+		buf = append(buf, node.field...)
+		prev = idx[1]
+	}
+	buf = append(buf, content[prev:]...)
 	return append(buf, '"'), nil
 }

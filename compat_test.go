@@ -382,6 +382,27 @@ func TestJQCompat(t *testing.T) {
 		{"chain select and project", `.[] | select(.x > 1) | {x}`, `[{"x":1},{"x":2},{"x":3}]`, ""},
 		{"chain to_entries filter from_entries", `to_entries | map(select(.value > 1)) | from_entries`, `{"a":1,"b":2,"c":3}`, ""},
 		{"chain map and add", `[.items[] | .value] | add`, `{"items":[{"value":10},{"value":20},{"value":30}]}`, ""},
+
+		// --- Regex operations: test / match / capture / scan / sub / gsub ---
+		// Note: test("x") on non-string errors in jq 1.8.1 but returns false in fastjq — see known diffs.
+		{"test simple match", `test("error")`, `"error: timeout"`, ""},
+		{"test no match", `test("xyz")`, `"hello world"`, ""},
+		{"test case insensitive", `test("error"; "i")`, `"ERROR: timeout"`, ""},
+		{"test anchored", `test("^hello")`, `"hello world"`, ""},
+		{"test anchored miss", `test("^world")`, `"hello world"`, ""},
+		{"test in select", `select(test("error"))`, `"error: timeout"`, ""},
+		// match/capture with no groups — jq and fastjq agree on basic matches
+		{"match basic no groups", `match("[a-z]+")`, `"hello world"`, ""},
+		// scan — uses RE2 syntax, compatible with jq for basic patterns
+		{"scan no groups", `[scan("[0-9]+")]`, `"abc123def456"`, ""},
+		{"scan with groups", `[scan("([a-z]+)([0-9]+)")]`, `"foo123bar456"`, ""},
+		{"scan no match empty", `[scan("x+")]`, `"hello"`, ""},
+		// sub/gsub — literal replacement, both use same basic semantics
+		{"sub first only", `sub("o"; "0")`, `"foo"`, ""},
+		{"sub no match unchanged", `sub("xyz"; "nope")`, `"hello world"`, ""},
+		{"gsub all occurrences", `gsub("o"; "0")`, `"foo"`, ""},
+		{"gsub no match unchanged", `gsub("xyz"; "nope")`, `"hello world"`, ""},
+		{"gsub numbers", `gsub("[0-9]+"; "NUM")`, `"user 1 logged in at 2"`, ""},
 	}
 
 	// Known differences — fastjq intentionally or structurally diverges from jq

@@ -420,6 +420,22 @@ All forms short-circuit. `any(gen; cond)` is equivalent to `first(gen \| select(
 
 Escape sequences in strings are preserved by case conversion. All string operations work on raw JSON string bytes — no Unicode-aware processing.
 
+### Regex (Go RE2)
+
+All patterns are compiled once at `Compile()` time (stored in the AST). `Run()` never allocates for the regex engine. Go's RE2 engine guarantees linear-time matching — immune to ReDoS. Named groups use `(?P<name>...)` syntax. Backreferences and lookahead are not supported; invalid patterns fail at `Compile()` time.
+
+| Syntax | Allocs | Description | Example | Output |
+|--------|--------|-------------|---------|--------|
+| `test("re")` | **0** | `true` if input string matches | `"foo123" \| test("[0-9]+")` | `true` |
+| `test("re"; "flags")` | **0** | Case-insensitive (`i`), multiline (`m`), dot-all (`s`) | `"FOO" \| test("foo"; "i")` | `true` |
+| `match("re")` | 1 on hit | Match object: `{offset, length, string, captures}` | `"foo bar" \| match("(\\w+)")` | `{"offset":0,"length":3,"string":"foo","captures":[...]}` |
+| `capture("re")` | 1 on hit | Named captures only as flat object | `"alice@example" \| capture("(?P<user>\\w+)@(?P<host>\\w+)")` | `{"user":"alice","host":"example"}` |
+| `scan("re")` | per match | Stream all non-overlapping matches; no groups → strings, with groups → arrays | `"a1b2" \| [scan("[0-9]+")]` | `["1","2"]` |
+| `sub("re"; "rep")` | 1 on hit | Replace first match with literal `rep` | `"hello world" \| sub("o"; "0")` | `"hell0 world"` |
+| `gsub("re"; "rep")` | per match | Replace all matches with literal `rep` | `"aababc" \| gsub("a"; "x")` | `"xxbxbc"` |
+
+Replacement strings in `sub`/`gsub` are literals — `\(...)` capture group references are not supported. Non-string input returns `null` (for `match`/`capture`) or `false` (for `test`) rather than erroring, so regex ops compose cleanly with `select`.
+
 ### Type Conversion
 
 | Syntax | Description | Example Input | Example Output |
@@ -471,7 +487,7 @@ These operations are implementable at zero allocation but involve more complexit
 | `reduce .[] as $x (init; update)` | Fold/accumulate | Needs mutable accumulator. If accumulator lives in the output buffer, works, but each step reads previous output. May require double-buffering (ping-pong between two buffer slices). |
 | `label-break` | Control flow | `label $out \| foreach ...` — requires unwinding callback stack. Achievable with a sentinel error value. |
 | `foreach` | Stateful iteration | `foreach .[] as $x (init; update; extract)`. Requires mutable state across iterations. Double-buffering approach keeps it zero-alloc. |
-| String interpolation `\(expr)` | Embedded expressions in strings | Evaluate inner expression, embed in string. Non-string results need serialization. Adds parser complexity. |
+| `@format "template"` combined syntax | Apply format to each interpolated value | `@html "<b>\(.)</b>"` — applies `@html` to each `\(...)` value. Not yet supported; plain `"\(expr)"` string interpolation IS supported. |
 | `getpath(path)` | Get value at path | Navigate nested structure following path array. Zero-alloc via scanner. |
 | `setpath(path; val)` | Set value at path | Navigate to position, reconstruct tree with modified value. Multi-level reconstruction. Zero-alloc feasible but code complexity is high. |
 | `delpaths(paths)` | Delete at multiple paths | Like `setpath` but removing. Same reconstruction complexity. |
@@ -497,8 +513,7 @@ These operations fundamentally conflict with zero-allocation execution.
 | `group_by(expr)` | **Grouping** | Requires sort (above), then grouping into sub-arrays. Needs at least an offset index. |
 | `unique`, `unique_by(expr)` | **Deduplication** | Efficient dedup requires a hash set or sorted index. O(n^2) byte comparison is zero-alloc but impractical for large arrays. |
 | `keys` (sorted) | **Sorted object keys** | Must collect all key positions, sort lexicographically, then emit. Same constraint as `sort`. (`keys_unsorted` is zero-alloc and trivial.) |
-| `test(re)`, `match(re)`, `capture(re)` | **Regex matching** | Go's `regexp` package allocates internally. **Cannot be made zero-alloc.** Affects `test`, `match`, `capture`, `scan`. |
-| `sub(re; rep)`, `gsub(re; rep)` | **Regex substitution** | Same as above — regex engine allocates. |
+| *(none — regex is now supported)* | — | `test`, `match`, `capture`, `scan`, `sub`, `gsub` are all implemented. See the Regex section above. |
 | `ascii`, `implode`, `explode` | **Unicode codepoint operations** | `explode` produces an array of codepoints requiring multi-byte UTF-8 decoding. The decoding itself is zero-alloc, but the interaction with variable-width encoding adds edge cases. |
 | `$ENV` | **Full environment map** | Building a JSON object from all env vars requires allocation for the result. |
 | `getpath`/`setpath` (deeply nested) | **Deep path operations** | While possible at zero-alloc, deep nesting (10+ levels) requires multi-level tree reconstruction. Each level reconstructs into the output buffer. The code complexity scales linearly with max supported depth. |
@@ -525,6 +540,6 @@ These are part of jq's CLI or streaming interface, not relevant for an embedded 
 
 **Operations that require reordering** (`sort`, `group_by`, `unique`, sorted `keys`) are the hardest category. They fundamentally need an auxiliary index structure — at minimum a `[]int` of offsets. The pragmatic approach is to allow a small `[]int` allocation for these while keeping everything else zero-alloc.
 
-**Regex is the one feature that cannot be zero-alloc in Go**, since the `regexp` package allocates internally.
+**Regex is supported via Go RE2.** `test(re)` is 0-alloc; `match`/`capture` allocate one `[]int` on a match; `scan`/`gsub` allocate per match. All allocations are proportional to result size, not input size. Patterns compile once at `Compile()` time.
 
 **Numeric arithmetic** is feasible at zero-alloc using `strconv.AppendFloat`/`strconv.AppendInt` directly into the output buffer.

@@ -113,121 +113,21 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 
 ## Supported Operations
 
-**Access**
+fastjq supports a large targeted subset of jq. The complete reference with examples is in [SYNTAX.md](docs/SYNTAX.md).
 
-| Syntax | Description |
-|--------|-------------|
-| `.` | Identity — pass input through |
-| `.foo`, `.foo.bar` | Field access, nested |
-| `.[0]`, `.[-1]` | Array index (negative counts from end) |
-| `.[]` | Iterator — emit each element |
-| `.items[]`, `.items[0]`, `.data[0].name` | Chained access |
-| `.[n:m]`, `.[:m]`, `.[n:]` | Slice array or string (negative indices from end) |
-| `.foo?`, `.[0]?`, `.[]?` | Optional — suppress errors, produce no output |
+**Quick summary by category:**
 
-**Modification**
-
-| Syntax | Description |
-|--------|-------------|
-| `del(.foo)`, `del(.foo, .bar)` | Delete fields |
-| `del(.foo.bar)` | Delete nested field |
-| `del(.[0])`, `del(.[1], .[3])` | Delete array elements |
-| `del(.[n:m])`, `del(.[-n:])` | Delete slice range |
-| `{name, age}` | Object construction (shorthand) |
-| `{a: .foo, b: .bar}` | Object construction (rename / literal values) |
-| `[.foo, .bar]` | Array construction |
-
-**Logic & Control Flow**
-
-| Syntax | Description |
-|--------|-------------|
-| `expr \| expr` | Pipe |
-| `.foo == "val"`, `.foo != "val"`, `<`, `<=`, `>`, `>=` | Comparison |
-| `expr and expr`, `expr or expr`, `expr \| not` | Boolean operators — always return true/false |
-| `select(cond)` | Filter — emit input if truthy, nothing if falsy |
-| `if cond then expr [elif cond then expr]* [else expr] end` | Conditional — elif and else optional |
-| `try expr` / `try expr catch handler` | Suppress errors; `catch` receives the original JSON value when thrown via `error`, or a string for built-in errors |
-| `.foo // "default"` | Alternative — right if left is null/false |
-| `empty` | Produce zero outputs |
-| `"\(expr)"` | String interpolation — embed any expression in a string literal |
-| `isempty(expr)` | `true` if expr produces no outputs; `false` if it produces any |
-| `nth(n; gen)` | nth output of generator `gen` (0-indexed); no output if not enough |
-
-**Arithmetic**
-
-| Syntax | Description |
-|--------|-------------|
-| `expr + expr` | Numbers: sum; strings/arrays: concat; objects: merge (right wins); null: identity |
-| `expr - expr` | Numbers: subtract; arrays: difference (remove right's elements from left) |
-| `expr * expr` | Numbers: multiply; `"str" * n`: repeat string n times |
-| `expr / expr` | Numbers: divide; `"str" / "sep"`: split by separator |
-| `expr % expr` | Number modulo |
-| `add` | Reduce array: sum numbers, concat strings/arrays, merge objects |
-
-**Arrays**
-
-| Syntax | Description |
-|--------|-------------|
-| `map(expr)` | Apply expr to every element, collect results |
-| `flatten`, `flatten(n)` | Flatten nested arrays (n = max depth) |
-| `min` / `max` | Minimum / maximum element (numbers or strings) |
-| `min_by(f)` / `max_by(f)` | Element with min/max value of `f` |
-| `any` / `any(expr)` / `any(gen; cond)` | True if any element is truthy / matches expr / gen\|cond |
-| `all` / `all(expr)` / `all(gen; cond)` | True if all elements truthy / match expr / gen\|cond |
-| `first` / `last` | First/last element (or `first(expr)` / `last(expr)`) |
-| `limit(n; expr)` | First N outputs of expr |
-| `values` | Filter nulls — emit only non-null values |
-| `numbers`, `strings`, `arrays`, `objects`, `booleans`, `nulls`, `iterables`, `scalars` | Type filters |
-| `index(s)`, `rindex(s)`, `indices(s)` | First/last/all occurrences of value in string or array |
-| `has(key)`, `has(n)` | True if object has field / array has index |
-| `in(obj)` | Reverse membership: `"key" \| in({"key":1})` |
-
-**Strings**
-
-| Syntax | Description |
-|--------|-------------|
-| `split("s")` / `join("s")` | Split string by separator / join array with separator |
-| `ascii_downcase`, `ascii_upcase` | Case conversion |
-| `startswith("s")`, `endswith("s")` | Prefix/suffix test |
-| `ltrimstr("s")`, `rtrimstr("s")` | Strip prefix/suffix |
-| `@base64` / `@base64d` | Base64 encode/decode (standard and URL-safe, with JSON escape decoding) |
-| `@uri` / `@urid` | URL percent-encode / percent-decode |
-| `@html` | HTML-escape `&`, `<`, `>`, `'`, `"` |
-| `@csv` | Format array as a CSV line (strings double-quoted, quotes doubled) |
-| `@tsv` | Format array as a TSV line (tab/newline/backslash escaped) |
-| `@sh` | POSIX shell-quote a string |
-| `@text` / `tostring` | Strings pass through; non-strings serialized via `tojson` |
-
-**Objects**
-
-| Syntax | Description |
-|--------|-------------|
-| `to_entries` | `{"a":1}` → `[{"key":"a","value":1}]` |
-| `from_entries` | `[{"key":"a","value":1}]` → `{"a":1}` (also accepts `"name"`) |
-| `keys_unsorted` | Object keys in insertion order; array → indices |
-| `length` | String → char count; array/object → count; null → 0 |
-
-**Type & Inspection**
-
-| Syntax | Description |
-|--------|-------------|
-| `type` | Type name: `"string"`, `"number"`, `"object"`, `"array"`, `"boolean"`, `"null"` |
-| `tojson` / `@json` | Serialize any value as a JSON string |
-| `fromjson` | Parse a JSON string to its contained value |
-| `tonumber` | Numbers pass through; strings parsed as floats |
-| `null`, `true`, `false`, `"str"`, `123` | Literals |
-| `debug` | Print value to stderr, pass through unchanged |
-| `floor` / `ceil` / `round` / `nearbyint` | Numeric rounding |
-| `sqrt`, `fabs`, `atan` | Square root, absolute value, arctangent (1-arg) |
-| `log`, `log2`, `log10` | Natural / base-2 / base-10 logarithm |
-| `exp`, `exp2`, `exp10` | e^x, 2^x, 10^x |
-| `cbrt`, `logb` | Cube root; base-2 exponent |
-| `sin`, `cos`, `tan`, `asin`, `acos` | Trig functions (radians) |
-| `tgamma`, `lgamma` | Gamma Γ(x) and ln\|Γ(x)\| |
-| `j0`, `j1` | Bessel functions of first kind, orders 0 and 1 |
-| `contains(val)` | `true` if input recursively contains val (string substring, object key-value subset) |
-| `inside(val)` | Reverse: `a \| inside(b)` ≡ `b \| contains(a)` |
-| `error` | Throw input as error; `catch` receives the original JSON value |
+- **Access:** `.`, `.foo`, `.[0]`, `.[]`, `.[n:m]`, `.foo?`, chained access
+- **Modification:** `del(.foo)`, `del(.[n:m])`, `{name, a: .b}`, `[.a, .b]`
+- **Control flow:** `\|`, `select`, `if-elif-else`, `try-catch`, `//`, `empty`, `"\(expr)"`
+- **Arithmetic:** `+`, `-`, `*`, `/`, `%`, `add`, `floor`, `ceil`, `round`, `nearbyint`
+- **Math:** `sqrt`, `log`, `exp`, `sin`, `cos`, `atan`, `tgamma`, `j0`, and 15 more — all zero-alloc
+- **Arrays:** `map`, `flatten`, `min/max`, `any/all`, `first/last`, `limit`, `nth`, `isempty`, `values`, type filters, `index/indices`
+- **Strings:** `split/join`, `ascii_downcase/upcase`, `startswith/endswith`, `ltrimstr/rtrimstr`, `"\(expr)"` interpolation
+- **Format strings:** `@base64/d`, `@uri/d`, `@html`, `@csv`, `@tsv`, `@sh`, `@text`, `@json`
+- **Regex (Go RE2):** `test(re)` *(0 allocs)*, `match(re)`, `capture(re)`, `scan(re)`, `sub(re; s)`, `gsub(re; s)`
+- **Objects:** `to_entries`, `from_entries`, `keys_unsorted`, `length`, `has`, `in`, `contains`, `inside`
+- **Type:** `type`, `tojson/fromjson`, `tostring/tonumber`, `debug`, `error`
 
 ## Official jq test suite coverage
 
@@ -245,45 +145,43 @@ The 9 failures are all known, intentional differences — not bugs:
 - **3 (jq.test — architectural)**: Error message format (`"expected object for field access"` vs jq's verbose form); `try body catch h` catches errors from the entire callback chain not just the body (see CHANGELOG for details).
 - **3 (man.test)**: Object construction with multi-output iterator value; `==` uses `execSingle` on both operands; `[a, b | f]` parses as `[a, (b|f)]`.
 
-The 454 skipped tests cover operations outside fastjq's scope: recursive descent (`..`), `sort`/`group_by`/`unique`, path operations, `reduce`/`foreach`, string interpolation, regex, math builtins, date functions, `env`, and others listed in the [Limitations](#limitations) section.
+The skipped tests cover operations outside fastjq's scope: recursive descent (`..`), `sort`/`group_by`/`unique`, path operations, `reduce`/`foreach`, string interpolation (jq's `onig.test` regex tests use PCRE/Oniguruma syntax), math builtins, date functions, `env`, and others listed in the [Limitations](#limitations) section.
 
 ## Limitations
 
 fastjq is intentionally scope-limited. It will not grow into a full jq implementation.
 
 **`select` conditions must be single-valued.**
-Conditions using `and`/`or` work fine. Conditions using an iterator (e.g. `select(.items[] == "x")`) silently test only the first element. Use `any(.[]; . == "x")` instead.
-
-**`del` paths must be literal field, index, or slice expressions.**
-Dynamic deletion (`del(.items[])`, `del(.items[] | select(...))`) returns an error.
-Slice ranges (`del(.[2:4])`, `del(.[-2:])`) are supported.
+`select(.items[] == "x")` silently tests only the first element. Use `any(.[]; . == "x")` instead.
 
 **`.field` on `null` errors — use `.field?` for null-safe access.**
-In jq, `null | .field` returns `null`. In fastjq it errors. Missing fields return `null` and skip their child chain, but an explicitly `null` value in the middle of a chain will error. Use `.a?.b?` for full null-safety.
+`null | .field` errors in fastjq (jq returns null). Use `.a?.b?` for full null-safety.
 
 **`map(f)` / `[.[] | f]` allocates when `f` constructs new data.**
-`map(.name)` is 0 allocs (field access returns an input sub-slice). `map({name, price})` or `map(.a * .b)` allocate ~1 buffer per element — the array builder can't share scratch across multiple callback invocations without aliasing. fastjq still allocates 5–8x less than gojq on these queries.
+`map(.name)` is 0 allocs. `map({name, price})` allocates ~1 buffer per element. fastjq still uses 5–8x fewer allocations than gojq on these queries.
 
 **String escape sequences pass through unchanged.**
-fastjq does not normalise string escapes on output (`\r` stays `\r`, not `\u000d`). This is intentional — re-encoding every string byte-for-byte would violate the zero-copy constraint.
+fastjq does not normalise string escapes on output (`\r` stays `\r`, not `\u000d`). Re-encoding every string would violate the zero-copy constraint.
 
-**No string interpolation** (`"\(.field)"` is not supported).
+**Regex uses Go RE2, not PCRE/Oniguruma.**
+Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are unsupported. `test(re)` is 0-alloc; `match`/`capture` alloc one `[]int` on a hit; `scan`/`gsub` alloc per match. Replacement strings in `sub`/`gsub` are literals (no `\(...)` references).
+
+**`@format "template"` combined syntax not supported.**
+`@html "<b>\(.)</b>"` applies the format to each interpolated value — not yet implemented. Plain string interpolation `"\(.field)"` and standalone format strings (`@html`, `@csv`, `@sh`, etc.) both work fine.
+
+**try-catch catches errors from the full callback chain, not just the body.**
+`(try . catch h) | right` — if `right` errors, the try catches it. jq scopes the catch to the body only. Complex nested try patterns may behave differently.
+
+**`[a, b | f]` parses as `[a, (b|f)]`.**
+jq treats `[a, b | f]` as `[(a,b) | f]`. fastjq parses array elements independently, so `[true, false | not]` gives `[true, true]` not `[false, true]`.
 
 **No recursive descent** (`..|..` / `recurse`).
 
-**No regex** (`test`, `match`, `capture`, `scan`, `sub`, `gsub`).
+**No sorting, grouping, or deduplication** — `sort`, `sort_by`, `group_by`, `unique`, `unique_by` require O(n) auxiliary storage.
 
-**No sorting, grouping, or deduplication** — `sort`, `sort_by`, `group_by`, `unique`, `unique_by` all require O(n) auxiliary index structures, which violates the zero-alloc constraint.
+**Not yet implemented:** `path`, `getpath`, `setpath`, `delpaths`, `reduce`, `foreach`, `label-break`, variable binding (`as $x`), user-defined functions (`def`), `explode`/`implode`, `nan`/`infinite` constants, 2-arg math forms (`pow(x;y)`, `hypot(x;y)`, `atan(y;x)`).
 
-**No `path`, `getpath`, `setpath`, `delpaths`** — not yet implemented.
-
-**No `reduce` / `foreach` / `label-break` / variable binding** (`as $x`) / **user-defined functions** (`def`).
-
-**`nan` / `infinite` constants not supported** — they produce non-JSON output, violating the compact-JSON output constraint. All 1-arg math functions (`sqrt`, `sin`, `cos`, `log`, etc.) are supported; NaN/Inf *results* are output as `null`. 2-arg forms (`pow(x;y)`, `hypot(x;y)`, `atan(y;x)`) are not yet supported.
-
-**No Unicode codepoint conversion** (`explode`, `implode`).
-
-**Output is always compact JSON.** Input can be pretty-printed or compact. fastjq never panics — malformed input may produce wrong results but the process is always safe.
+**Output is always compact JSON.** fastjq never panics — malformed input may produce wrong results but the process is always safe.
 
 See [SYNTAX.md](docs/SYNTAX.md) for the full categorised roadmap of unimplemented operations.
 

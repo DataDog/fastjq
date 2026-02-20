@@ -4,6 +4,30 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — regex: test, match, capture, scan, sub, gsub (Go RE2)
+
+### Added
+
+Six regex operations using Go's RE2 engine (linear-time, immune to ReDoS).
+All patterns are compiled once at `Compile()` time — `Run()` never allocates for the engine.
+
+- **`test(re)`** / **`test(re; flags)`** — 0 allocs: `regexp.Match([]byte)` requires no heap for compiled patterns.
+- **`match(re)`** / **`match(re; flags)`** — returns full match object with `offset`, `length`, `string`, `captures`; 1 alloc on match (`[]int` from `FindSubmatchIndex`; unavoidable given Go's API). 0 allocs on miss.
+- **`capture(re)`** / **`capture(re; flags)`** — named captures as a flat JSON object; same alloc profile as `match`.
+- **`scan(re)`** / **`scan(re; flags)`** — streams all non-overlapping matches; no groups → JSON strings, with groups → JSON arrays. Allocates per match.
+- **`sub(re; "rep")`** — replaces the first match with a literal string. 1 alloc on match (`FindIndex []int`).
+- **`gsub(re; "rep")`** — replaces all matches with a literal string. Allocates per match.
+
+Flags supported: `i` (case-insensitive), `m` (multiline `^`/`$`), `s` (`.` matches `\n`). Named capture groups use `(?P<name>...)` RE2 syntax.
+
+### Tradeoffs
+
+- Go RE2 ≠ PCRE/Oniguruma: no backreferences, no lookahead/behind. The official `jq` uses Oniguruma; test patterns using PCRE features will fail to compile with a clear error at `Compile()` time.
+- Replacement strings in `sub`/`gsub` are literals. Capture group references (`\(.name)`) in replacements are not supported.
+- The jq official test suite (`jq.test`, `man.test`) does not have standalone regex tests for the Go port — those live in `onig.test` which uses PCRE syntax. Coverage is provided by `regex_alloc_test.go` and `compat_test.go`.
+
+---
+
 ## [Unreleased] — string interpolation, isempty, nth (295 → 309 passing)
 
 ### Added

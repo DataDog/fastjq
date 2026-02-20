@@ -2,6 +2,7 @@ package fastjq
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -110,6 +111,13 @@ const (
 	opStringInterp  // "\(expr)" string interpolation; elems=expressions, segs=literal segments
 	opIsEmpty       // isempty(expr) — true if expr produces no outputs
 	opNth           // nth(n; gen) — nth output of gen (0-indexed); left=n, child=gen
+	// Regex operations (Go RE2 engine — linear time, pattern compiled once at Compile())
+	opTest    // test(re) / test(re; flags)  — 0 allocs via re.Match
+	opMatchRe // match(re) / match(re; flags) — 1 alloc on match (FindSubmatchIndex []int)
+	opCapture // capture(re) / capture(re; flags) — 1 alloc on match
+	opScan    // scan(re) / scan(re; flags)   — allocs per match (multi-output)
+	opSub     // sub(re; "literal")           — replace first match
+	opGSub    // gsub(re; "literal")          — replace all matches
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -143,6 +151,7 @@ type op struct {
 	elems    []*op   // for opArrayConstruct, opStringInterp: expressions
 	segs     [][]byte     // for opStringInterp: literal segments between expressions
 	literal  []byte       // for opLiteral: raw JSON bytes
+	re       *regexp.Regexp // for regex ops (opTest/opMatchRe/opCapture/opScan/opSub/opGSub)
 	cmpOp    cmpOperator  // for opCompare: comparison operator
 	optional bool         // for opField/opIndex/opIterator: suppress errors
 }
@@ -886,6 +895,27 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opMathTgamma}, s[6:], nil
 	}
 
+	// Regex builtins — pattern compiled at parse time (Go RE2, linear-time matching).
+	// test(re) is 0-alloc; match/capture alloc one []int on a hit; scan/sub/gsub alloc per match.
+	if strings.HasPrefix(s, "test(") {
+		return parseRegexBuiltin(s[5:], opTest)
+	}
+	if strings.HasPrefix(s, "match(") {
+		return parseRegexBuiltin(s[6:], opMatchRe)
+	}
+	if strings.HasPrefix(s, "capture(") {
+		return parseRegexBuiltin(s[8:], opCapture)
+	}
+	if strings.HasPrefix(s, "scan(") {
+		return parseRegexBuiltin(s[5:], opScan)
+	}
+	if strings.HasPrefix(s, "sub(") {
+		return parseRegexWithReplacement(s[4:], opSub)
+	}
+	if strings.HasPrefix(s, "gsub(") {
+		return parseRegexWithReplacement(s[5:], opGSub)
+	}
+
 	// Dot expressions
 	if s[0] == '.' {
 		return parseDotExpr(s)
@@ -1606,6 +1636,133 @@ func parseTry(s string) (*op, string, error) {
 		}
 	}
 	return &op{typ: opTry, left: body, right: handler}, rest, nil
+}
+
+// parseRegexBuiltin parses test(re), match(re), capture(re), scan(re) —
+// all optionally accept a flags string as a second ';'-separated argument.
+// Supported flags: i (case-insensitive), m (multiline ^/$), s (dot-matches-newline).
+// The regexp is compiled once at Compile() time; Run() never allocates for the engine.
+// s starts after the opening '(' has been consumed.
+func parseRegexBuiltin(s string, typ opType) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 || s[0] != '"' {
+		return nil, s, fmt.Errorf("expected string pattern in regex builtin")
+	}
+	i := 1
+	for i < len(s) {
+		if s[i] == '\\' {
+			i += 2
+			continue
+		}
+		if s[i] == '"' {
+			break
+		}
+		i++
+	}
+	if i >= len(s) {
+		return nil, s, fmt.Errorf("unterminated pattern string in regex builtin")
+	}
+	pattern := s[1:i]
+	rest := strings.TrimSpace(s[i+1:])
+
+	// Optional '; "flags"' argument
+	if len(rest) > 0 && rest[0] == ';' {
+		rest = strings.TrimSpace(rest[1:])
+		if len(rest) == 0 || rest[0] != '"' {
+			return nil, rest, fmt.Errorf("regex flags must be a string")
+		}
+		j := 1
+		for j < len(rest) && rest[j] != '"' {
+			if rest[j] == '\\' {
+				j++
+			}
+			j++
+		}
+		if j >= len(rest) {
+			return nil, rest, fmt.Errorf("unterminated flags string in regex builtin")
+		}
+		flags := rest[1:j]
+		rest = strings.TrimSpace(rest[j+1:])
+		// Map jq flags to RE2 inline flags: i, m, s supported; g and x ignored.
+		var goFlags strings.Builder
+		for _, f := range flags {
+			switch f {
+			case 'i', 'm', 's':
+				goFlags.WriteRune(f)
+			}
+		}
+		if goFlags.Len() > 0 {
+			pattern = "(?" + goFlags.String() + ")" + pattern
+		}
+	}
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after regex builtin arguments")
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, rest[1:], fmt.Errorf("invalid regexp %q: %w", pattern, err)
+	}
+	return &op{typ: typ, re: re}, rest[1:], nil
+}
+
+// parseRegexWithReplacement parses sub(re; "literal") and gsub(re; "literal").
+// The pattern supports the same optional flags as parseRegexBuiltin.
+// The replacement is a literal string stored in node.field.
+// s starts after the opening '(' has been consumed.
+func parseRegexWithReplacement(s string, typ opType) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 || s[0] != '"' {
+		return nil, s, fmt.Errorf("expected pattern string in %v", typ)
+	}
+	i := 1
+	for i < len(s) {
+		if s[i] == '\\' {
+			i += 2
+			continue
+		}
+		if s[i] == '"' {
+			break
+		}
+		i++
+	}
+	if i >= len(s) {
+		return nil, s, fmt.Errorf("unterminated pattern string in %v", typ)
+	}
+	pattern := s[1:i]
+	rest := strings.TrimSpace(s[i+1:])
+
+	if len(rest) == 0 || rest[0] != ';' {
+		return nil, rest, fmt.Errorf("expected ';' between pattern and replacement in %v", typ)
+	}
+	rest = strings.TrimSpace(rest[1:])
+	if len(rest) == 0 || rest[0] != '"' {
+		return nil, rest, fmt.Errorf("expected replacement string in %v", typ)
+	}
+	j := 1
+	for j < len(rest) {
+		if rest[j] == '\\' {
+			j += 2
+			continue
+		}
+		if rest[j] == '"' {
+			break
+		}
+		j++
+	}
+	if j >= len(rest) {
+		return nil, rest, fmt.Errorf("unterminated replacement string in %v", typ)
+	}
+	replacement := rest[1:j]
+	rest = strings.TrimSpace(rest[j+1:])
+
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after %v arguments", typ)
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, rest[1:], fmt.Errorf("invalid regexp %q: %w", pattern, err)
+	}
+	return &op{typ: typ, re: re, field: replacement}, rest[1:], nil
 }
 
 // simplify optimizes the AST. Currently: removes identity from pipes.
