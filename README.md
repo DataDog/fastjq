@@ -126,6 +126,7 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `del(.foo)`, `del(.foo, .bar)` | Delete fields |
 | `del(.foo.bar)` | Delete nested field |
 | `del(.[0])`, `del(.[1], .[3])` | Delete array elements |
+| `del(.[n:m])`, `del(.[-n:])` | Delete slice range |
 | `{name, age}` | Object construction (shorthand) |
 | `{a: .foo, b: .bar}` | Object construction (rename / literal values) |
 | `[.foo, .bar]` | Array construction |
@@ -139,7 +140,7 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `expr and expr`, `expr or expr`, `expr \| not` | Boolean operators — always return true/false |
 | `select(cond)` | Filter — emit input if truthy, nothing if falsy |
 | `if cond then expr [elif cond then expr]* [else expr] end` | Conditional — elif and else optional |
-| `try expr` / `try expr catch handler` | Suppress errors; catch receives error message as string |
+| `try expr` / `try expr catch handler` | Suppress errors; `catch` receives the original JSON value when thrown via `error`, or a string for built-in errors |
 | `.foo // "default"` | Alternative — right if left is null/false |
 | `empty` | Produce zero outputs |
 
@@ -180,8 +181,13 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `ascii_downcase`, `ascii_upcase` | Case conversion |
 | `startswith("s")`, `endswith("s")` | Prefix/suffix test |
 | `ltrimstr("s")`, `rtrimstr("s")` | Strip prefix/suffix |
-| `@base64` / `@base64d` | Base64 encode/decode (handles standard and URL-safe variants) |
-| `@uri` | URL percent-encode (RFC 3986 unreserved chars pass through) |
+| `@base64` / `@base64d` | Base64 encode/decode (standard and URL-safe, with JSON escape decoding) |
+| `@uri` / `@urid` | URL percent-encode / percent-decode |
+| `@html` | HTML-escape `&`, `<`, `>`, `'`, `"` |
+| `@csv` | Format array as a CSV line (strings double-quoted, quotes doubled) |
+| `@tsv` | Format array as a TSV line (tab/newline/backslash escaped) |
+| `@sh` | POSIX shell-quote a string |
+| `@text` / `tostring` | Strings pass through; non-strings serialized via `tojson` |
 
 **Objects**
 
@@ -199,21 +205,13 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 | `type` | Type name: `"string"`, `"number"`, `"object"`, `"array"`, `"boolean"`, `"null"` |
 | `tojson` / `@json` | Serialize any value as a JSON string |
 | `fromjson` | Parse a JSON string to its contained value |
-| `tostring` / `@text` | Strings pass through; non-strings serialized via `tojson` |
 | `tonumber` | Numbers pass through; strings parsed as floats |
 | `null`, `true`, `false`, `"str"`, `123` | Literals |
 | `debug` | Print value to stderr, pass through unchanged |
-| `floor` | Round toward −∞ |
-| `ceil` | Round toward +∞ |
-| `round` | Round to nearest integer |
-| `contains(val)` | `true` if input recursively contains val (string substring, object subset) |
-| `inside(val)` | Reverse of `contains`: `a \| inside(b)` == `b \| contains(a)` |
-| `error` | Throw input as an error; caught by `try-catch` with the original JSON value |
-| `@html` | HTML-escape `<>&'"` in a string |
-| `@csv` | Format an array as a CSV line (strings double-quoted, quotes doubled) |
-| `@tsv` | Format an array as a TSV line (tab/newline/backslash escaped) |
-| `@sh` | Shell-quote a string (POSIX single-quote wrapping) |
-| `@urid` | Percent-decode a URI-encoded string |
+| `floor` / `ceil` / `round` | Numeric rounding (toward −∞ / +∞ / nearest) |
+| `contains(val)` | `true` if input recursively contains val (string substring, object key-value subset) |
+| `inside(val)` | Reverse: `a \| inside(b)` ≡ `b \| contains(a)` |
+| `error` | Throw input as error; `catch` receives the original JSON value |
 
 ## Official jq test suite coverage
 
