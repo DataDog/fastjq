@@ -40,17 +40,23 @@ Compared against [gojq](https://github.com/itchyny/gojq), the standard jq librar
 
 The speedup is largest on small inputs where gojq's marshal/unmarshal overhead dominates. On large inputs both engines scan bytes and fastjq is still 4–5x faster. The exception is small primitive integer arrays, where gojq's in-memory representation wins.
 
-### vs jq CLI (JSONL throughput, 100K lines, ~11MB, Apple M4 Max)
+### vs jq CLI (JSONL throughput, 100K lines, ~11MB, Apple M4 Max, jq 1.8.1)
 
-| Operation | jq | fastjq | Speedup |
-|-----------|-----|--------|---------|
-| `.` (identity) | 0.346s | 0.025s | **14x** |
-| `del(.field)` | 0.389s | 0.036s | **11x** |
-| `select(.f == "x")` | 0.368s | 0.030s | **12x** |
-| `select(.f \| ascii_downcase == "x")` | 0.650s | 0.036s | **18x** |
-| `select(has("field"))` | 0.364s | 0.031s | **12x** |
-| `.field` | 0.146s | 0.027s | **5x** |
-| `to_entries` | 0.714s | 0.039s | **18x** |
+| Operation | Input | jq (s) | fastjq (s) | Speedup |
+|-----------|-------|--------|------------|---------|
+| `.` (identity) | small | 0.344 | 0.025 | **14x** |
+| `.field` | small | 0.145 | 0.024 | **6x** |
+| `.field` | large (~16MB, 100 lines) | 0.088 | 0.023 | **4x** |
+| `del(.field)` | small | 0.369 | 0.036 | **10x** |
+| `{field_0, field_2}` (construct) | small | 0.268 | 0.051 | **5x** |
+| `select(.f == "x")` (all match) | small | 0.370 | 0.028 | **13x** |
+| `select(.f == "x")` (none match) | small | 0.138 | 0.027 | **5x** |
+| `.field // "default"` | small | 0.166 | 0.026 | **6x** |
+| `select(.f \| ascii_downcase == "x")` | small | 0.651 | 0.038 | **17x** |
+| `select(.f \| startswith("x"))` | small | 0.363 | 0.029 | **13x** |
+| `select(has("field"))` | small | 0.366 | 0.027 | **14x** |
+| `to_entries` | small | 0.717 | 0.040 | **18x** |
+| `keys_unsorted` | small | 0.247 | 0.029 | **9x** |
 
 See [BENCHMARKS.md](docs/BENCHMARKS.md) for the complete table.
 

@@ -273,31 +273,31 @@ BenchmarkGojq_Complex_EntryFilter-16        	  157388	      7742 ns/op	   11188 
 
 ## CLI Throughput: fastjq vs jq
 
-End-to-end JSONL throughput benchmarks comparing `fastjq-bench` (Go CLI using the fastjq library) against `jq` (C implementation, v1.8.1). Both read JSONL from stdin, apply a filter per line, write results to `/dev/null`. Median of 3 runs. Apple M4 Max.
+End-to-end JSONL throughput benchmarks comparing `fastjq-bench` (Go CLI using the fastjq library) against `jq` (C implementation, v1.8.1). Both read JSONL from stdin, apply a filter per line, write results to `/dev/null`. Median of 3 runs. Apple M4 Max. Updated 2026-02-20.
 
 | Operation | Input | jq (s) | fastjq (s) | Speedup |
 |-----------|-------|--------|-------------|---------|
-| Identity (`.`) | small (100K lines, ~11MB) | 0.346 | 0.025 | **13.8x** |
-| Field access (`.field_2`) | small | 0.146 | 0.027 | **5.4x** |
-| Field access (`.field_50`) | large (100 lines, ~16MB) | 0.088 | 0.025 | **3.5x** |
-| Delete field (`del(.field_2)`) | small | 0.389 | 0.036 | **10.8x** |
-| Object construction (`{field_0, field_2}`) | small | 0.251 | 0.048 | **5.2x** |
-| Select all match (`select(.field_2 == "xxx...")`) | small | 0.368 | 0.030 | **12.3x** |
-| Select none match (`select(.field_2 == "nope")`) | small | 0.138 | 0.031 | **4.5x** |
-| Alternative (`.field_2 // "default"`) | small | 0.170 | 0.027 | **6.3x** |
-| Case-insensitive select | small | 0.650 | 0.036 | **18.1x** |
-| Prefix filter (`startswith`) | small | 0.391 | 0.030 | **13.0x** |
-| Field existence (`has`) | small | 0.364 | 0.031 | **11.7x** |
-| `to_entries` | small | 0.714 | 0.039 | **18.3x** |
-| `keys_unsorted` | small | 0.245 | 0.031 | **7.9x** |
+| Identity (`.`) | small (100K lines, ~11MB) | 0.344 | 0.025 | **14x** |
+| Field access (`.field_2`) | small | 0.145 | 0.024 | **6x** |
+| Field access (`.field_50`) | large (100 lines, ~16MB) | 0.088 | 0.023 | **4x** |
+| Delete field (`del(.field_2)`) | small | 0.369 | 0.036 | **10x** |
+| Object construction (`{field_0, field_2}`) | small | 0.268 | 0.051 | **5x** |
+| Select all match (`select(.field_2 == "xxx...")`) | small | 0.370 | 0.028 | **13x** |
+| Select none match (`select(.field_2 == "nope")`) | small | 0.138 | 0.027 | **5x** |
+| Alternative (`.field_2 // "default"`) | small | 0.166 | 0.026 | **6x** |
+| Case-insensitive select (`ascii_downcase`) | small | 0.651 | 0.038 | **17x** |
+| Prefix filter (`startswith`) | small | 0.363 | 0.029 | **13x** |
+| Field existence (`has`) | small | 0.366 | 0.027 | **14x** |
+| `to_entries` | small | 0.717 | 0.040 | **18x** |
+| `keys_unsorted` | small | 0.247 | 0.029 | **9x** |
 
 ### Key Takeaways (CLI)
 
 - **4x–18x faster** than jq across all operations on real JSONL workloads
-- **Case-insensitive select (`ascii_downcase`) is 18x faster**: near-zero cost for the string transform
-- **`to_entries` is 18x faster**: zero-copy reformatting vs jq's full parse + marshal cycle
-- **Identity and deletion are 11–14x faster**: validates the zero-copy architecture at scale
-- **Even "large" objects (100KB each) show 3.5x speedup**: scanning advantage persists
+- **`to_entries` and `ascii_downcase` are 17–18x faster**: near-zero cost reformatting vs jq's parse + marshal cycle
+- **Identity and deletion are 10–14x faster**: validates the zero-copy architecture at scale
+- **Even "large" objects (100KB each, 100 lines) show 4x speedup**: scanning advantage persists
+- **Select (none match) is only 5x faster** — both engines scan the full document; fastjq's advantage is smaller here
 
 ### Reproducing
 
