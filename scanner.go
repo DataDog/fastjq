@@ -341,7 +341,33 @@ func jsonEqual(a, b []byte) bool {
 		return compareNumbers(a, b)
 	}
 
-	// Objects/arrays: byte-for-byte comparison (already tried above)
+	// Objects: order-independent key-value comparison.
+	// Every key in a must exist in b with an equal value, and both must have
+	// the same number of keys. Arrays still use byte comparison (order matters).
+	if aCh == '{' && bCh == '{' {
+		// Count b's keys first, then verify each of a's keys matches.
+		countB := 0
+		bCount := scanner{data: b}
+		bCount.objectIter(func(_ []byte, _, _ int) bool { countB++; return true })
+
+		countA := 0
+		equal := true
+		sa2 := scanner{data: a}
+		sa2.objectIter(func(key []byte, vStart, vEnd int) bool {
+			countA++
+			sb2 := scanner{data: b}
+			sb2.skipWhitespace()
+			bvStart, bvEnd := sb2.findField(key)
+			if bvStart == -1 || !jsonEqual(a[vStart:vEnd], b[bvStart:bvEnd]) {
+				equal = false
+				return false
+			}
+			return true
+		})
+		return equal && countA == countB
+	}
+
+	// Arrays and other types: byte-for-byte only (already tried above)
 	return false
 }
 
@@ -490,6 +516,123 @@ func evalCmpOp(op cmpOperator, a, b []byte) bool {
 		return cmp >= 0
 	}
 	return false
+}
+
+// bytesContainBytes reports whether haystack contains needle as a contiguous byte subsequence.
+func bytesContainBytes(haystack, needle []byte) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	if len(haystack) < len(needle) {
+		return false
+	}
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		if bytesEqual(haystack[i:i+len(needle)], needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// jsonContains reports whether haystack recursively contains needle
+// using jq's containment semantics:
+//   - string: haystack has needle as a raw-byte substring
+//   - object: every key-value pair in needle is present in haystack (recursively)
+//   - array:  every element of needle is contained in some element of haystack (recursively)
+//   - other:  exact equality (jsonEqual)
+func jsonContains(haystack, needle []byte) bool {
+	hs := trimWhitespace(haystack)
+	ns := trimWhitespace(needle)
+	if len(hs) == 0 || len(ns) == 0 {
+		return false
+	}
+	switch ns[0] {
+	case '"':
+		if hs[0] != '"' {
+			return false
+		}
+		hsc := scanner{data: hs}
+		nsc := scanner{data: ns}
+		return bytesContainBytes(hsc.readString(), nsc.readString())
+	case '{':
+		if hs[0] != '{' {
+			return false
+		}
+		ok := true
+		nsc := scanner{data: ns}
+		nsc.objectIter(func(nKey []byte, nValStart, nValEnd int) bool {
+			hsc := scanner{data: hs}
+			hValStart, hValEnd := hsc.findField(nKey)
+			if hValStart == -1 {
+				ok = false
+				return false
+			}
+			if !jsonContains(hs[hValStart:hValEnd], ns[nValStart:nValEnd]) {
+				ok = false
+				return false
+			}
+			return true
+		})
+		return ok
+	case '[':
+		if hs[0] != '[' {
+			return false
+		}
+		ok := true
+		nsc := scanner{data: ns}
+		nsc.arrayIter(func(_ int, nStart, nEnd int) bool {
+			needleElem := ns[nStart:nEnd]
+			found := false
+			hsc := scanner{data: hs}
+			hsc.arrayIter(func(_ int, hStart, hEnd int) bool {
+				if jsonContains(hs[hStart:hEnd], needleElem) {
+					found = true
+					return false
+				}
+				return true
+			})
+			if !found {
+				ok = false
+				return false
+			}
+			return true
+		})
+		return ok
+	default:
+		return jsonEqual(haystack, needle)
+	}
+}
+
+// byteOffsetToCodepointOffset converts a byte offset within raw JSON string
+// content (as returned by readString) to the equivalent Unicode codepoint
+// offset. JSON escape sequences (\n, \t, \uXXXX etc.) count as 1 codepoint
+// each. Multi-byte UTF-8 sequences count as 1 codepoint.
+func byteOffsetToCodepointOffset(content []byte, byteOff int) int {
+	cp := 0
+	i := 0
+	for i < byteOff && i < len(content) {
+		if content[i] == '\\' && i+1 < len(content) {
+			if content[i+1] == 'u' {
+				i += 6
+			} else {
+				i += 2
+			}
+		} else {
+			b := content[i]
+			switch {
+			case b < 0x80:
+				i++
+			case b < 0xE0:
+				i += 2
+			case b < 0xF0:
+				i += 3
+			default:
+				i += 4
+			}
+		}
+		cp++
+	}
+	return cp
 }
 
 // trimWhitespace trims leading whitespace from a byte slice.

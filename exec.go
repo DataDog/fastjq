@@ -1,6 +1,7 @@
 package fastjq
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -14,6 +15,15 @@ var (
 	errExpectedIterable    = errors.New("expected array or object for .[]")
 	errBreak               = errors.New("stop iteration") // sentinel for first/limit
 )
+
+// jsonError carries a JSON value thrown by the `error` builtin.
+// jq's catch handler receives the actual JSON value, not a string representation.
+// This is only allocated on exceptional (error-throwing) code paths.
+type jsonError struct {
+	payload []byte
+}
+
+func (e *jsonError) Error() string { return string(e.payload) }
 
 // bTrue / bFalse / bNull are package-level literals returned directly when buf == nil,
 // avoiding heap allocation for boolean and null results in zero-scratch evaluation paths.
@@ -146,7 +156,18 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(result)
 	case opPlus:
-		return execPlus(node, input, buf, fn)
+		// Use execMulti for left side to support generators as operands (.[] + x etc.)
+		return execMulti(node.left, input, nil, func(leftVal []byte) error {
+			rightVal, err := execSingle(node.right, input, nil)
+			if err != nil {
+				return err
+			}
+			result, err := execPlusValues(leftVal, rightVal, buf)
+			if err != nil {
+				return err
+			}
+			return fn(result)
+		})
 	case opFlatten:
 		result, err := execFlattenInto(input, buf, node)
 		if err != nil {
@@ -156,7 +177,11 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opSplit:
 		return fn(execSplit(input, buf, node.field))
 	case opJoin:
-		return fn(execJoin(input, buf, node.field))
+		result, joinErr := execJoin(input, buf, node.field)
+		if joinErr != nil {
+			return joinErr
+		}
+		return fn(result)
 	case opAsciiDowncase:
 		result, err := execAsciiCase(input, buf, false)
 		if err != nil {
@@ -188,11 +213,18 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opAlternative:
 		return execAlternative(node, input, buf, fn)
 	case opMinus, opMul, opDiv, opMod:
-		result, err := execArith(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
+		// Use execMulti for left side to support generators as operands (.[] % 7 etc.)
+		return execMulti(node.left, input, nil, func(leftVal []byte) error {
+			rightVal, err := execSingle(node.right, input, nil)
+			if err != nil {
+				return err
+			}
+			result, err := execArithValues(node.typ, leftVal, rightVal, buf)
+			if err != nil {
+				return err
+			}
+			return fn(result)
+		})
 	case opMin:
 		result, err := execMinMax(input, buf, node, false)
 		if err != nil {
@@ -232,20 +264,28 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		if node.right == nil {
 			return nil
 		}
-		// Build error message as JSON string (errors are exceptional, small alloc is fine)
-		msg := make([]byte, 0, 64)
-		msg = append(msg, '"')
-		for _, b := range []byte(err.Error()) {
-			if b == '"' {
-				msg = append(msg, '\\', '"')
-			} else if b == '\\' {
-				msg = append(msg, '\\', '\\')
-			} else {
-				msg = append(msg, b)
+		// Determine what to pass to the catch handler.
+		// If the error was thrown by jq's `error` builtin, pass the raw JSON value.
+		// Otherwise, wrap the error message as a JSON string.
+		var catchInput []byte
+		if je, ok := err.(*jsonError); ok {
+			catchInput = je.payload
+		} else {
+			// Build error message as JSON string (exceptional path, alloc is fine)
+			msg := make([]byte, 0, 64)
+			msg = append(msg, '"')
+			for _, b := range []byte(err.Error()) {
+				if b == '"' {
+					msg = append(msg, '\\', '"')
+				} else if b == '\\' {
+					msg = append(msg, '\\', '\\')
+				} else {
+					msg = append(msg, b)
+				}
 			}
+			catchInput = append(msg, '"')
 		}
-		msg = append(msg, '"')
-		return execMulti(node.right, msg, buf, fn)
+		return execMulti(node.right, catchInput, buf, fn)
 	case opToJSON:
 		return fn(execToJSON(input, buf))
 	case opFromJSON:
@@ -258,6 +298,69 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(execToString(input, buf))
 	case opToNumber:
 		result, err := execToNumber(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opContains:
+		argVal, err := execSingle(node.child, input, nil)
+		if err != nil {
+			return fn(append(buf, "false"...))
+		}
+		var contains bool
+		if node.optional { // inside(b): b contains input
+			contains = jsonContains(argVal, input)
+		} else { // contains(b): input contains b
+			contains = jsonContains(input, argVal)
+		}
+		if contains {
+			return fn(append(buf, "true"...))
+		}
+		return fn(append(buf, "false"...))
+	case opFloor:
+		return fn(execRoundMode(input, buf, roundFloor))
+	case opCeil:
+		return fn(execRoundMode(input, buf, roundCeil))
+	case opRound:
+		return fn(execRoundMode(input, buf, roundNearest))
+	case opError:
+		// Throw the input as a jsonError, preserving the JSON value so that
+		// try-catch handlers receive the actual value (not a string representation).
+		payload := append([]byte(nil), trimWhitespace(input)...)
+		return &jsonError{payload: payload}
+	case opGenerator:
+		for _, elem := range node.elems {
+			if err := execMulti(elem, input, buf, fn); err != nil {
+				return err
+			}
+		}
+		return nil
+	case opHTMLEncode:
+		result, err := execHTMLEncode(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opCSVEncode:
+		result, err := execCSVEncode(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opTSVEncode:
+		result, err := execTSVEncode(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opShEncode:
+		result, err := execShEncode(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opURIDecode:
+		result, err := execURIDecode(input, buf)
 		if err != nil {
 			return err
 		}
@@ -404,7 +507,7 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opSplit:
 		return execSplit(input, buf, node.field), nil
 	case opJoin:
-		return execJoin(input, buf, node.field), nil
+		return execJoin(input, buf, node.field)
 	case opAsciiDowncase:
 		return execAsciiCase(input, buf, false)
 	case opAsciiUpcase:
@@ -425,6 +528,9 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execMinMax(input, buf, node, true)
 	case opURIEncode:
 		return execURIEncode(input, buf)
+	case opAlternative:
+		// Fall through to execMulti — alternative needs multi-output left side support
+		return exec(node, input, buf)
 	case opTry:
 		// Fall through to execMulti for try (handles errBreak propagation correctly)
 		return exec(node, input, buf)
@@ -645,21 +751,37 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 
 	switch s.data[s.pos] {
 	case '[':
+		var caught error
 		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
 			if err := fn(input[elemStart:elemEnd]); err != nil {
+				// Propagate jsonError (from `error` builtin) and errBreak so
+				// try-catch and limit/first work correctly. Regular errors
+				// (e.g. field access on wrong type) are dropped, preserving
+				// the existing lenient multi-output behaviour.
+				if _, ok := err.(*jsonError); ok {
+					caught = err
+				} else if err == errBreak {
+					caught = err
+				}
 				return false
 			}
 			return true
 		})
-		return nil
+		return caught
 	case '{':
+		var caught error
 		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
 			if err := fn(input[valueStart:valueEnd]); err != nil {
+				if _, ok := err.(*jsonError); ok {
+					caught = err
+				} else if err == errBreak {
+					caught = err
+				}
 				return false
 			}
 			return true
 		})
-		return nil
+		return caught
 	default:
 		if node.optional {
 			return nil
@@ -752,15 +874,25 @@ func execDeleteArray(node *op, input []byte, buf []byte, s *scanner) ([]byte, er
 
 	for i := range node.fields {
 		d := &node.fields[i]
-		if d.typ != opIndex {
-			return nil, fmt.Errorf("del() argument must be an index access for array input")
-		}
-		idx := d.index
-		if idx < 0 {
-			idx = length + idx
-		}
-		if idx >= 0 && idx < length {
-			deleteSet[idx] = true
+		switch d.typ {
+		case opIndex:
+			idx := d.index
+			if idx < 0 {
+				idx = length + idx
+			}
+			if idx >= 0 && idx < length {
+				deleteSet[idx] = true
+			}
+		case opSlice:
+			start, end, err := resolveDelSliceBounds(d, input, length)
+			if err != nil {
+				return nil, err
+			}
+			for j := start; j < end; j++ {
+				deleteSet[j] = true
+			}
+		default:
+			return nil, fmt.Errorf("del() argument must be an index or slice access for array input")
 		}
 	}
 
@@ -781,6 +913,57 @@ func execDeleteArray(node *op, input []byte, buf []byte, s *scanner) ([]byte, er
 
 	buf = append(buf, ']')
 	return buf, nil
+}
+
+// resolveDelSliceBounds evaluates the start/end bounds of an opSlice node
+// against the given array length, applying the same clamping rules as execSlice.
+func resolveDelSliceBounds(node *op, input []byte, length int) (start, end int, err error) {
+	start = 0
+	end = length
+	if node.left != nil {
+		sv, e := execSingle(node.left, input, nil)
+		if e != nil {
+			return 0, 0, e
+		}
+		f, ok := parseJSONFloat(sv)
+		if !ok {
+			return 0, 0, fmt.Errorf("slice index must be a number")
+		}
+		start = int(f)
+		if start < 0 {
+			start += length
+		}
+		if start < 0 {
+			start = 0
+		}
+		if start > length {
+			start = length
+		}
+	}
+	if node.right != nil {
+		sv, e := execSingle(node.right, input, nil)
+		if e != nil {
+			return 0, 0, e
+		}
+		f, ok := parseJSONFloat(sv)
+		if !ok {
+			return 0, 0, fmt.Errorf("slice index must be a number")
+		}
+		end = int(f)
+		if end < 0 {
+			end += length
+		}
+		if end < 0 {
+			end = 0
+		}
+		if end > length {
+			end = length
+		}
+	}
+	if start > end {
+		start = end
+	}
+	return start, end, nil
 }
 
 // execPipeMulti runs left, then feeds each result into right.
@@ -838,6 +1021,10 @@ func execArrayConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 			return nil
 		})
 		if err != nil {
+			// Propagate jsonErrors unwrapped so try-catch receives the original value.
+			if _, ok := err.(*jsonError); ok {
+				return nil, err
+			}
 			return nil, fmt.Errorf("in array construction: %w", err)
 		}
 	}
@@ -1042,6 +1229,17 @@ func execLengthSingle(input []byte, buf []byte) ([]byte, error) {
 	case 'n': // null
 		return appendInt(buf, 0), nil
 	default:
+		// Number: return absolute value (|n|), matching jq semantics.
+		if isNumberByte(s.data[s.pos]) {
+			f, ok := parseJSONFloat(input)
+			if ok {
+				abs := math.Abs(f)
+				if abs == math.Trunc(abs) && !math.IsInf(abs, 0) && !math.IsNaN(abs) {
+					return appendInt(buf, int(abs)), nil
+				}
+				return strconv.AppendFloat(buf, abs, 'g', -1, 64), nil
+			}
+		}
 		return appendInt(buf, 0), nil
 	}
 }
@@ -1234,7 +1432,10 @@ func execLimit(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fmt.Errorf("limit: count must be a number")
 	}
 	n := int(nf)
-	if n <= 0 {
+	if n < 0 {
+		return fmt.Errorf("limit doesn't support negative count")
+	}
+	if n == 0 {
 		return nil
 	}
 	count := 0
@@ -1310,27 +1511,54 @@ func execAdd(input []byte, buf []byte, fn func([]byte) error) error {
 			return true
 		})
 		buf = append(buf, ']')
-	case '{': // object merge (last-wins for duplicate keys — append all, JSON consumers handle)
-		buf = append(buf, '{')
-		first := true
+	case '{': // object merge (last-wins, first-occurrence key order)
+		// Collect all object byte slices (allocates a small slice of pointers).
+		var objects [][]byte
 		s.arrayIter(func(_ int, oStart, oEnd int) bool {
 			es := scanner{data: input[oStart:oEnd]}
 			es.skipWhitespace()
 			if es.pos < len(es.data) && es.data[es.pos] == '{' {
-				es.objectIter(func(key []byte, vStart, vEnd int) bool {
-					if !first {
-						buf = append(buf, ',')
-					}
-					first = false
-					buf = append(buf, '"')
-					buf = append(buf, key...)
-					buf = append(buf, '"', ':')
-					buf = append(buf, input[oStart:oEnd][vStart:vEnd]...)
-					return true
-				})
+				objects = append(objects, input[oStart:oEnd])
 			}
 			return true
 		})
+		buf = append(buf, '{')
+		first := true
+		// Iterate keys in first-occurrence order: for each key in objects[0], then
+		// keys in objects[1] not already in objects[0], etc. For each key, emit the
+		// value from the LAST object that contains it.
+		for i, obj := range objects {
+			os := scanner{data: obj}
+			os.objectIter(func(key []byte, vStart, vEnd int) bool {
+				// Only emit from first occurrence of this key
+				for j := 0; j < i; j++ {
+					if objectContainsKey(objects[j], key) {
+						return true // already emitted from an earlier object
+					}
+				}
+				// Find the LAST value for this key across all objects
+				lastVal := obj[vStart:vEnd]
+				for j := i + 1; j < len(objects); j++ {
+					lvs, lve := func() (int, int) {
+						ls := scanner{data: objects[j]}
+						ls.skipWhitespace()
+						return ls.findField(key)
+					}()
+					if lvs != -1 {
+						lastVal = objects[j][lvs:lve]
+					}
+				}
+				if !first {
+					buf = append(buf, ',')
+				}
+				first = false
+				buf = append(buf, '"')
+				buf = append(buf, key...)
+				buf = append(buf, '"', ':')
+				buf = append(buf, lastVal...)
+				return true
+			})
+		}
 		buf = append(buf, '}')
 	default: // numeric sum
 		sum := 0.0
@@ -1360,6 +1588,9 @@ func execFlattenInto(input []byte, buf []byte, node *op) ([]byte, error) {
 		d, ok := parseJSONFloat(depthVal)
 		if !ok {
 			return nil, fmt.Errorf("flatten: depth must be a number")
+		}
+		if d < 0 {
+			return nil, fmt.Errorf("flatten depth must not be negative")
 		}
 		maxDepth = int(d)
 	}
@@ -1450,19 +1681,40 @@ func execSplit(input []byte, buf []byte, sep string) []byte {
 
 // execJoin joins a JSON array of strings/numbers/nulls with a separator.
 // Returns a JSON string. Non-array input returns null.
-func execJoin(input []byte, buf []byte, sep string) []byte {
+// Errors on objects or arrays in the input.
+func execJoin(input []byte, buf []byte, sep string) ([]byte, error) {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
-		return append(buf, "null"...)
+		return append(buf, "null"...), nil
 	}
 	buf = append(buf, '"')
 	first := true
+	var joinErr error
 	s.arrayIter(func(_ int, start, end int) bool {
 		elem := scanner{data: input[start:end]}
 		elem.skipWhitespace()
 		if elem.pos >= len(elem.data) {
 			return true
+		}
+		switch elem.data[elem.pos] {
+		case '{', '[': // object or array — error
+			elemType := "object"
+			if elem.data[elem.pos] == '[' {
+				elemType = "array"
+			}
+			// Build accumulated string content for error: buf[1:] (skip leading '"') + pending sep
+			accContent := string(buf[1:])
+			if !first {
+				accContent += sep
+			}
+			rawElem := string(input[start:end])
+			// jq truncates element representation to 14 chars total (11 + "...")
+			if len(rawElem) > 14 {
+				rawElem = rawElem[:11] + "..."
+			}
+			joinErr = fmt.Errorf("string (%q) and %s (%s) cannot be added", accContent, elemType, rawElem)
+			return false // stop iteration
 		}
 		// Add separator between elements
 		if !first {
@@ -1478,8 +1730,11 @@ func execJoin(input []byte, buf []byte, sep string) []byte {
 		}
 		return true
 	})
+	if joinErr != nil {
+		return nil, joinErr
+	}
 	buf = append(buf, '"')
-	return buf
+	return buf, nil
 }
 
 // execSlice implements .[n:m], .[:m], .[n:] on arrays and strings.
@@ -1626,7 +1881,12 @@ func execPlusSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return execPlusValues(leftVal, rightVal, buf)
+}
 
+// execPlusValues computes addition on pre-evaluated values.
+// Separated from execPlusSingle to support multi-output left sides (.[] + x etc.).
+func execPlusValues(leftVal, rightVal, buf []byte) ([]byte, error) {
 	ls := scanner{data: leftVal}
 	ls.skipWhitespace()
 	rs := scanner{data: rightVal}
@@ -1680,15 +1940,13 @@ func execPlusSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			buf = append(buf, ']')
 			return buf, nil
 		}
-	case '{': // object merge (right wins for duplicate keys)
+	case '{': // object merge (right wins for duplicate keys, left key order preserved)
 		if rs.pos < len(rs.data) && rs.data[rs.pos] == '{' {
 			buf = append(buf, '{')
 			first := true
-			// Emit left keys not overridden by right
+			// Emit ALL left keys — use right's value when it exists (right wins).
+			// This preserves left-object key order even when right overrides a value.
 			ls.objectIter(func(key []byte, vStart, vEnd int) bool {
-				if objectContainsKey(rightVal, key) {
-					return true // right wins, skip
-				}
 				if !first {
 					buf = append(buf, ',')
 				}
@@ -1696,11 +1954,22 @@ func execPlusSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 				buf = append(buf, '"')
 				buf = append(buf, key...)
 				buf = append(buf, '"', ':')
-				buf = append(buf, leftVal[vStart:vEnd]...)
+				// Look up this key in right; use its value if present.
+				rs2 := scanner{data: rightVal}
+				rs2.skipWhitespace()
+				rvStart, rvEnd := rs2.findField(key)
+				if rvStart != -1 {
+					buf = append(buf, rightVal[rvStart:rvEnd]...)
+				} else {
+					buf = append(buf, leftVal[vStart:vEnd]...)
+				}
 				return true
 			})
-			// Emit all right keys
+			// Emit right keys not already in left (new keys added by right)
 			rs.objectIter(func(key []byte, vStart, vEnd int) bool {
+				if objectContainsKey(leftVal, key) {
+					return true // already emitted with right's value in the left pass
+				}
 				if !first {
 					buf = append(buf, ',')
 				}
@@ -1728,16 +1997,16 @@ func execPlusSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 // execBase64Encode encodes a JSON string to base64.
-// Operates on the raw bytes between quotes (escape sequences encoded as-is).
-// This matches jq behaviour for ASCII strings; escape sequences may differ for
-// strings containing \uXXXX or other escapes.
+// The JSON string is first decoded (escape sequences resolved) before encoding,
+// matching jq's behaviour where "\n" becomes a newline byte in the base64 output.
 func execBase64Encode(input []byte, buf []byte) ([]byte, error) {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
 		return nil, fmt.Errorf("@base64 input must be a string")
 	}
-	content := s.readString() // raw bytes between quotes
+	raw := s.readString()                    // raw bytes between quotes
+	content := decodeJSONStringContent(nil, raw) // resolve escape sequences
 
 	buf = append(buf, '"')
 	for i := 0; i < len(content); i += 3 {
@@ -1980,25 +2249,31 @@ func execFindIndex(node *op, input []byte, buf []byte, last, all bool) []byte {
 		content := ss.readString()      // raw bytes of input string content
 		needle := sv.readString()       // raw bytes of search string content
 
+		// Empty needle: jq returns null for index/rindex, [] for indices
+		if len(needle) == 0 {
+			if all {
+				return append(buf, "[]"...)
+			}
+			return append(buf, "null"...)
+		}
+
 		if all {
 			buf = append(buf, '[')
 			first := true
-			pos := 0
-			for pos <= len(content)-len(needle) {
+			// Advance by 1 each iteration to find overlapping matches.
+			// Report codepoint positions (not byte positions) for Unicode correctness.
+			for pos := 0; pos <= len(content)-len(needle); pos++ {
 				if bytesEqual(content[pos:pos+len(needle)], needle) {
 					if !first {
 						buf = append(buf, ',')
 					}
 					first = false
-					buf = appendInt(buf, pos)
-					pos += len(needle)
-				} else {
-					pos++
+					buf = appendInt(buf, byteOffsetToCodepointOffset(content, pos))
 				}
 			}
 			return append(buf, ']')
 		}
-		// index or rindex
+		// index or rindex — report codepoint positions
 		found := -1
 		if last {
 			for i := len(content) - len(needle); i >= 0; i-- {
@@ -2018,9 +2293,60 @@ func execFindIndex(node *op, input []byte, buf []byte, last, all bool) []byte {
 		if found == -1 {
 			return append(buf, "null"...)
 		}
-		return appendInt(buf, found)
+		return appendInt(buf, byteOffsetToCodepointOffset(content, found))
 
-	case '[': // array: search for matching element
+	case '[': // array input
+		sv2 := scanner{data: searchVal}
+		sv2.skipWhitespace()
+		if sv2.pos < len(sv2.data) && sv2.data[sv2.pos] == '[' {
+			// searchVal is also an array — find all positions where the
+			// input array contains searchVal as a contiguous subsequence.
+			var needle [][]byte
+			sv2.arrayIter(func(_ int, start, end int) bool {
+				needle = append(needle, searchVal[start:end])
+				return true
+			})
+			if len(needle) == 0 {
+				if all {
+					return append(buf, "[]"...)
+				}
+				return append(buf, "null"...)
+			}
+			var elems [][]byte
+			ss.arrayIter(func(_ int, start, end int) bool {
+				elems = append(elems, input[start:end])
+				return true
+			})
+			if all {
+				buf = append(buf, '[')
+				first := true
+				for i := 0; i <= len(elems)-len(needle); i++ {
+					if arraySubseqMatch(elems[i:], needle) {
+						if !first {
+							buf = append(buf, ',')
+						}
+						first = false
+						buf = appendInt(buf, i)
+					}
+				}
+				return append(buf, ']')
+			}
+			found := -1
+			for i := 0; i <= len(elems)-len(needle); i++ {
+				if arraySubseqMatch(elems[i:], needle) {
+					if last {
+						found = i
+					} else {
+						return appendInt(buf, i)
+					}
+				}
+			}
+			if found == -1 {
+				return append(buf, "null"...)
+			}
+			return appendInt(buf, found)
+		}
+		// searchVal is a scalar — search for matching element
 		if all {
 			buf = append(buf, '[')
 			first := true
@@ -2063,6 +2389,19 @@ func execFindIndex(node *op, input []byte, buf []byte, last, all bool) []byte {
 		return append(buf, "[]"...)
 	}
 	return append(buf, "null"...)
+}
+
+// arraySubseqMatch reports whether arr starts with all elements equal to needle.
+func arraySubseqMatch(arr, needle [][]byte) bool {
+	if len(arr) < len(needle) {
+		return false
+	}
+	for i, n := range needle {
+		if !jsonEqual(arr[i], n) {
+			return false
+		}
+	}
+	return true
 }
 
 // execKeysUnsorted returns object keys (insertion order) or array indices as a JSON array.
@@ -2332,50 +2671,82 @@ func execHas(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	return fn(boolResult(buf, vs != -1))
 }
 
+// isSingleOutputOp reports whether op always produces exactly one output.
+// Used by execIf and execAlternative to avoid closure allocation in the common case.
+func isSingleOutputOp(o *op) bool {
+	switch o.typ {
+	case opIdentity, opField, opIndex, opLiteral, opCompare, opAnd, opOr, opNot,
+		opLength, opHas, opIn, opSlice, opPlus, opMinus, opMul, opDiv, opMod,
+		opAdd, opFlatten, opSelect, opAlternative, opTypeBuiltin, opToEntries,
+		opFromEntries, opToJSON, opFromJSON, opToString, opToNumber,
+		opBase64, opBase64D, opAsciiDowncase, opAsciiUpcase,
+		opStartsWith, opEndsWith, opSplit, opJoin, opURIEncode,
+		opDebug:
+		return true
+	case opPipe:
+		// Pipe is single-output if both sides are
+		return isSingleOutputOp(o.left) && isSingleOutputOp(o.right)
+	default:
+		return false
+	}
+}
+
 // execIf evaluates cond; if truthy runs the then-branch, otherwise the else-branch.
 // If no else-branch is present (child==nil), the else defaults to identity.
+// Uses execMulti for the condition so that empty conditions produce no outputs,
+// and multiple condition outputs each independently select their branch.
 func execIf(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	condVal, err := execSingle(node.left, input, buf)
+	// Fast path for single-output conditions (common case): avoid closure allocation.
+	if isSingleOutputOp(node.left) {
+		condVal, err := execSingle(node.left, input, nil)
+		if err != nil {
+			return err
+		}
+		if !isFalsy(condVal) {
+			return execMulti(node.right, input, buf, fn)
+		}
+		if node.child != nil {
+			return execMulti(node.child, input, buf, fn)
+		}
+		return fn(input)
+	}
+	return execMulti(node.left, input, nil, func(condVal []byte) error {
+		if !isFalsy(condVal) {
+			return execMulti(node.right, input, buf, fn)
+		}
+		if node.child != nil {
+			return execMulti(node.child, input, buf, fn)
+		}
+		// default else: identity
+		return fn(input)
+	})
+}
+
+// execAlternative collects all truthy outputs from left; if none, evaluates right.
+// jq semantics: (null, false, 3) // 18 → 3 (truthy outputs pass through).
+//               (null, false) // 18 → 18 (no truthy outputs, use right).
+func execAlternative(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	anyTruthy := false
+	err := execMulti(node.left, input, buf, func(result []byte) error {
+		if isFalsy(result) {
+			return nil // skip falsy outputs
+		}
+		anyTruthy = true
+		return fn(result)
+	})
 	if err != nil {
 		return err
 	}
-	if !isFalsy(condVal) {
+	if !anyTruthy {
+		// No truthy outputs from left — use right side
 		return execMulti(node.right, input, buf, fn)
 	}
-	if node.child != nil {
-		return execMulti(node.child, input, buf, fn)
-	}
-	// default else: identity
-	return fn(input)
+	return nil
 }
 
-// execAlternative tries left; if result is falsy, evaluates right instead.
-func execAlternative(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	// Fast path for single-result left expressions (common case)
-	result, err := execSingle(node.left, input, buf)
-	if err != nil {
-		return err
-	}
-	if !isFalsy(result) {
-		return fn(result)
-	}
-	// Left was falsy — evaluate right
-	return execMulti(node.right, input, buf, fn)
-}
-
-// execArith implements binary arithmetic: -, *, /, %.
-// Both operands are evaluated with nil scratch (zero-alloc sub-slices).
-// Supports: number op number, array - array (difference), string * n (repeat), string / string (split).
-func execArith(node *op, input []byte, buf []byte) ([]byte, error) {
-	leftVal, err := execSingle(node.left, input, nil)
-	if err != nil {
-		return nil, err
-	}
-	rightVal, err := execSingle(node.right, input, nil)
-	if err != nil {
-		return nil, err
-	}
-
+// execArithValues computes a binary arithmetic operation on pre-evaluated values.
+// This is the core logic, separated from operand evaluation to support multi-output left sides.
+func execArithValues(typ opType, leftVal, rightVal, buf []byte) ([]byte, error) {
 	ls := scanner{data: leftVal}
 	ls.skipWhitespace()
 	rs := scanner{data: rightVal}
@@ -2402,7 +2773,7 @@ func execArith(node *op, input []byte, buf []byte) ([]byte, error) {
 		rf, rok = parseJSONFloat(rightVal)
 	}
 
-	switch node.typ {
+	switch typ {
 	case opMinus:
 		if lok && rok {
 			return appendNumber(buf, lf-rf), nil
@@ -2418,28 +2789,49 @@ func execArith(node *op, input []byte, buf []byte) ([]byte, error) {
 		if lok && rok {
 			return appendNumber(buf, lf*rf), nil
 		}
-		// string * n: repeat string n times; string * 0 or negative → null
+		// string * n or n * string: repeat string n times; negative → null, 0 or 0<n<1 → ""
+		var strVal []byte
+		var numF float64
 		if ls.pos < len(ls.data) && ls.data[ls.pos] == '"' && rok {
-			n := int(rf)
-			if n <= 0 {
+			strVal = leftVal
+			numF = rf
+		} else if rs.pos < len(rs.data) && rs.data[rs.pos] == '"' && lok {
+			strVal = rightVal
+			numF = lf
+		}
+		if strVal != nil {
+			if numF < 0 {
+				// negative: null
 				if buf == nil {
 					return bNull, nil
 				}
 				return append(buf, "null"...), nil
 			}
-			content := ls.readString()
+			n := int(numF) // floor
+			if n == 0 {
+				return append(buf, `""`...), nil
+			}
+			sv := scanner{data: strVal}
+			sv.skipWhitespace()
+			strContent := sv.readString()
 			buf = append(buf, '"')
 			for i := 0; i < n; i++ {
-				buf = append(buf, content...)
+				buf = append(buf, strContent...)
 			}
 			return append(buf, '"'), nil
+		}
+		// object * object: recursive merge
+		if ls.pos < len(ls.data) && ls.data[ls.pos] == '{' &&
+			rs.pos < len(rs.data) && rs.data[rs.pos] == '{' {
+			return execObjectMerge(leftVal, rightVal, buf), nil
 		}
 		return nil, fmt.Errorf("cannot multiply %q and %q", leftVal, rightVal)
 
 	case opDiv:
 		if lok && rok {
 			if rf == 0 {
-				return nil, fmt.Errorf("cannot divide %q by zero", leftVal)
+				return nil, fmt.Errorf("number (%s) and number (%s) cannot be divided because the divisor is zero",
+					string(leftVal), string(rightVal))
 			}
 			return appendNumber(buf, lf/rf), nil
 		}
@@ -2454,7 +2846,8 @@ func execArith(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opMod:
 		if lok && rok {
 			if rf == 0 {
-				return nil, fmt.Errorf("cannot modulo %q by zero", leftVal)
+				return nil, fmt.Errorf("number (%s) and number (%s) cannot be divided (remainder) because the divisor is zero",
+					string(leftVal), string(rightVal))
 			}
 			// integer modulo when both operands are integral
 			li, ri := int64(lf), int64(rf)
@@ -2465,7 +2858,94 @@ func execArith(node *op, input []byte, buf []byte) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("cannot modulo %q by %q", leftVal, rightVal)
 	}
-	return nil, fmt.Errorf("unknown arithmetic op %d", node.typ)
+	return nil, fmt.Errorf("unknown arithmetic op %d", typ)
+}
+
+// execArith implements binary arithmetic: -, *, /, %.
+// Both operands are evaluated with nil scratch (zero-alloc sub-slices).
+// Supports: number op number, array - array (difference), string * n (repeat), string / string (split).
+func execArith(node *op, input []byte, buf []byte) ([]byte, error) {
+	leftVal, err := execSingle(node.left, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	rightVal, err := execSingle(node.right, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	return execArithValues(node.typ, leftVal, rightVal, buf)
+}
+
+// execObjectMerge performs a recursive merge of two JSON objects (obj1 * obj2).
+// Key ordering: all left keys first (using right value if present, recursively merging if both objects),
+// then right-only keys appended at end.
+func execObjectMerge(left, right, buf []byte) []byte {
+	buf = append(buf, '{')
+	first := true
+
+	ls := scanner{data: left}
+	ls.skipWhitespace()
+	rs := scanner{data: right}
+	rs.skipWhitespace()
+
+	// Pass 1: emit all left keys (with merged/overridden values)
+	ls.objectIter(func(key []byte, lvStart, lvEnd int) bool {
+		leftVal := left[lvStart:lvEnd]
+		// Check if right has this key
+		rls := scanner{data: right}
+		rls.skipWhitespace()
+		rvs, rve := rls.findField(key)
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = append(buf, '"')
+		buf = append(buf, key...)
+		buf = append(buf, '"', ':')
+		if rvs == -1 {
+			// Right doesn't have this key — use left value
+			buf = append(buf, leftVal...)
+		} else {
+			rightVal := right[rvs:rve]
+			// Both have the key — check if both values are objects (recursive merge)
+			lv := scanner{data: leftVal}
+			lv.skipWhitespace()
+			rv := scanner{data: rightVal}
+			rv.skipWhitespace()
+			if lv.pos < len(lv.data) && lv.data[lv.pos] == '{' &&
+				rv.pos < len(rv.data) && rv.data[rv.pos] == '{' {
+				buf = execObjectMerge(leftVal, rightVal, buf)
+			} else {
+				// Right wins
+				buf = append(buf, rightVal...)
+			}
+		}
+		return true
+	})
+
+	// Pass 2: emit right-only keys (keys not in left)
+	rs.objectIter(func(key []byte, rvStart, rvEnd int) bool {
+		rightVal := right[rvStart:rvEnd]
+		// Skip if left has this key (already emitted in pass 1)
+		lls := scanner{data: left}
+		lls.skipWhitespace()
+		lvs, _ := lls.findField(key)
+		if lvs != -1 {
+			return true // already handled
+		}
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = append(buf, '"')
+		buf = append(buf, key...)
+		buf = append(buf, '"', ':')
+		buf = append(buf, rightVal...)
+		return true
+	})
+
+	buf = append(buf, '}')
+	return buf
 }
 
 // execArrayDiff returns elements of left that do not appear in right (O(n²), zero-alloc).
@@ -2548,7 +3028,9 @@ func execMinMax(input []byte, buf []byte, node *op, wantMax bool) ([]byte, error
 			return true
 		}
 		cmp := compareJSONOrder(key, bestKey)
-		if (wantMax && cmp > 0) || (!wantMax && cmp < 0) {
+		// wantMax: update on >=0 to keep the last element among equals (stable max).
+		// !wantMax: update on <0 to keep the first element among equals (stable min).
+		if (wantMax && cmp >= 0) || (!wantMax && cmp < 0) {
 			best = elem
 			bestKey = key
 		}
@@ -2623,6 +3105,39 @@ func compareJSONOrder(a, b []byte) int {
 			return 1
 		}
 		return 0
+	case '[': // array: element-by-element comparison (zero-alloc parallel scan)
+		as.pos++ // skip '['
+		bs.pos++ // skip '['
+		for {
+			as.skipWhitespace()
+			bs.skipWhitespace()
+			aEnd := as.pos >= len(as.data) || as.data[as.pos] == ']'
+			bEnd := bs.pos >= len(bs.data) || bs.data[bs.pos] == ']'
+			if aEnd && bEnd {
+				return 0
+			}
+			if aEnd {
+				return -1 // shorter array sorts first
+			}
+			if bEnd {
+				return 1
+			}
+			aElemStart := as.pos
+			as.skipValue()
+			bElemStart := bs.pos
+			bs.skipValue()
+			if c := compareJSONOrder(a[aElemStart:as.pos], b[bElemStart:bs.pos]); c != 0 {
+				return c
+			}
+			as.skipWhitespace()
+			if as.pos < len(as.data) && as.data[as.pos] == ',' {
+				as.pos++
+			}
+			bs.skipWhitespace()
+			if bs.pos < len(bs.data) && bs.data[bs.pos] == ',' {
+				bs.pos++
+			}
+		}
 	}
 	return 0
 }
@@ -2681,6 +3196,7 @@ func objectContainsKey(obj, key []byte) bool {
 }
 
 // execToJSON wraps the input value as a JSON string, escaping " and \.
+// nan and inf values are converted to null (not valid JSON per JSON spec).
 func execToJSON(input []byte, buf []byte) []byte {
 	s := scanner{data: input}
 	s.skipWhitespace()
@@ -2688,7 +3204,26 @@ func execToJSON(input []byte, buf []byte) []byte {
 	s.skipValue()
 	value := input[start:s.pos]
 	buf = append(buf, '"')
-	for _, b := range value {
+	for i := 0; i < len(value); {
+		b := value[i]
+		// Replace nan token with null
+		if b == 'n' && i+3 <= len(value) && value[i+1] == 'a' && value[i+2] == 'n' {
+			buf = append(buf, "null"...)
+			i += 3
+			continue
+		}
+		// Replace inf token with null
+		if b == 'i' && i+3 <= len(value) && value[i+1] == 'n' && value[i+2] == 'f' {
+			buf = append(buf, "null"...)
+			i += 3
+			continue
+		}
+		// Replace -inf token with null
+		if b == '-' && i+4 <= len(value) && value[i+1] == 'i' && value[i+2] == 'n' && value[i+3] == 'f' {
+			buf = append(buf, "null"...)
+			i += 4
+			continue
+		}
 		if b == '"' {
 			buf = append(buf, '\\', '"')
 		} else if b == '\\' {
@@ -2696,19 +3231,22 @@ func execToJSON(input []byte, buf []byte) []byte {
 		} else {
 			buf = append(buf, b)
 		}
+		i++
 	}
 	return append(buf, '"')
 }
 
+
 // execFromJSON parses a JSON string and returns its content as raw JSON bytes.
-// Only unescapes \" and \\ — all other bytes pass through as-is.
+// Returns an error if the resulting value is not valid JSON.
 func execFromJSON(input []byte, buf []byte) ([]byte, error) {
 	s := scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
 		return nil, fmt.Errorf("fromjson input must be a string")
 	}
-	s.pos++ // skip opening '"\'
+	s.pos++ // skip opening '"'
+	startLen := len(buf)
 	for s.pos < len(s.data) && s.data[s.pos] != '"' {
 		if s.data[s.pos] == '\\' && s.pos+1 < len(s.data) {
 			next := s.data[s.pos+1]
@@ -2721,8 +3259,63 @@ func execFromJSON(input []byte, buf []byte) ([]byte, error) {
 		buf = append(buf, s.data[s.pos])
 		s.pos++
 	}
+	result := buf[startLen:]
+	if !json.Valid(result) {
+		return nil, fromJSONError(result)
+	}
 	return buf, nil
 }
+
+// fromJSONError generates a jq-compatible error message for invalid JSON.
+func fromJSONError(data []byte) error {
+	content := string(data)
+	// Scan for the first problematic character to produce a jq-style message.
+	// jq detects single-quoted strings (') as "Invalid string literal".
+	// For other cases it reports "Invalid numeric literal at EOF".
+	col := 1
+	inString := false
+	for i := 0; i < len(data); i++ {
+		ch := data[i]
+		if inString {
+			if ch == '"' {
+				inString = false
+			} else if ch == '\\' {
+				i++ // skip escaped char
+				col++
+			}
+			col++
+			continue
+		}
+		// Not in string
+		if ch == '"' {
+			inString = true
+			col++
+			continue
+		}
+		if ch == '\'' {
+			// jq tries to lex 'token' (single-quoted), scanning until the closing '.
+			// It reports the error at the column AFTER the closing ', where the next
+			// char is unexpected. Find the matching closing '.
+			i++ // skip opening '
+			col++
+			for i < len(data) && data[i] != '\'' {
+				i++
+				col++
+			}
+			// Now at closing ' (or end of data)
+			if i < len(data) {
+				col++ // skip closing '
+			}
+			// col is now at the char after the closing ' — this is the error column
+			return fmt.Errorf("Invalid string literal; expected \", but got ' at line 1, column %d (while parsing '%s')", col, content)
+		}
+		col++
+	}
+	// Generic error
+	return fmt.Errorf("Invalid numeric literal at EOF at line 1, column %d (while parsing '%s')", col, content)
+}
+
+
 
 // execToString returns the input unchanged if it is already a JSON string,
 // otherwise calls execToJSON to wrap it.
@@ -2772,15 +3365,16 @@ func execToNumber(input []byte, buf []byte) ([]byte, error) {
 }
 
 // execURIEncode percent-encodes a JSON string per RFC 3986 unreserved characters.
-// Operates on raw JSON string bytes (escape sequences encoded as their literal bytes).
-// This is consistent with @base64 behaviour and jq for pure-ASCII strings.
+// The JSON string is first decoded (escape sequences resolved) so that e.g.
+// "\u03bc" encodes as %CE%BC (the UTF-8 bytes for μ) rather than %5Cu03bc.
 func execURIEncode(input []byte, buf []byte) ([]byte, error) {
 	s := scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
 		return nil, fmt.Errorf("@uri input must be a string")
 	}
-	content := s.readString() // raw bytes between JSON quotes
+	raw := s.readString()                    // raw bytes between JSON quotes
+	content := decodeJSONStringContent(nil, raw) // resolve escape sequences
 
 	buf = append(buf, '"')
 	for _, b := range content {
@@ -2803,5 +3397,528 @@ func execURIEncode(input []byte, buf []byte) ([]byte, error) {
 			}
 		}
 	}
+	return append(buf, '"'), nil
+}
+
+// hexNibble converts an ASCII hex digit to its numeric value (0–15).
+func hexNibble(b byte) rune {
+	switch {
+	case b >= '0' && b <= '9':
+		return rune(b - '0')
+	case b >= 'a' && b <= 'f':
+		return rune(b-'a') + 10
+	case b >= 'A' && b <= 'F':
+		return rune(b-'A') + 10
+	}
+	return 0
+}
+
+// appendRuneUTF8 appends the UTF-8 encoding of r to dst.
+func appendRuneUTF8(dst []byte, r rune) []byte {
+	switch {
+	case r < 0x80:
+		return append(dst, byte(r))
+	case r < 0x800:
+		return append(dst, byte(0xC0|(r>>6)), byte(0x80|(r&0x3F)))
+	case r < 0x10000:
+		return append(dst, byte(0xE0|(r>>12)), byte(0x80|((r>>6)&0x3F)), byte(0x80|(r&0x3F)))
+	default:
+		return append(dst, byte(0xF0|(r>>18)), byte(0x80|((r>>12)&0x3F)), byte(0x80|((r>>6)&0x3F)), byte(0x80|(r&0x3F)))
+	}
+}
+
+// decodeJSONStringContent decodes raw JSON string content (as returned by
+// scanner.readString) into its actual byte values, handling all standard
+// JSON escape sequences. Raw UTF-8 bytes pass through unchanged.
+// \\ \" \/ \n \r \t \b \f → single byte. \uXXXX → UTF-8 encoded codepoint.
+// Surrogate pairs (\uD800\uDC00) are decoded to the combined codepoint.
+// The result is appended to dst and returned.
+func decodeJSONStringContent(dst, content []byte) []byte {
+	for i := 0; i < len(content); {
+		if content[i] != '\\' {
+			dst = append(dst, content[i])
+			i++
+			continue
+		}
+		i++ // skip '\'
+		if i >= len(content) {
+			break
+		}
+		switch content[i] {
+		case '"':
+			dst = append(dst, '"')
+		case '\\':
+			dst = append(dst, '\\')
+		case '/':
+			dst = append(dst, '/')
+		case 'n':
+			dst = append(dst, '\n')
+		case 'r':
+			dst = append(dst, '\r')
+		case 't':
+			dst = append(dst, '\t')
+		case 'b':
+			dst = append(dst, '\b')
+		case 'f':
+			dst = append(dst, '\f')
+		case 'u':
+			if i+4 < len(content) {
+				r := hexNibble(content[i+1])<<12 |
+					hexNibble(content[i+2])<<8 |
+					hexNibble(content[i+3])<<4 |
+					hexNibble(content[i+4])
+				// Handle UTF-16 surrogate pairs
+				if r >= 0xD800 && r <= 0xDBFF && i+10 < len(content) &&
+					content[i+5] == '\\' && content[i+6] == 'u' {
+					r2 := hexNibble(content[i+7])<<12 |
+						hexNibble(content[i+8])<<8 |
+						hexNibble(content[i+9])<<4 |
+						hexNibble(content[i+10])
+					if r2 >= 0xDC00 && r2 <= 0xDFFF {
+						r = 0x10000 + (r-0xD800)<<10 + (r2 - 0xDC00)
+						dst = appendRuneUTF8(dst, r)
+						i += 10 // skip XXXX\uYYYY; outer i++ skips past last Y
+						break
+					}
+				}
+				dst = appendRuneUTF8(dst, r)
+				i += 4 // skip XXXX; outer i++ moves past last X
+			}
+		default:
+			dst = append(dst, content[i])
+		}
+		i++
+	}
+	return dst
+}
+
+// jsonHexChars is the lowercase hex digit table for JSON \uXXXX encoding.
+const jsonHexChars = "0123456789abcdef"
+
+// appendJSONStringContent appends decoded bytes re-encoded as JSON string content
+// (without outer quotes). Handles standard escaping for control chars, " and \.
+func appendJSONStringContent(dst, decoded []byte) []byte {
+	for i := 0; i < len(decoded); {
+		b := decoded[i]
+		switch {
+		case b == '"':
+			dst = append(dst, '\\', '"')
+			i++
+		case b == '\\':
+			dst = append(dst, '\\', '\\')
+			i++
+		case b == '\n':
+			dst = append(dst, '\\', 'n')
+			i++
+		case b == '\r':
+			dst = append(dst, '\\', 'r')
+			i++
+		case b == '\t':
+			dst = append(dst, '\\', 't')
+			i++
+		case b == '\b':
+			dst = append(dst, '\\', 'b')
+			i++
+		case b == '\f':
+			dst = append(dst, '\\', 'f')
+			i++
+		case b < 0x20:
+			dst = append(dst, '\\', 'u', '0', '0',
+				jsonHexChars[b>>4], jsonHexChars[b&0xF])
+			i++
+		case b >= 0x80:
+			// Non-ASCII UTF-8: pass raw bytes through (valid JSON)
+			dst = append(dst, b)
+			i++
+		default:
+			dst = append(dst, b)
+			i++
+		}
+	}
+	return dst
+}
+
+// appendJSONStringContentUnicodeEscaped is like appendJSONStringContent but
+// encodes non-ASCII codepoints as \uXXXX (needed for @urid output).
+func appendJSONStringContentUnicodeEscaped(dst, decoded []byte) []byte {
+	for i := 0; i < len(decoded); {
+		b := decoded[i]
+		if b < 0x80 {
+			// ASCII — use standard JSON escaping
+			switch b {
+			case '"':
+				dst = append(dst, '\\', '"')
+			case '\\':
+				dst = append(dst, '\\', '\\')
+			case '\n':
+				dst = append(dst, '\\', 'n')
+			case '\r':
+				dst = append(dst, '\\', 'r')
+			case '\t':
+				dst = append(dst, '\\', 't')
+			case '\b':
+				dst = append(dst, '\\', 'b')
+			case '\f':
+				dst = append(dst, '\\', 'f')
+			default:
+				if b < 0x20 {
+					dst = append(dst, '\\', 'u', '0', '0',
+						jsonHexChars[b>>4], jsonHexChars[b&0xF])
+				} else {
+					dst = append(dst, b)
+				}
+			}
+			i++
+		} else {
+			// Decode UTF-8 sequence to a codepoint, then output as \uXXXX
+			var r rune
+			var size int
+			if b < 0xE0 && i+1 < len(decoded) {
+				r = rune(b&0x1F)<<6 | rune(decoded[i+1]&0x3F)
+				size = 2
+			} else if b < 0xF0 && i+2 < len(decoded) {
+				r = rune(b&0x0F)<<12 | rune(decoded[i+1]&0x3F)<<6 | rune(decoded[i+2]&0x3F)
+				size = 3
+			} else if i+3 < len(decoded) {
+				r = rune(b&0x07)<<18 | rune(decoded[i+1]&0x3F)<<12 |
+					rune(decoded[i+2]&0x3F)<<6 | rune(decoded[i+3]&0x3F)
+				size = 4
+			} else {
+				dst = append(dst, '?')
+				i++
+				continue
+			}
+			if r > 0xFFFF {
+				// Emit as surrogate pair
+				r -= 0x10000
+				hi := rune(0xD800) + (r >> 10)
+				lo := rune(0xDC00) + (r & 0x3FF)
+				dst = appendHex4Escape(dst, hi)
+				dst = appendHex4Escape(dst, lo)
+			} else {
+				dst = appendHex4Escape(dst, r)
+			}
+			i += size
+		}
+	}
+	return dst
+}
+
+// appendHex4Escape appends \uXXXX for the given codepoint.
+func appendHex4Escape(dst []byte, r rune) []byte {
+	return append(dst, '\\', 'u',
+		jsonHexChars[(r>>12)&0xF],
+		jsonHexChars[(r>>8)&0xF],
+		jsonHexChars[(r>>4)&0xF],
+		jsonHexChars[r&0xF])
+}
+
+// --- floor / ceil / round ---
+
+type roundMode int
+
+const (
+	roundFloor   roundMode = iota
+	roundCeil
+	roundNearest
+)
+
+// execRoundMode applies floor/ceil/round to a JSON number.
+func execRoundMode(input, buf []byte, mode roundMode) []byte {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return append(buf, "null"...)
+	}
+	if !isNumberByte(s.data[s.pos]) {
+		return append(buf, input...)
+	}
+	f, ok := parseJSONFloat(input)
+	if !ok {
+		return append(buf, input...)
+	}
+	var result float64
+	switch mode {
+	case roundFloor:
+		result = math.Floor(f)
+	case roundCeil:
+		result = math.Ceil(f)
+	case roundNearest:
+		result = math.Round(f)
+	}
+	// Output as integer if the result is a whole number.
+	if result == math.Trunc(result) && !math.IsInf(result, 0) && !math.IsNaN(result) {
+		return strconv.AppendInt(buf, int64(result), 10)
+	}
+	return strconv.AppendFloat(buf, result, 'g', -1, 64)
+}
+
+// --- @html ---
+
+// execHTMLEncode HTML-escapes a JSON string.
+func execHTMLEncode(input, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return nil, fmt.Errorf("@html input must be a string")
+	}
+	raw := s.readString()
+	decoded := decodeJSONStringContent(nil, raw)
+
+	buf = append(buf, '"')
+	for _, b := range decoded {
+		switch b {
+		case '&':
+			buf = append(buf, "&amp;"...)
+		case '<':
+			buf = append(buf, "&lt;"...)
+		case '>':
+			buf = append(buf, "&gt;"...)
+		case '\'':
+			buf = append(buf, "&apos;"...)
+		case '"':
+			buf = append(buf, "&quot;"...)
+		default:
+			// Re-encode for JSON output
+			switch b {
+			case '\\':
+				buf = append(buf, '\\', '\\')
+			case '\n':
+				buf = append(buf, '\\', 'n')
+			case '\r':
+				buf = append(buf, '\\', 'r')
+			case '\t':
+				buf = append(buf, '\\', 't')
+			case '\b':
+				buf = append(buf, '\\', 'b')
+			case '\f':
+				buf = append(buf, '\\', 'f')
+			default:
+				if b < 0x20 {
+					buf = append(buf, '\\', 'u', '0', '0',
+						jsonHexChars[b>>4], jsonHexChars[b&0xF])
+				} else {
+					buf = append(buf, b)
+				}
+			}
+		}
+	}
+	return append(buf, '"'), nil
+}
+
+// --- @csv ---
+
+// execCSVEncode formats a JSON array as a CSV line.
+// Strings are double-quoted with internal quotes doubled.
+// Numbers are emitted as-is. Null produces an empty field.
+func execCSVEncode(input, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return nil, fmt.Errorf("@csv input must be an array")
+	}
+	buf = append(buf, '"') // open outer JSON string
+	first := true
+	s.arrayIter(func(_ int, start, end int) bool {
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		elem := trimWhitespace(input[start:end])
+		if len(elem) == 0 {
+			return true
+		}
+		switch elem[0] {
+		case '"':
+			// String: decode, wrap in CSV " (encoded as \" in JSON), double internal "
+			esc := scanner{data: elem}
+			raw := esc.readString()
+			decoded := decodeJSONStringContent(nil, raw)
+			buf = append(buf, '\\', '"') // CSV open quote: \" in JSON
+			for _, b := range decoded {
+				if b == '"' {
+					// Double the quote: "" in CSV → \"\" in JSON
+					buf = append(buf, '\\', '"', '\\', '"')
+				} else {
+					switch b {
+					case '\\':
+						buf = append(buf, '\\', '\\')
+					case '\n':
+						buf = append(buf, '\\', 'n')
+					case '\r':
+						buf = append(buf, '\\', 'r')
+					case '\t':
+						buf = append(buf, '\\', 't')
+					default:
+						if b < 0x20 {
+							buf = append(buf, '\\', 'u', '0', '0',
+								jsonHexChars[b>>4], jsonHexChars[b&0xF])
+						} else {
+							buf = append(buf, b)
+						}
+					}
+				}
+			}
+			buf = append(buf, '\\', '"') // CSV close quote: \" in JSON
+		case 'n': // null → empty field
+		case 't':
+			buf = append(buf, "true"...)
+		case 'f':
+			buf = append(buf, "false"...)
+		default:
+			// Number: copy raw bytes
+			buf = append(buf, elem...)
+		}
+		return true
+	})
+	return append(buf, '"'), nil // close outer JSON string
+}
+
+// --- @tsv ---
+
+// execTSVEncode formats a JSON array as a TSV line.
+// Strings have tabs, newlines, carriage returns, and backslashes escaped.
+// Numbers are emitted as-is. Null produces an empty field.
+func execTSVEncode(input, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return nil, fmt.Errorf("@tsv input must be an array")
+	}
+	buf = append(buf, '"') // open outer JSON string
+	first := true
+	var iterErr error
+	s.arrayIter(func(_ int, start, end int) bool {
+		if !first {
+			buf = append(buf, '\\', 't') // TSV separator as JSON \t
+		}
+		first = false
+		elem := trimWhitespace(input[start:end])
+		if len(elem) == 0 {
+			return true
+		}
+		switch elem[0] {
+		case '"':
+			esc := scanner{data: elem}
+			raw := esc.readString()
+			decoded := decodeJSONStringContent(nil, raw)
+			for _, b := range decoded {
+				switch b {
+				case '\t':
+					// TSV escape for tab: \t (backslash+t). In JSON: \\t
+					buf = append(buf, '\\', '\\', 't')
+				case '\n':
+					// TSV escape for newline: \n. In JSON: \\n
+					buf = append(buf, '\\', '\\', 'n')
+				case '\r':
+					// TSV escape for CR: \r. In JSON: \\r
+					buf = append(buf, '\\', '\\', 'r')
+				case '\\':
+					// TSV escape for backslash: \\. In JSON: \\\\
+					buf = append(buf, '\\', '\\', '\\', '\\')
+				case '"':
+					buf = append(buf, '\\', '"') // JSON escape for "
+				default:
+					if b < 0x20 {
+						buf = append(buf, '\\', 'u', '0', '0',
+							jsonHexChars[b>>4], jsonHexChars[b&0xF])
+					} else {
+						buf = append(buf, b)
+					}
+				}
+			}
+		case 'n': // null → empty
+		case 't':
+			buf = append(buf, "true"...)
+		case 'f':
+			buf = append(buf, "false"...)
+		default:
+			buf = append(buf, elem...)
+		}
+		return true
+	})
+	if iterErr != nil {
+		return nil, iterErr
+	}
+	return append(buf, '"'), nil
+}
+
+// --- @sh ---
+
+// execShEncode shell-quotes a JSON string as a single-quoted POSIX sh string.
+// Internal single quotes are escaped as '\'' (end-quote, backslash-quote, reopen-quote).
+func execShEncode(input, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return nil, fmt.Errorf("@sh input must be a string")
+	}
+	raw := s.readString()
+	decoded := decodeJSONStringContent(nil, raw)
+
+	buf = append(buf, '"', '\'') // open JSON string, then sh single-quote
+	for _, b := range decoded {
+		if b == '\'' {
+			// POSIX sh: end single-quote, literal backslash-escaped ', reopen quote: '\''
+			// Backslash must be escaped in JSON: \\
+			// Final JSON bytes: ' \\ ' '  → '\''
+			buf = append(buf, '\'', '\\', '\\', '\'', '\'')
+		} else {
+			switch b {
+			case '"':
+				buf = append(buf, '\\', '"')
+			case '\\':
+				buf = append(buf, '\\', '\\')
+			case '\n':
+				buf = append(buf, '\\', 'n')
+			case '\r':
+				buf = append(buf, '\\', 'r')
+			case '\t':
+				buf = append(buf, '\\', 't')
+			case '\b':
+				buf = append(buf, '\\', 'b')
+			case '\f':
+				buf = append(buf, '\\', 'f')
+			default:
+				if b < 0x20 {
+					buf = append(buf, '\\', 'u', '0', '0',
+						jsonHexChars[b>>4], jsonHexChars[b&0xF])
+				} else {
+					buf = append(buf, b)
+				}
+			}
+		}
+	}
+	buf = append(buf, '\'', '"') // sh close-quote, JSON close-quote
+	return buf, nil
+}
+
+// --- @urid ---
+
+// execURIDecode percent-decodes a URI-encoded JSON string.
+// Non-ASCII codepoints in the decoded output are encoded as \uXXXX.
+func execURIDecode(input, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return nil, fmt.Errorf("@urid input must be a string")
+	}
+	raw := s.readString() // raw JSON string content, e.g. %CE%BC
+
+	// Percent-decode to raw bytes
+	decoded := make([]byte, 0, len(raw))
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '%' && i+2 < len(raw) {
+			hi := hexNibble(raw[i+1])
+			lo := hexNibble(raw[i+2])
+			decoded = append(decoded, byte(hi<<4)|byte(lo))
+			i += 2
+		} else {
+			decoded = append(decoded, raw[i])
+		}
+	}
+
+	buf = append(buf, '"')
+	buf = appendJSONStringContentUnicodeEscaped(buf, decoded)
 	return append(buf, '"'), nil
 }

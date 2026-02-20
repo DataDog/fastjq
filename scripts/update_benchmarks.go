@@ -214,8 +214,11 @@ func buildTable(results map[string]result) string {
 			gqAllocs = fmt.Sprintf("%d", gq.allocs)
 		}
 
+		// Escape bare pipe characters so they don't break the markdown table.
+		// GitHub GFM treats | as a column separator even inside backtick spans.
+		safeOp := strings.ReplaceAll(r.op, "|", `\|`)
 		fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %d | %s |\n",
-			r.op, r.input, fqTime, gqTime, speedup, fq.allocs, gqAllocs)
+			safeOp, r.input, fqTime, gqTime, speedup, fq.allocs, gqAllocs)
 	}
 	return sb.String()
 }

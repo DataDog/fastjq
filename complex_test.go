@@ -246,10 +246,10 @@ func TestComplexObjectMergeDefaults(t *testing.T) {
 	// apply defaults via merge — right wins, left-only keys come first
 	input := `{"timeout":60,"retries":1}`
 	// Left: {timeout:30, retries:3, verbose:false}. Right (.): {timeout:60, retries:1}.
-	// Left keys not in right: verbose. Then all right keys: timeout, retries.
+	// Left key order is preserved; right values override left values for duplicate keys.
 	assertQuery(t,
 		`{"timeout":30,"retries":3,"verbose":false} + .`,
-		input, `{"verbose":false,"timeout":60,"retries":1}`)
+		input, `{"timeout":60,"retries":1,"verbose":false}`)
 }
 
 func TestComplexObjectMergeEnrich(t *testing.T) {
