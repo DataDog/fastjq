@@ -4105,6 +4105,30 @@ func TestConstructMultiOutputEmpty(t *testing.T) {
 	assertQueryAll(t, `{a: .x[], b: .y}`, `{"x":[],"y":1}`)
 }
 
+// --- explode / implode ---
+
+func TestExplode(t *testing.T) {
+	assertQuery(t, `explode`, `"foobar"`, `[102,111,111,98,97,114]`)
+	assertQuery(t, `explode`, `""`, `[]`)
+	assertQuery(t, `explode`, `"ABC"`, `[65,66,67]`)
+}
+
+func TestImplode(t *testing.T) {
+	assertQuery(t, `implode`, `[65, 66, 67]`, `"ABC"`)
+	assertQuery(t, `implode`, `[]`, `""`)
+	assertQuery(t, `implode`, `[65.9]`, `"A"`) // truncate toward zero
+	// Out-of-range and surrogate codepoints → U+FFFD (raw UTF-8: EF BF BD)
+	fffd := "\"\xef\xbf\xbd\""
+	assertQuery(t, `implode`, `[-1]`, fffd)
+	assertQuery(t, `implode`, `[1114112]`, fffd) // above U+10FFFF
+	assertQuery(t, `implode`, `[55296]`, fffd)   // U+D800 surrogate
+}
+
+func TestImplodeExplodeRoundtrip(t *testing.T) {
+	assertQuery(t, `implode | explode`, `[65, 66, 67]`, `[65,66,67]`)
+	assertQuery(t, `explode | implode`, `"hello"`, `"hello"`)
+}
+
 // --- sort ---
 
 func TestSort(t *testing.T) {

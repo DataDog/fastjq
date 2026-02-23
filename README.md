@@ -135,7 +135,7 @@ fastjq supports a large targeted subset of jq. The complete reference with examp
 - **Arithmetic:** `+`, `-`, `*`, `/`, `%`, `add`, `floor`, `ceil`, `round`, `nearbyint`
 - **Math:** `sqrt`, `log`, `exp`, `sin`, `cos`, `atan`, `tgamma`, `j0`, and 15 more — all zero-alloc
 - **Arrays:** `map`, `flatten`, `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `min/max`, `min_by/max_by`, `any/all`, `first/last`, `limit`, `nth`, `isempty`, `values`, type filters, `index/indices`
-- **Strings:** `split/join`, `ascii_downcase/upcase`, `startswith/endswith`, `ltrimstr/rtrimstr`, `"\(expr)"` interpolation
+- **Strings:** `split/join`, `ascii_downcase/upcase`, `startswith/endswith`, `ltrimstr/rtrimstr`, `"\(expr)"` interpolation, `explode`, `implode`
 - **Format strings:** `@base64/d`, `@uri/d`, `@html`, `@csv`, `@tsv`, `@sh`, `@text`, `@json`
 - **Regex (Go RE2):** `test(re)` *(0 allocs)*, `match(re)`, `capture(re)`, `scan(re)`, `sub(re; s)`, `gsub(re; s)`
 - **Objects:** `to_entries`, `from_entries`, `keys_unsorted`, `length`, `has`, `in`, `contains`, `inside`
@@ -147,9 +147,9 @@ fastjq is validated against two official jq test files (`go test ./jqtest/`).
 
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
-| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 306 | 215 | **209 (97.2%)** | 6 |
-| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 97 | 133 | **132 (99.2%)** | 1 |
-| **Combined** | **751** | **403** | **348** | **341 (98.0%)** | **7** |
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 305 | 216 | **210 (97.2%)** | 6 |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 95 | 135 | **134 (99.3%)** | 1 |
+| **Combined** | **751** | **400** | **351** | **344 (98.0%)** | **7** |
 
 The 7 failures are all known, intentional differences — not bugs:
 
@@ -189,7 +189,7 @@ jq treats this as `[(a,b) | f]`. Fastjq parses array elements independently.
 
 **`nan`/`infinite` constants not supported** — they produce non-JSON output.
 
-**Not yet implemented:** `path`, `getpath`, `setpath`, `delpaths`, `reduce`, `foreach`, `label-break`, variable binding (`as $x`), user-defined functions (`def`), `explode`/`implode`, 2-arg math forms (`pow(x;y)`, `hypot(x;y)`).
+**Not yet implemented:** `path`, `getpath`, `setpath`, `delpaths`, `reduce`, `foreach`, `label-break`, variable binding (`as $x`), user-defined functions (`def`), 2-arg math forms (`pow(x;y)`, `hypot(x;y)`).
 
 **Output is always compact JSON.** fastjq never panics — malformed input may produce wrong results but the process is always safe.
 

@@ -41,9 +41,8 @@ const manTestLocalCache = "testdata/man.test"
 // A test whose program contains any of these tokens is skipped — NOT counted
 // as a failure. Keep this list tight: only skip what we genuinely don't support.
 var unsupportedOps = []string{
-	// Recursive descent
+	// Recursive descent — permanently rejected (allocs scale with input depth, not output)
 	"..", "recurse",
-	// sort/group_by/unique are now implemented (Tier 2: O(n) allocation proportional to array size)
 	// Path operations
 	"path(", "paths", "getpath", "setpath", "delpaths", "leaf_paths",
 	// Variables and binding
@@ -52,53 +51,25 @@ var unsupportedOps = []string{
 	"def ",
 	// Reduce / foreach / label-break
 	"reduce", "foreach", "label", "break",
-	// String interpolation \(expr) is now supported.
-	// @format "\(...)" combined syntax (e.g. @html "<b>\(.)</b>") is NOT supported —
-	// jq treats it as applying the format to each interpolated value separately, which
-	// requires parser support for format-string-with-template combined syntax.
-	// Dynamic string keys in objects ("key$\(n)": val) are also not supported.
-	// nan/infinite constants and their predicates: REJECTED.
-	// nan and infinite produce non-JSON output, which violates our
-	// "output is always compact JSON" constraint. isnan/isinfinite/isfinite/isnormal
-	// are meaningless without a coherent nan/infinite representation.
+	// nan/infinite: produce non-JSON output — rejected
 	"nan", "infinite", "isinfinite", "isnan", "isfinite", "isnormal",
-	// 2-arg and 3-arg math functions: REJECTED.
-	// Every test for these is also blocked by as-$ binding; 0 exclusive tests.
-	// pow(x;y), hypot(x;y), atan(y;x), fma(x;y;z) require a 2/3-arg parser.
+	// 2/3-arg math: REJECTED — 0 exclusive tests (all also blocked by as-$)
 	"pow(", "hypot", "fma",
-	// frexp / modf return array pairs; ldexp/scalb/scalbln require an integer arg.
-	// All have 0 exclusive tests. Reject.
-	"frexp", "modf", "ldexp", "scalb", "scalbln",
-	// significand: complex semantics (mantissa in [1,2)), 0 exclusive tests. Reject.
-	"significand",
-	// All 1-arg math functions below are NOW SUPPORTED and removed from this list:
-	// sqrt, fabs, atan(1-arg), log, log2, log10, exp, exp2, exp10, cbrt, logb,
-	// nearbyint, j0, j1, sin, cos, tan, asin, acos, tgamma, lgamma
-	// test(, match(, scan(, sub(, gsub(, capture( are now SUPPORTED.
-	// splits( is not supported (streaming split variant — 0 exclusive tests).
+	// frexp/modf/ldexp/scalb/scalbln/significand: REJECTED — 0 exclusive tests
+	"frexp", "modf", "ldexp", "scalb", "scalbln", "significand",
+	// splits( — streaming split variant, 0 exclusive tests
 	"splits(",
 	// Date/time operations
 	"strftime", "strptime", "mktime", "gmtime", "dateadd", "todate", "fromdate",
 	"date", "now",
 	// Streaming / IO
-	"input", "inputs", "stderr", "debug(",
+	"input", "inputs", "stderr",
 	// env
 	"env", "$ENV",
-	// Unicode codepoint operations
-	"implode", "explode",
 	// Reflection
 	"builtins", "modulemeta", "$__loc__",
-	// range( is now implemented (Tier 2: 1 alloc per generated value)
-	// walk
+	// walk — requires recursive descent (Tier 3)
 	"walk(",
-	// ascii() function (not ascii_downcase/upcase)
-	"ascii(",
-	// Object construction with dynamic keys: {(expr): val}
-	// transpose is now implemented
-	// limit(n; ...) is supported; limit(1; a, b) generator body is also supported
-	// contains()/inside() are supported
-	// floor/ceil/round are supported
-	// @html/@csv/@tsv/@sh/@urid are supported
 }
 
 // test represents one parsed test case.
@@ -233,10 +204,26 @@ func isBlankOrComment(s string) bool {
 
 // isUnsupported returns the first matched token if the program uses an
 // unsupported operation, or "" if the program is potentially runnable.
+// Also checks the input for jq-specific number constants (nan, infinite)
+// that appear as bare values — these would be inside quoted strings if
+// they were data, so matching without a leading quote is safe.
 func isUnsupported(program string) string {
 	for _, op := range unsupportedOps {
 		if strings.Contains(program, op) {
 			return op
+		}
+	}
+	return ""
+}
+
+// inputContainsUnsupported returns true if the test input contains a jq-specific
+// constant (nan, infinite) used as a bare JSON value rather than as string data.
+// We check for patterns like [nan, ,nan, nan] which can only occur as bare values.
+func inputContainsUnsupported(input string) string {
+	for _, tok := range []string{"nan", "infinite"} {
+		// Bare value: preceded by [ or , or whitespace (not by ")
+		if strings.Contains(input, "["+tok) || strings.Contains(input, ","+tok) || strings.Contains(input, " "+tok) {
+			return tok
 		}
 	}
 	return ""
@@ -273,8 +260,12 @@ func TestJQOfficialSuite(t *testing.T) {
 		}
 		s.total++
 
-		// Skip unsupported operations
+		// Skip unsupported operations (check program and input)
 		if reason := isUnsupported(tc.program); reason != "" {
+			s.skipped++
+			continue
+		}
+		if reason := inputContainsUnsupported(tc.input); reason != "" {
 			s.skipped++
 			continue
 		}

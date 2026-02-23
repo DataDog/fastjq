@@ -128,6 +128,8 @@ const (
 	opUniqueBy  // unique_by(f) — child=key function
 	opGroupBy   // group_by(f) — child=key function
 	opTranspose // transpose
+	opExplode   // explode — string → array of Unicode codepoints (Tier 2)
+	opImplode   // implode — array of codepoints → string (Tier 2)
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -709,6 +711,14 @@ func parseAtom(s string) (*op, string, error) {
 	}
 	if strings.HasPrefix(s, "ascii_upcase") && (len(s) == 12 || !isIdentChar(s[12])) {
 		return &op{typ: opAsciiUpcase}, s[12:], nil
+	}
+
+	// explode / implode
+	if strings.HasPrefix(s, "explode") && (len(s) == 7 || !isIdentChar(s[7])) {
+		return &op{typ: opExplode}, s[7:], nil
+	}
+	if strings.HasPrefix(s, "implode") && (len(s) == 7 || !isIdentChar(s[7])) {
+		return &op{typ: opImplode}, s[7:], nil
 	}
 
 	// startswith(s) / endswith(s) / ltrimstr(s) / rtrimstr(s)

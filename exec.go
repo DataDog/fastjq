@@ -198,6 +198,18 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opExplode:
+		result, err := execExplode(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opImplode:
+		result, err := execImplode(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opStartsWith:
 		return fn(execStringPredicate(input, buf, node.field, true, false))
 	case opEndsWith:
@@ -693,6 +705,10 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execTrimStr(input, buf, node.field, true), nil
 	case opRtrimStr:
 		return execTrimStr(input, buf, node.field, false), nil
+	case opExplode:
+		return execExplode(input, buf)
+	case opImplode:
+		return execImplode(input, buf)
 	case opMinus, opMul, opDiv, opMod:
 		return execArith(node, input, buf)
 	case opMin, opMinBy:
@@ -2820,6 +2836,100 @@ func execAsciiCase(input []byte, buf []byte, upcase bool) ([]byte, error) {
 		buf = append(buf, ch)
 		s.pos++
 	}
+	buf = append(buf, '"')
+	return buf, nil
+}
+
+// execExplode converts a JSON string to a JSON array of Unicode codepoints.
+// "ABC" → [65,66,67]. JSON escape sequences are decoded first.
+// Allocation model: Tier 2 — O(n) proportional to string length.
+func execExplode(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return nil, fmt.Errorf("explode input must be a string")
+	}
+	content := s.readString() // raw bytes between quotes (may contain \uXXXX etc.)
+	// Decode JSON escapes → UTF-8 bytes
+	decoded := decodeJSONStringContent(nil, content)
+	// Walk UTF-8 bytes, emit codepoints as JSON array
+	buf = append(buf[:0], '[')
+	first := true
+	for len(decoded) > 0 {
+		var r rune
+		var size int
+		b := decoded[0]
+		switch {
+		case b < 0x80:
+			r, size = rune(b), 1
+		case b < 0xE0:
+			if len(decoded) >= 2 {
+				r = rune(b&0x1F)<<6 | rune(decoded[1]&0x3F)
+				size = 2
+			} else {
+				r, size = 0xFFFD, 1
+			}
+		case b < 0xF0:
+			if len(decoded) >= 3 {
+				r = rune(b&0x0F)<<12 | rune(decoded[1]&0x3F)<<6 | rune(decoded[2]&0x3F)
+				size = 3
+			} else {
+				r, size = 0xFFFD, 1
+			}
+		default:
+			if len(decoded) >= 4 {
+				r = rune(b&0x07)<<18 | rune(decoded[1]&0x3F)<<12 | rune(decoded[2]&0x3F)<<6 | rune(decoded[3]&0x3F)
+				size = 4
+			} else {
+				r, size = 0xFFFD, 1
+			}
+		}
+		decoded = decoded[size:]
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = strconv.AppendInt(buf, int64(r), 10)
+	}
+	buf = append(buf, ']')
+	return buf, nil
+}
+
+// execImplode converts a JSON array of Unicode codepoints to a JSON string.
+// [65,66,67] → "ABC". Invalid codepoints (negative, > U+10FFFF, surrogates) → U+FFFD.
+// Non-integer floats are truncated toward zero.
+// Allocation model: Tier 2 — O(n) proportional to array length.
+func execImplode(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return nil, fmt.Errorf("implode input must be an array")
+	}
+	// Build raw UTF-8 bytes, then re-encode as JSON string
+	var utf8Bytes []byte
+	var iterErr error
+	s.arrayIter(func(_ int, start, end int) bool {
+		elem := input[start:end]
+		f, ok := parseJSONFloat(elem)
+		if !ok || math.IsNaN(f) || math.IsInf(f, 0) {
+			iterErr = fmt.Errorf("implode: element is not a valid unicode codepoint")
+			return false
+		}
+		// Truncate toward zero (1.9 → 1, -1.9 → -1)
+		cp := int32(f)
+		// Replace invalid codepoints with U+FFFD
+		if cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF) {
+			cp = 0xFFFD
+		}
+		utf8Bytes = appendRuneUTF8(utf8Bytes, rune(cp))
+		return true
+	})
+	if iterErr != nil {
+		return nil, iterErr
+	}
+	// Encode UTF-8 bytes as JSON string
+	buf = append(buf[:0], '"')
+	buf = appendJSONStringContent(buf, utf8Bytes)
 	buf = append(buf, '"')
 	return buf, nil
 }
