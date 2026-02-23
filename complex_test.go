@@ -389,10 +389,12 @@ func TestComplexNullSafeDeepAccess(t *testing.T) {
 	assertQuery(t, `.user.address?.city // "unknown"`, input, `"unknown"`)
 	// .user.profile.age: .age on an existing object returns null (not an error), no catch fires
 	assertQuery(t, `try .user.profile.age catch 0`, input, `null`)
-	// .user.address.city: .address is missing so returns null and skips .city entirely — also null
+	// .user.address.city: .address is missing (returns null) and skips .city — null
 	assertQuery(t, `try .user.address.city catch "missing"`, input, `null`)
-	// to trigger a real error, explicitly access a field on an explicit null value
-	assertQuery(t, `try (.user.address | .city) catch "missing"`, input, `"missing"`)
+	// null | .field matches jq: returns null, not an error
+	assertQuery(t, `try (.user.address | .city) catch "missing"`, input, `null`)
+	// to trigger a real error, access a field on a non-null, non-object type
+	assertQuery(t, `try (.user.profile.name | .x) catch "missing"`, input, `"missing"`)
 }
 
 func TestComplexChainedAlternatives(t *testing.T) {

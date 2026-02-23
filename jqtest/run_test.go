@@ -43,8 +43,7 @@ const manTestLocalCache = "testdata/man.test"
 var unsupportedOps = []string{
 	// Recursive descent
 	"..", "recurse",
-	// Sorting / grouping (require allocation, not yet implemented)
-	"sort", "group_by", "unique",
+	// sort/group_by/unique are now implemented (Tier 2: O(n) allocation proportional to array size)
 	// Path operations
 	"path(", "paths", "getpath", "setpath", "delpaths", "leaf_paths",
 	// Variables and binding
@@ -95,8 +94,7 @@ var unsupportedOps = []string{
 	// ascii() function (not ascii_downcase/upcase)
 	"ascii(",
 	// Object construction with dynamic keys: {(expr): val}
-	// transpose
-	"transpose",
+	// transpose is now implemented
 	// limit(n; ...) is supported; limit(1; a, b) generator body is also supported
 	// contains()/inside() are supported
 	// floor/ceil/round are supported

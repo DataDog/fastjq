@@ -577,6 +577,17 @@ func BenchmarkGojq_Small_MinBy(b *testing.B) {
 	benchGojqObj(b, `min_by(.value)`, mediumArray)
 }
 
+// sort / sort_by / unique / group_by — Tier 2: O(n) allocation proportional to array size.
+// 100-element integer array for sort; 100-element object array for sort_by/group_by.
+func BenchmarkFastjq_Sort(b *testing.B)    { benchFastjqObj(b, `sort`, largeIntArr) }
+func BenchmarkGojq_Sort(b *testing.B)      { benchGojqObj(b, `sort`, largeIntArr) }
+func BenchmarkFastjq_SortBy(b *testing.B)  { benchFastjqObj(b, `sort_by(.value)`, mediumArray) }
+func BenchmarkGojq_SortBy(b *testing.B)    { benchGojqObj(b, `sort_by(.value)`, mediumArray) }
+func BenchmarkFastjq_Unique(b *testing.B)  { benchFastjqObj(b, `unique`, largeIntArr) }
+func BenchmarkGojq_Unique(b *testing.B)    { benchGojqObj(b, `unique`, largeIntArr) }
+func BenchmarkFastjq_GroupBy(b *testing.B) { benchFastjqObj(b, `group_by(.active)`, mediumArray) }
+func BenchmarkGojq_GroupBy(b *testing.B)   { benchGojqObj(b, `group_by(.active)`, mediumArray) }
+
 func BenchmarkFastjq_Small_URIEncode(b *testing.B) {
 	benchFastjqObj(b, `@uri`, []byte(`"/api/v1/users?filter=active&page=1"`))
 }

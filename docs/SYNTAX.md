@@ -364,8 +364,15 @@ Precedence: `*`, `/`, `%` bind tighter than `+`, `-`. All left-associative. `nul
 | `max` | Maximum element of array | `[3,1,4,1,5]` | `5` |
 | `min_by(f)` | Element where `f` is minimum | `[{"n":"a","v":3},{"n":"b","v":1}]` with `min_by(.v)` | `{"n":"b","v":1}` |
 | `max_by(f)` | Element where `f` is maximum | same | `{"n":"a","v":3}` |
+| `sort` | Sort using jq type ordering | `[3,null,"a",1]` | `[null,1,3,"a"]` |
+| `sort_by(f)` | Sort by key function | `[{"k":3},{"k":1}]` with `sort_by(.k)` | `[{"k":1},{"k":3}]` |
+| `sort_by(.a, .b)` | Sort by tuple key | `[{"a":1,"b":3},{"a":1,"b":1}]` | `[{"a":1,"b":1},{"a":1,"b":3}]` |
+| `unique` | Sort and deduplicate | `[3,1,2,1,3]` | `[1,2,3]` |
+| `unique_by(f)` | Keep first of each key group | `[{"v":1,"x":1},{"v":1,"x":2}]` with `unique_by(.v)` | `[{"v":1,"x":1}]` |
+| `group_by(f)` | Group by key into sub-arrays | `[{"v":1},{"v":2},{"v":1}]` with `group_by(.v)` | `[[{"v":1},{"v":1}],[{"v":2}]]` |
+| `transpose` | Matrix transpose (null-pad short rows) | `[[1],[2,3]]` | `[[1,2],[null,3]]` |
 
-Numbers compared by value; strings lexicographically. Empty array → `null`.
+Numbers compared by value; strings lexicographically. Empty array → `null`. `sort` type ordering: null < false < true < numbers < strings < arrays < objects. **Tier 2: allocates O(n) proportional to array size.**
 
 ### Reduction and Generation
 
@@ -500,17 +507,25 @@ These operations are implementable at zero allocation but involve more complexit
 | `delpaths(paths)` | Delete at multiple paths | Like `setpath` but removing. Same reconstruction complexity. |
 | `walk(f)` | Recursive transform | Apply f to every value bottom-up. Reconstruct entire tree with transformed values. Intermediate results from inner expressions may need temp storage. |
 
-### Feasible — bounded O(n) allocation (Tier 2)
+### Implemented — bounded O(n) allocation (Tier 2)
 
-These operations require allocating an auxiliary index structure, but the allocation is **bounded by the collection the user explicitly provided** — not by the document being scanned. This is consistent with fastjq's governing principle.
-
-Planned for implementation. Each will document its allocation profile explicitly.
+These operations allocate an auxiliary index structure, but the allocation is **bounded by the collection the user explicitly provided** — not by the document being scanned.
 
 | Syntax | Alloc model | Notes |
 |--------|-------------|-------|
-| `sort`, `sort_by(f)` | O(n) `[]int` index | Collect element offsets, sort, re-emit in order. |
-| `group_by(f)` | O(n) index | Requires sort, then grouping into sub-arrays. |
-| `unique`, `unique_by(f)` | O(n) index | Sort-based deduplication. |
+| `sort` | ~n+O(log n) | Collect element sub-slices (no copy), sort in-place, emit array. |
+| `sort_by(f)`, `sort_by(.a, .b)` | ~3n | Collect elements + compute keys (nil-buf → sub-slices for field access) + sort `[]int` index. Preserves original order of equal elements (stable). |
+| `unique` | ~n | Same as `sort`, then remove consecutive duplicates by value. |
+| `unique_by(f)` | ~3n | Same as `sort_by`, keep first of each key group. |
+| `group_by(f)` | ~3n | Same as `sort_by`, emit `[[group1], [group2], ...]`. |
+| `transpose` | ~n×m | Collect all rows, find max length, emit transposed columns with null padding. |
+| `range(n)`, `range(from;to;step)` | 1 per value | Each integer output is a fresh byte slice (synthesised, not in input). |
+| `{a: .x[]}` multi-output construction | ~n per level | Cartesian product via `execConstructMulti`; single-output pairs use zero-alloc fast path. |
+
+### Feasible — bounded O(n) allocation (Tier 2, planned)
+
+| Syntax | Alloc model | Notes |
+|--------|-------------|-------|
 | `keys` (sorted) | O(n) index | Sorted object keys. (`keys_unsorted` is already 0-alloc.) |
 | `with_entries(f)` | 1 alloc/call | Needs a small scratch buffer per entry (aliasing constraint). Use `to_entries \| map(f) \| from_entries` as the 0-alloc alternative. |
 | `implode` | O(n) | Array of codepoints → UTF-8 string. |
@@ -559,6 +574,5 @@ The governing principle rejects operations where allocation scales with the *sha
 
 - **Tier 0 (zero-alloc):** field access, filtering, comparison, arithmetic, construction, `map(.field)`, math, `test(re)` — the full hot path for log processing.
 - **Tier 1 (alloc ∝ output):** `@base64`, `@uri`, `match`, `capture`, `scan`, `gsub`, `map(f)` with construction — allocate proportional to the data they produce, never to the input size.
-- **Tier 2 (alloc ∝ collection, planned):** `sort`, `group_by`, `unique` — O(n) index bounded by the array the user explicitly collected.
-- **Tier 2 (alloc ∝ output count):** `range(n)` (1 alloc/value, implemented). `sort`, `group_by`, `unique` planned.
+- **Tier 2 (alloc ∝ collection, implemented):** `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `range(n)`, multi-output object construction — O(n) bounded by the array/output the user explicitly requested.
 - **Tier 3 (deferred — executor redesign needed):** `recurse`/`..` — closures heap-allocate per nesting level, proportional to input structure not output.

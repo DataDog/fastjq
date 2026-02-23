@@ -121,6 +121,13 @@ const (
 	// range — Tier 2 (1 alloc per generated value, proportional to output count)
 	opRange // range(n) / range(from;to) / range(from;to;step)
 	         // left=from, right=to, child=step (nil → step 1)
+	// Sort / unique / group — Tier 2 (allocate O(n) index proportional to collection size)
+	opSort      // sort
+	opSortBy    // sort_by(f) — child=key function
+	opUnique    // unique
+	opUniqueBy  // unique_by(f) — child=key function
+	opGroupBy   // group_by(f) — child=key function
+	opTranspose // transpose
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -150,7 +157,8 @@ type op struct {
 	right    *op     // for opPipe, opCompare, opAlternative
 	child    *op     // for opField chaining, opSelect condition, opIsEmpty, opNth body
 	index    int     // for opIndex: array index (negative = from end)
-	pairs    []pair  // for opConstruct: {key: expr} pairs
+	pairs           []pair // for opConstruct: {key: expr} pairs
+	multiValuePairs bool   // for opConstruct: true if any pair expr may produce >1 output
 	elems    []*op   // for opArrayConstruct, opStringInterp: expressions
 	segs     [][]byte     // for opStringInterp: literal segments between expressions
 	literal  []byte       // for opLiteral: raw JSON bytes
@@ -537,6 +545,29 @@ func parseAtom(s string) (*op, string, error) {
 	// add
 	if strings.HasPrefix(s, "add") && (len(s) == 3 || !isIdentChar(s[3])) {
 		return &op{typ: opAdd}, s[3:], nil
+	}
+
+	// sort / sort_by — check _by first
+	if strings.HasPrefix(s, "sort_by(") {
+		return parseUnaryGenBuiltin(s[8:], opSortBy)
+	}
+	if strings.HasPrefix(s, "sort") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opSort}, s[4:], nil
+	}
+	// unique / unique_by
+	if strings.HasPrefix(s, "unique_by(") {
+		return parseUnaryGenBuiltin(s[10:], opUniqueBy)
+	}
+	if strings.HasPrefix(s, "unique") && (len(s) == 6 || !isIdentChar(s[6])) {
+		return &op{typ: opUnique}, s[6:], nil
+	}
+	// group_by
+	if strings.HasPrefix(s, "group_by(") {
+		return parseUnaryGenBuiltin(s[9:], opGroupBy)
+	}
+	// transpose
+	if strings.HasPrefix(s, "transpose") && (len(s) == 9 || !isIdentChar(s[9])) {
+		return &op{typ: opTranspose}, s[9:], nil
 	}
 
 	// min_by / min / max_by / max — check _by variants first
@@ -1054,6 +1085,23 @@ func parseAnyAll(s string, typ opType) (*op, string, error) {
 	return &op{typ: typ, child: inner}, rest[1:], nil
 }
 
+// parseUnaryGenBuiltin parses a builtin of the form name(gen_expr).
+// Unlike parseUnaryExprBuiltin, the argument is parsed as a generator
+// expression (may contain commas producing multiple outputs), e.g. sort_by(.a, .b).
+// s starts after the opening '(' has been consumed.
+func parseUnaryGenBuiltin(s string, typ opType) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	inner, rest, err := parseGeneratorExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after argument")
+	}
+	return &op{typ: typ, child: inner}, rest[1:], nil
+}
+
 // parseUnaryExprBuiltin parses a builtin of the form name(expr).
 // s starts after the opening '(' has been consumed.
 func parseUnaryExprBuiltin(s string, typ opType) (*op, string, error) {
@@ -1389,6 +1437,45 @@ func parseInt(s string) (int, string, error) {
 	return n, s[i:], nil
 }
 
+// hasMultiOutput returns true if the op may produce more than one output value.
+// Used at compile time to choose the right execution path for object construction.
+// Conservative: returns true when uncertain.
+func hasMultiOutput(n *op) bool {
+	if n == nil {
+		return false
+	}
+	switch n.typ {
+	case opIterator, opRange, opScan, opGenerator:
+		return true
+
+	// Ops that cap or reduce to at most one output regardless of their children:
+	case opFirst, opLast, opLimit, opNth, opIsEmpty, opAny, opAll, opSelect,
+		opArrayConstruct: // collects all elements into a single array
+		return false
+
+	case opConstruct:
+		// Multi-output if any pair value is multi-output (Cartesian product).
+		for _, p := range n.pairs {
+			if hasMultiOutput(p.expr) {
+				return true
+			}
+		}
+		return false
+
+	case opIf:
+		// Condition (left) drives which branch runs, not the output count.
+		// Then (right) or else (child) produce the actual outputs.
+		return hasMultiOutput(n.right) || hasMultiOutput(n.child)
+	}
+
+	// For all remaining ops: propagate through all children.
+	// This handles:
+	//   opField with child iterator (.field[])  → child = opIterator → true
+	//   opPipe, opAlternative, opTry            → left/right/child propagation
+	//   literals, arithmetic, comparison        → no children → false
+	return hasMultiOutput(n.left) || hasMultiOutput(n.right) || hasMultiOutput(n.child)
+}
+
 // parseConstruct parses object construction: {name}, {name, age}, {a: .foo, b: .bar}.
 // Assumes s starts with '{'.
 func parseConstruct(s string) (*op, string, error) {
@@ -1460,7 +1547,17 @@ func parseConstruct(s string) (*op, string, error) {
 		}
 	}
 
-	return &op{typ: opConstruct, pairs: pairs}, s, nil
+	// Detect at compile time whether any pair value may produce multiple outputs.
+	// This drives the execMulti dispatch: single-output pairs use execConstruct (fast path),
+	// multi-output pairs use execConstructMulti (Cartesian product path).
+	multiVal := false
+	for _, p := range pairs {
+		if hasMultiOutput(p.expr) {
+			multiVal = true
+			break
+		}
+	}
+	return &op{typ: opConstruct, pairs: pairs, multiValuePairs: multiVal}, s, nil
 }
 
 // parseArrayConstruct parses array construction: [.foo, .bar].

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 )
 
@@ -57,6 +58,9 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opIterator:
 		return execIterator(node, input, buf, fn)
 	case opConstruct:
+		if node.multiValuePairs {
+			return execConstructMulti(node, input, buf, fn)
+		}
 		result, err := execConstruct(node, input, buf)
 		if err != nil {
 			return err
@@ -249,6 +253,18 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opSort:
+		return execSort(input, buf, fn)
+	case opSortBy:
+		return execSortBy(node, input, buf, fn)
+	case opUnique:
+		return execUnique(input, buf, fn)
+	case opUniqueBy:
+		return execUniqueBy(node, input, buf, fn)
+	case opGroupBy:
+		return execGroupBy(node, input, buf, fn)
+	case opTranspose:
+		return execTranspose(input, buf, fn)
 	case opURIEncode:
 		result, err := execURIEncode(input, buf)
 		if err != nil {
@@ -770,6 +786,13 @@ func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 		if node.optional {
 			return nil
 		}
+		// jq returns null for null | .field; all other non-object types error.
+		if s.pos < len(s.data) && s.data[s.pos] == 'n' {
+			if buf == nil {
+				return fn(bNull)
+			}
+			return fn(append(buf, "null"...))
+		}
 		return errExpectedObjectField
 	}
 
@@ -801,6 +824,13 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
 		if node.optional {
+			return append(buf, "null"...), nil
+		}
+		// jq returns null for null | .field; all other non-object types error.
+		if s.pos < len(s.data) && s.data[s.pos] == 'n' {
+			if buf == nil {
+				return bNull, nil
+			}
 			return append(buf, "null"...), nil
 		}
 		return nil, errExpectedObjectField
@@ -1146,7 +1176,8 @@ func execPipeMulti(node *op, input []byte, buf []byte, fn func([]byte) error) er
 	})
 }
 
-// execConstruct builds a JSON object from key-expression pairs.
+// execConstruct builds a JSON object from key-expression pairs (single-output per pair).
+// Used by the execSingle fast path via execFirstResult for common cases.
 func execConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 	buf = append(buf, '{')
 	for i, p := range node.pairs {
@@ -1164,6 +1195,41 @@ func execConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 	}
 	buf = append(buf, '}')
 	return buf, nil
+}
+
+// execConstructMulti builds JSON objects from key-expression pairs where any pair value
+// may produce multiple outputs. Produces the Cartesian product across all pair values:
+// {a: .x[], b: .y[]} emits one object per combination of .x[] and .y[] values.
+//
+// Allocation model: each output combination requires its own prefix copy —
+// allocations are proportional to output count (Tier 2).
+func execConstructMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	return constructPairsInto(node.pairs, 0, input, append(buf[:0], '{'), fn)
+}
+
+// constructPairsInto recursively builds Cartesian product of pair values.
+// prefix is the partial object built so far, always starting with '{'.
+func constructPairsInto(pairs []pair, idx int, input []byte, prefix []byte, fn func([]byte) error) error {
+	if idx == len(pairs) {
+		return fn(append(prefix, '}'))
+	}
+
+	p := pairs[idx]
+	isFirst := prefix[len(prefix)-1] == '{'
+
+	return execMulti(p.expr, input, nil, func(val []byte) error {
+		// Build this pair's key:value, branching independently for each val.
+		var obj []byte
+		obj = append(obj, prefix...)
+		if !isFirst {
+			obj = append(obj, ',')
+		}
+		obj = append(obj, '"')
+		obj = append(obj, p.key...)
+		obj = append(obj, '"', ':')
+		obj = append(obj, val...)
+		return constructPairsInto(pairs, idx+1, input, obj, fn)
+	})
 }
 
 // execArrayConstruct builds a JSON array from expressions.
@@ -1281,20 +1347,21 @@ func execType(input []byte, buf []byte, fn func([]byte) error) error {
 }
 
 // execCompare evaluates a comparison between two expressions.
+// Both operands are evaluated via execMulti to support multi-output left/right sides
+// (e.g. ".[] == 1" produces one boolean per element). For single-output operands
+// the fast path is execCompareSingle via execSingle.
+// Allocation model: nil scratch is passed to both operand evals so they don't
+// corrupt each other; input sub-slices (field access, literals baked into op)
+// produce zero allocs, while constructed values allocate their own buffers.
 func execCompare(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	leftVal, err := execSingle(node.left, input, buf)
-	if err != nil {
-		return err
-	}
-	rightBuf := leftVal[len(leftVal):len(leftVal):cap(leftVal)]
-	rightVal, err := execSingle(node.right, input, rightBuf)
-	if err != nil {
-		return err
-	}
-	if evalCmpOp(node.cmpOp, leftVal, rightVal) {
-		return fn(append(buf[:0], "true"...))
-	}
-	return fn(append(buf[:0], "false"...))
+	return execMulti(node.left, input, nil, func(leftVal []byte) error {
+		return execMulti(node.right, input, nil, func(rightVal []byte) error {
+			if evalCmpOp(node.cmpOp, leftVal, rightVal) {
+				return fn(append(buf[:0], "true"...))
+			}
+			return fn(append(buf[:0], "false"...))
+		})
+	})
 }
 
 // execAnd evaluates left and right; returns true only if both are truthy.
@@ -3221,9 +3288,309 @@ func execMinMax(input []byte, buf []byte, node *op, wantMax bool) ([]byte, error
 	return append(buf, best...), nil
 }
 
+// --- sort / sort_by / unique / unique_by / group_by / transpose (Tier 2) ---
+
+// collectArrayElems gathers all elements of a JSON array as sub-slices of input.
+// Returns an error if input is not an array.
+// Allocates one [][]byte proportional to the element count (Tier 2).
+func collectArrayElems(input []byte) ([][]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return nil, fmt.Errorf("sort input must be an array")
+	}
+	var elems [][]byte
+	s.arrayIter(func(_ int, start, end int) bool {
+		elems = append(elems, input[start:end:end])
+		return true
+	})
+	return elems, nil
+}
+
+// collectElemKeys evaluates key function node against each element of a JSON array
+// and returns parallel slices: original elements (sub-slices of input) and their
+// computed key sequences.
+// Keys are collected with nil buf so field-access and identity keys are sub-slices
+// of input (no copy). Keys that require computation (arithmetic, etc.) allocate
+// their own buffers. Elements are also sub-slices of input (no copy).
+func collectElemKeys(node *op, input []byte) (elems [][]byte, keys [][][]byte, err error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return nil, nil, fmt.Errorf("sort_by/group_by/unique_by input must be an array")
+	}
+	s.arrayIter(func(_ int, start, end int) bool {
+		elem := input[start:end:end]
+		var ks [][]byte
+		execErr := execMulti(node, elem, nil, func(k []byte) error {
+			// k is valid for the lifetime of this call stack; since we collect
+			// it into ks which persists, we must ensure it stays valid.
+			// With nil buf, field-access returns a cap-limited sub-slice of elem
+			// (which is a sub-slice of input — valid for the whole sort).
+			// Constructed values allocate their own buffers and are also safe.
+			ks = append(ks, k)
+			return nil
+		})
+		if execErr != nil {
+			err = execErr
+			return false
+		}
+		elems = append(elems, elem)
+		keys = append(keys, ks)
+		return true
+	})
+	return
+}
+
+// compareKeySeqs compares two key sequences lexicographically using compareJSONOrder.
+func compareKeySeqs(a, b [][]byte) int {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if c := compareJSONOrder(a[i], b[i]); c != 0 {
+			return c
+		}
+	}
+	if len(a) < len(b) {
+		return -1
+	}
+	if len(a) > len(b) {
+		return 1
+	}
+	return 0
+}
+
+// keySeqsEqual returns true if two key sequences are equal by compareJSONOrder.
+func keySeqsEqual(a, b [][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if compareJSONOrder(a[i], b[i]) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// emitArray writes elements as a JSON array into buf and calls fn.
+func emitArray(elems [][]byte, buf []byte, fn func([]byte) error) error {
+	buf = append(buf[:0], '[')
+	for i, e := range elems {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, e...)
+	}
+	buf = append(buf, ']')
+	return fn(buf)
+}
+
+// execSort sorts a JSON array using jq's canonical type ordering.
+func execSort(input []byte, buf []byte, fn func([]byte) error) error {
+	elems, err := collectArrayElems(input)
+	if err != nil {
+		return err
+	}
+	sort.SliceStable(elems, func(i, j int) bool {
+		return compareJSONOrder(elems[i], elems[j]) < 0
+	})
+	return emitArray(elems, buf, fn)
+}
+
+// execSortBy sorts a JSON array by a key function.
+// sort_by(.a, .b) uses a generator as key; elements are ordered by the
+// tuple of key values, compared lexicographically.
+func execSortBy(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	elems, keys, err := collectElemKeys(node.child, input)
+	if err != nil {
+		return err
+	}
+	// Sort an index array to avoid mismatching precomputed keys with reordered elements.
+	idx := make([]int, len(elems))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		return compareKeySeqs(keys[idx[a]], keys[idx[b]]) < 0
+	})
+	// Emit in sorted order
+	buf = append(buf[:0], '[')
+	for i, si := range idx {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, elems[si]...)
+	}
+	buf = append(buf, ']')
+	return fn(buf)
+}
+
+// execUnique removes duplicate elements from a sorted JSON array.
+func execUnique(input []byte, buf []byte, fn func([]byte) error) error {
+	elems, err := collectArrayElems(input)
+	if err != nil {
+		return err
+	}
+	sort.SliceStable(elems, func(i, j int) bool {
+		return compareJSONOrder(elems[i], elems[j]) < 0
+	})
+	// Remove consecutive duplicates
+	out := elems[:0]
+	for i, e := range elems {
+		if i == 0 || compareJSONOrder(elems[i-1], e) != 0 {
+			out = append(out, e)
+		}
+	}
+	return emitArray(out, buf, fn)
+}
+
+// execUniqueBy removes elements whose key function produces the same value as
+// the preceding element (after sorting by key).
+func execUniqueBy(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	elems, keys, err := collectElemKeys(node.child, input)
+	if err != nil {
+		return err
+	}
+	// Build index slice and sort by key
+	idx := make([]int, len(elems))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		return compareKeySeqs(keys[idx[a]], keys[idx[b]]) < 0
+	})
+	// Emit first of each key group
+	out := buf[:0]
+	out = append(out, '[')
+	first := true
+	for i, si := range idx {
+		if i == 0 || !keySeqsEqual(keys[idx[i-1]], keys[si]) {
+			if !first {
+				out = append(out, ',')
+			}
+			first = false
+			out = append(out, elems[si]...)
+		}
+	}
+	out = append(out, ']')
+	return fn(out)
+}
+
+// execGroupBy groups array elements by a key function.
+// Returns an array of arrays: each sub-array contains elements with the same key.
+// Elements within each group preserve their original order; groups are in key order.
+func execGroupBy(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	elems, keys, err := collectElemKeys(node.child, input)
+	if err != nil {
+		return err
+	}
+	// Sort by key, stable to preserve original order within groups
+	idx := make([]int, len(elems))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		return compareKeySeqs(keys[idx[a]], keys[idx[b]]) < 0
+	})
+	// Build output: [[group1_elems], [group2_elems], ...]
+	buf = append(buf[:0], '[')
+	first := true
+	groupStart := 0
+	for i := 0; i <= len(idx); i++ {
+		if i == len(idx) || (i > 0 && !keySeqsEqual(keys[idx[i-1]], keys[idx[i]])) {
+			// Emit current group
+			if !first {
+				buf = append(buf, ',')
+			}
+			first = false
+			buf = append(buf, '[')
+			for k, si := range idx[groupStart:i] {
+				if k > 0 {
+					buf = append(buf, ',')
+				}
+				buf = append(buf, elems[si]...)
+			}
+			buf = append(buf, ']')
+			groupStart = i
+		}
+	}
+	buf = append(buf, ']')
+	return fn(buf)
+}
+
+// execTranspose transposes a matrix (array of arrays).
+// Short rows are padded with null to match the longest row.
+// transpose [] → [] ; transpose [[1],[2,3]] → [[1,2],[null,3]]
+func execTranspose(input []byte, buf []byte, fn func([]byte) error) error {
+	// Collect rows
+	var rows [][]byte
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return fmt.Errorf("transpose input must be an array")
+	}
+	s.arrayIter(func(_ int, start, end int) bool {
+		row := make([]byte, end-start)
+		copy(row, input[start:end])
+		rows = append(rows, row)
+		return true
+	})
+	if len(rows) == 0 {
+		return fn(append(buf[:0], "[]"...))
+	}
+	// Find max row length
+	maxLen := 0
+	for _, row := range rows {
+		n := 0
+		rs := scanner{data: row}
+		rs.skipWhitespace()
+		if rs.pos < len(rs.data) && rs.data[rs.pos] == '[' {
+			rs.arrayIter(func(_ int, _, _ int) bool { n++; return true })
+		}
+		if n > maxLen {
+			maxLen = n
+		}
+	}
+	// Pre-collect all row elements for random access
+	rowElems := make([][][]byte, len(rows))
+	for i, row := range rows {
+		rs := scanner{data: row}
+		rs.skipWhitespace()
+		if rs.pos >= len(rs.data) || rs.data[rs.pos] != '[' {
+			continue
+		}
+		rs.arrayIter(func(_ int, start, end int) bool {
+			e := make([]byte, end-start)
+			copy(e, row[start:end])
+			rowElems[i] = append(rowElems[i], e)
+			return true
+		})
+	}
+	// Build transposed matrix
+	buf = append(buf[:0], '[')
+	for col := 0; col < maxLen; col++ {
+		if col > 0 {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, '[')
+		for ri, re := range rowElems {
+			if ri > 0 {
+				buf = append(buf, ',')
+			}
+			if col < len(re) {
+				buf = append(buf, re[col]...)
+			} else {
+				buf = append(buf, "null"...)
+			}
+		}
+		buf = append(buf, ']')
+	}
+	buf = append(buf, ']')
+	return fn(buf)
+}
+
 // compareJSONOrder returns -1, 0, or +1 for ordering two raw JSON values.
 // Numbers: float comparison. Strings: lexicographic byte order.
-// Cross-type ordering: number < string < array < object < boolean < null.
+// Cross-type ordering follows jq: null < false < true < numbers < strings < arrays < objects.
 func compareJSONOrder(a, b []byte) int {
 	as := scanner{data: a}
 	bs := scanner{data: b}
@@ -3250,6 +3617,12 @@ func compareJSONOrder(a, b []byte) int {
 
 	// Same type — compare values
 	switch aFirst {
+	case 'n': // null == null
+		return 0
+	case 'f': // false == false
+		return 0
+	case 't': // true == true
+		return 0
 	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9': // number
 		af, _ := parseJSONFloat(a)
 		bf, _ := parseJSONFloat(b)
@@ -3311,26 +3684,102 @@ func compareJSONOrder(a, b []byte) int {
 				bs.pos++
 			}
 		}
+	case '{': // object: compare as sorted (key, value) pair sequences
+		// jq orders objects by their entries sorted by key; compare pair-by-pair.
+		// Allocates to collect and sort entries (acceptable: sort is already Tier 2).
+		aPairs := collectSortedObjectPairs(a)
+		bPairs := collectSortedObjectPairs(b)
+		for i := 0; i < len(aPairs) && i < len(bPairs); i++ {
+			// Compare keys first
+			if c := compareJSONOrder(aPairs[i][0], bPairs[i][0]); c != 0 {
+				return c
+			}
+			// Same key: compare values
+			if c := compareJSONOrder(aPairs[i][1], bPairs[i][1]); c != 0 {
+				return c
+			}
+		}
+		if len(aPairs) < len(bPairs) {
+			return -1
+		}
+		if len(aPairs) > len(bPairs) {
+			return 1
+		}
+		return 0
 	}
 	return 0
 }
 
+// collectSortedObjectPairs collects (key, value) sub-slices from a JSON object,
+// sorted by key. Allocates proportionally to the number of keys.
+// Used by compareJSONOrder for object comparison (Tier 2 path).
+func collectSortedObjectPairs(obj []byte) [][2][]byte {
+	s := scanner{data: obj}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
+		return nil
+	}
+	s.pos++ // skip '{'
+	var pairs [][2][]byte
+	for s.pos < len(s.data) && s.data[s.pos] != '}' {
+		s.skipWhitespace()
+		if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+			break
+		}
+		keyStart := s.pos
+		s.pos++ // skip opening '"'
+		for s.pos < len(s.data) {
+			if s.data[s.pos] == '\\' {
+				s.pos += 2
+			} else if s.data[s.pos] == '"' {
+				s.pos++
+				break
+			} else {
+				s.pos++
+			}
+		}
+		keyBytes := obj[keyStart:s.pos]
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ':' {
+			s.pos++
+		}
+		s.skipWhitespace()
+		valStart := s.pos
+		s.skipValue()
+		valBytes := obj[valStart:s.pos]
+		pairs = append(pairs, [2][]byte{keyBytes, valBytes})
+		s.skipWhitespace()
+		if s.pos < len(s.data) && s.data[s.pos] == ',' {
+			s.pos++
+		}
+	}
+	// Sort by key (string comparison of the raw key bytes including quotes)
+	sort.Slice(pairs, func(i, j int) bool {
+		return compareJSONOrder(pairs[i][0], pairs[j][0]) < 0
+	})
+	return pairs
+}
+
 // jsonTypeOrderVal maps the first byte of a JSON value to a sort order integer.
-// number < string < array < object < boolean < null
+// Matches jq's canonical type ordering for sort: null < false < true < numbers < strings < arrays < objects.
 func jsonTypeOrderVal(b byte) int {
 	switch b {
+	case 'n': // null
+		return 0
+	case 'f': // false
+		return 1
+	case 't': // true
+		return 2
 	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
-		return 0 // number
+		return 3 // number
 	case '"':
-		return 1 // string
+		return 4 // string
 	case '[':
-		return 2 // array
+		return 5 // array
 	case '{':
-		return 3 // object
-	case 't', 'f':
-		return 4 // boolean
+		return 6 // object
 	default:
-		return 5 // null
+		return 7 // unknown (treat as null)
 	}
 }
 

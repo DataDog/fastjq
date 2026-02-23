@@ -217,6 +217,26 @@ func TestFieldAccessNull(t *testing.T) {
 	}
 }
 
+func TestFieldAccessOnNull(t *testing.T) {
+	// jq returns null for null | .field; fastjq now matches this behaviour
+	assertQuery(t, `.foo`, `null`, `null`)
+	assertQuery(t, `.foo.bar`, `null`, `null`)
+	assertQuery(t, `.foo`, `{"foo":null}`, `null`) // existing: field whose value is null
+}
+
+func TestFieldAccessOnNullNonObjectStillErrors(t *testing.T) {
+	// non-null, non-object types still error (without optional)
+	p, _ := Compile(`.foo`)
+	_, err := p.Run([]byte(`42`))
+	if err == nil {
+		t.Error("expected error for number | .foo, got nil")
+	}
+	_, err = p.Run([]byte(`"hello"`))
+	if err == nil {
+		t.Error("expected error for string | .foo, got nil")
+	}
+}
+
 func TestFieldAccessArray(t *testing.T) {
 	p, err := Compile(".items")
 	if err != nil {
@@ -4033,4 +4053,114 @@ func TestRangeArithBothSides(t *testing.T) {
 	assertQuery(t, `[1 * range(3)]`, `null`, `[0,1,2]`)
 	assertQuery(t, `[range(3) * 2]`, `null`, `[0,2,4]`)
 	assertQuery(t, `[range(3) + 10]`, `null`, `[10,11,12]`)
+}
+
+// --- multi-output comparison ---
+
+func TestCompareMultiOutputLeft(t *testing.T) {
+	// .[] == 1 should produce one boolean per array element (not just the first)
+	assertQueryAll(t, `.[] == 1`, `[1, 1.0, "1", "banana"]`, `true`, `true`, `false`, `false`)
+}
+
+func TestCompareMultiOutputBothSides(t *testing.T) {
+	// range(2) == range(2) produces Cartesian product: 0==0, 0==1, 1==0, 1==1
+	assertQueryAll(t, `[range(2) == range(2)]`, `null`, `[true,false,false,true]`)
+}
+
+func TestCompareMultiOutputInArray(t *testing.T) {
+	assertQueryAll(t, `[.[] == 2]`, `[1, 2, 3]`, `[false,true,false]`)
+}
+
+// --- object construction with multi-output pair values ---
+
+func TestConstructMultiOutputValue(t *testing.T) {
+	// {user, title: .titles[]} produces one object per title (Cartesian product)
+	assertQueryAll(t,
+		`{user, title: .titles[]}`,
+		`{"user":"alice","titles":["A","B"]}`,
+		`{"user":"alice","title":"A"}`, `{"user":"alice","title":"B"}`,
+	)
+}
+
+func TestConstructCartesianProduct(t *testing.T) {
+	// Two multi-output pairs produce N×M objects
+	assertQueryAll(t,
+		`{a: .x[], b: .y[]}`,
+		`{"x":[1,2],"y":["p","q"]}`,
+		`{"a":1,"b":"p"}`,
+		`{"a":1,"b":"q"}`,
+		`{"a":2,"b":"p"}`,
+		`{"a":2,"b":"q"}`,
+	)
+}
+
+func TestConstructSingleOutputUnchanged(t *testing.T) {
+	// Single-output pairs still work correctly via fast path
+	assertQueryAll(t, `{a: .x, b: .y}`, `{"x":1,"y":2}`, `{"a":1,"b":2}`)
+	assertQueryAll(t, `{name, age}`, `{"name":"bob","age":30}`, `{"name":"bob","age":30}`)
+}
+
+func TestConstructMultiOutputEmpty(t *testing.T) {
+	// If any pair produces empty, no objects are emitted
+	assertQueryAll(t, `{a: .x[], b: .y}`, `{"x":[],"y":1}`)
+}
+
+// --- sort ---
+
+func TestSort(t *testing.T) {
+	assertQuery(t, `sort`, `[8,3,null,6]`, `[null,3,6,8]`)
+	assertQuery(t, `sort`, `[]`, `[]`)
+	// Full jq type ordering: null < false < true < numbers < strings < arrays < objects
+	assertQuery(t, `sort`, `[true,false,null,1,"a",[],[{}]]`, `[null,false,true,1,"a",[],[{}]]`)
+}
+
+func TestSortMixedTypes(t *testing.T) {
+	// Matches the jq.test canonical ordering test
+	assertQuery(t, `sort`,
+		`[42,[2,5,3,11],10,{"a":42,"b":2},{"a":42},true,2,[2,6],"hello",null,[2,5,6],{"a":[],"b":1},"abc","ab",[3,10],{},false,"abcd",null]`,
+		`[null,null,false,true,2,10,42,"ab","abc","abcd","hello",[2,5,3,11],[2,5,6],[2,6],[3,10],{},{"a":42},{"a":42,"b":2},{"a":[],"b":1}]`,
+	)
+}
+
+func TestSortBy(t *testing.T) {
+	assertQuery(t, `sort_by(.foo)`,
+		`[{"foo":4, "bar":10}, {"foo":3, "bar":10}, {"foo":2, "bar":1}]`,
+		`[{"foo":2, "bar":1},{"foo":3, "bar":10},{"foo":4, "bar":10}]`)
+}
+
+func TestSortByMultiKey(t *testing.T) {
+	assertQuery(t, `sort_by(.foo, .bar)`,
+		`[{"foo":4, "bar":10}, {"foo":3, "bar":20}, {"foo":2, "bar":1}, {"foo":3, "bar":10}]`,
+		`[{"foo":2, "bar":1},{"foo":3, "bar":10},{"foo":3, "bar":20},{"foo":4, "bar":10}]`)
+}
+
+// --- unique ---
+
+func TestUnique(t *testing.T) {
+	assertQuery(t, `unique`, `[1,2,5,3,5,3,1,3]`, `[1,2,3,5]`)
+	assertQuery(t, `unique`, `[]`, `[]`)
+}
+
+func TestUniqueBy(t *testing.T) {
+	assertQuery(t, `unique_by(.foo)`,
+		`[{"foo": 1, "bar": 2}, {"foo": 1, "bar": 3}, {"foo": 4, "bar": 5}]`,
+		`[{"foo": 1, "bar": 2},{"foo": 4, "bar": 5}]`)
+	assertQuery(t, `unique_by(length)`,
+		`["chunky", "bacon", "kitten", "cicada", "asparagus"]`,
+		`["bacon","chunky","asparagus"]`)
+}
+
+// --- group_by ---
+
+func TestGroupBy(t *testing.T) {
+	assertQuery(t, `group_by(.foo)`,
+		`[{"foo":1, "bar":10}, {"foo":3, "bar":100}, {"foo":1, "bar":1}]`,
+		`[[{"foo":1, "bar":10},{"foo":1, "bar":1}],[{"foo":3, "bar":100}]]`)
+}
+
+// --- transpose ---
+
+func TestTranspose(t *testing.T) {
+	assertQuery(t, `transpose`, `[[1], [2,3]]`, `[[1,2],[null,3]]`)
+	assertQuery(t, `transpose`, `[]`, `[]`)
 }
