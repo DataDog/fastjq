@@ -10,7 +10,7 @@ fastjq operates directly on raw `[]byte` — no `json.Unmarshal`, no `map[string
 
 ## Design
 
-The standard approach costs ~870 µs and ~4,600 allocations just to parse a 100KB log object — before you've done any work. fastjq eliminates it:
+The standard approach costs ~800 µs and ~4,600 allocations just to parse a 100KB log object — before you've done any work. fastjq eliminates it:
 
 - **No parse tree.** Input `[]byte` is the only representation. A scanner moves through bytes tracking a position integer, skipping values by depth-counting brackets. Nothing is ever converted to Go types.
 - **Compile once, run many times.** `Compile` builds an immutable AST (allocates once). `Run`/`RunWithBuffer`/`RunFunc` walk the input guided by that AST — zero allocations at runtime for core operations with a reused buffer.
@@ -26,21 +26,21 @@ fastjq's allocation model: **core operations are 0 allocs** (access, filtering, 
 
 | Operation | Input | fastjq | gojq | Speedup | allocs |
 |-----------|-------|--------|------|---------|--------|
-| `select(.f == "x")` | Small (~100B) | 0.010 µs | 0.57 µs | **56x** | 0 |
-| `select(.f == "x")`¹ | Large (~100KB) | 175 µs | 770 µs | **4.4x** | 0 |
-| `.field` | Small (~100B) | 0.090 µs | 0.35 µs | **3.8x** | 0 |
-| `.field` | Large (~100KB) | 45 µs | 570 µs | **13x** | 0 |
-| `del(.f)` | Large (~100KB) | 175 µs | 794 µs | **4.5x** | 0 |
-| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 155 µs | 799 µs | **5.2x** | 0 |
-| `map(.name)` | 200-elem array (~6KB) | 14 µs | 92 µs | **6.6x** | 0 |
-| `min_by(.value)` | 100-elem array (~3KB) | 9 µs | 54 µs | **6x** | 0 |
-| `.a * .b` (multiply) | Small (~100B) | 0.087 µs | 0.71 µs | **8.1x** | 0 |
-| `first(.[] \| select(. > 100))` | 200-int array | 3.6 µs | 1.4 µs | **0.4x**² | 0 |
+| `select(.f == "x")` | Small (~100B) | 0.011 µs | 0.57 µs | **51x** | 0 |
+| `select(.f == "x")`¹ | Large (~100KB) | 31 µs | 781 µs | **25x** | 0 |
+| `.field` | Small (~100B) | 0.085 µs | 0.35 µs | **4.1x** | 0 |
+| `.field` | Large (~100KB) | 7.8 µs | 582 µs | **75x** | 0 |
+| `del(.f)` | Large (~100KB) | 34 µs | 813 µs | **24x** | 0 |
+| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 31 µs | 789 µs | **25x** | 0 |
+| `map(.name)` | 200-elem array (~6KB) | 13 µs | 92 µs | **7.1x** | 0 |
+| `min_by(.value)` | 100-elem array (~3KB) | 8.3 µs | 55 µs | **6.6x** | 0 |
+| `.a * .b` (multiply) | Small (~100B) | 0.065 µs | 0.74 µs | **11x** | 0 |
+| `first(.[] \| select(. > 100))` | 200-int array | 3.9 µs | 1.4 µs | **0.4x**² | 0 |
 
 ¹ Large select uses the last field in a 200-field object — fastjq scans the full document, no early-exit advantage.
 ² gojq wins on small arrays of raw integers: after unmarshal, element access is native Go slice operations.
 
-The speedup is largest on small inputs where gojq's marshal/unmarshal overhead dominates. On large inputs both engines scan bytes and fastjq is still 4–5x faster. The exception is small primitive integer arrays, where gojq's in-memory representation wins.
+The speedup is largest on small inputs where gojq's marshal/unmarshal overhead dominates. On large inputs fastjq is 18–75x faster thanks to SIMD-accelerated string scanning. The exception is small primitive integer arrays, where gojq's in-memory representation wins.
 
 ### vs jq CLI (JSONL throughput, 100K lines, ~11MB, Apple M4 Max, jq 1.8.1)
 

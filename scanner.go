@@ -1,5 +1,7 @@
 package fastjq
 
+import "bytes"
+
 // scanner is a zero-allocation JSON scanner that operates on raw bytes.
 // It never copies data — all string reads return sub-slices of the input.
 type scanner struct {
@@ -9,6 +11,12 @@ type scanner struct {
 
 // skipWhitespace advances past spaces, tabs, newlines, carriage returns.
 func (s *scanner) skipWhitespace() {
+	// Fast path: all JSON whitespace (space, tab, LF, CR) is <= 0x20,
+	// while all structural/value characters are > 0x20.
+	// In compact JSON (the common case), this returns immediately.
+	if s.pos < len(s.data) && s.data[s.pos] > ' ' {
+		return
+	}
 	for s.pos < len(s.data) {
 		switch s.data[s.pos] {
 		case ' ', '\t', '\n', '\r':
@@ -22,6 +30,9 @@ func (s *scanner) skipWhitespace() {
 // readString reads a JSON string and returns the raw content between quotes
 // as a sub-slice (zero allocation). Advances pos past the closing quote.
 // Assumes pos is at the opening '"'.
+// Uses byte-by-byte scanning — readString is called on field keys which are
+// typically short (3-20 bytes), where function call overhead of bytes.IndexByte
+// outweighs its SIMD benefit. skipString handles long values separately.
 func (s *scanner) readString() []byte {
 	s.pos++ // skip opening '"'
 	start := s.pos
@@ -61,19 +72,41 @@ func (s *scanner) skipValue() {
 }
 
 // skipString skips a JSON string including its quotes.
+// Short strings (<=32 bytes) are scanned byte-by-byte to avoid function call
+// overhead. Longer strings use bytes.IndexByte for SIMD-accelerated scanning.
 func (s *scanner) skipString() {
 	s.pos++ // skip opening '"'
-	for s.pos < len(s.data) {
+	// Fast path: scan short strings byte-by-byte (common for field keys/short values)
+	limit := s.pos + 16
+	if limit > len(s.data) {
+		limit = len(s.data)
+	}
+	for s.pos < limit {
 		ch := s.data[s.pos]
 		if ch == '\\' {
 			s.pos += 2
 			continue
 		}
 		if ch == '"' {
-			s.pos++ // skip closing '"'
+			s.pos++
 			return
 		}
 		s.pos++
+	}
+	// SIMD path: use bytes.IndexByte for remaining long strings (x86/ARM64 accelerated)
+	for s.pos < len(s.data) {
+		rest := s.data[s.pos:]
+		qi := bytes.IndexByte(rest, '"')
+		if qi == -1 {
+			s.pos = len(s.data)
+			return
+		}
+		bi := bytes.IndexByte(rest[:qi], '\\')
+		if bi == -1 {
+			s.pos += qi + 1
+			return
+		}
+		s.pos += bi + 2
 	}
 }
 
@@ -323,34 +356,30 @@ func (s *scanner) findFieldStr(name string) (valueStart, valueEnd int) {
 	return -1, -1
 }
 
-// bytesEqual compares two byte slices for equality without allocation.
+// bytesEqual compares two byte slices for equality using the runtime's
+// assembly-optimized memequal (SIMD on x86/ARM64).
 func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return bytes.Equal(a, b)
 }
 
 // bytesEqualStr compares a byte slice to a string without allocation.
+// Go compiler optimizes string(a) == s to use runtime memequal directly
+// when the result is used only in a comparison (no heap allocation).
 func bytesEqualStr(a []byte, s string) bool {
-	if len(a) != len(s) {
-		return false
-	}
-	for i := range a {
-		if a[i] != s[i] {
-			return false
-		}
-	}
-	return true
+	return string(a) == s
 }
 
 // isFalsy returns true if the JSON value is null or false.
 func isFalsy(v []byte) bool {
+	if len(v) == 0 {
+		return true // empty = falsy
+	}
+	// Fast path: first byte is not whitespace (common in compact JSON).
+	b := v[0]
+	if b > ' ' {
+		return b == 'n' || b == 'f'
+	}
+	// Slow path: skip leading whitespace.
 	for i := 0; i < len(v); i++ {
 		switch v[i] {
 		case ' ', '\t', '\n', '\r':
@@ -363,7 +392,7 @@ func isFalsy(v []byte) bool {
 			return false
 		}
 	}
-	return true // empty = falsy
+	return true // all whitespace = falsy
 }
 
 // jsonEqual compares two raw JSON values for equality.
@@ -534,27 +563,9 @@ func jsonCompare(a, b []byte) (int, bool) {
 }
 
 // bytesCompare compares two byte slices lexicographically.
-// Returns -1, 0, or 1.
+// Returns -1, 0, or 1. Uses bytes.Compare for assembly-optimized comparison.
 func bytesCompare(a, b []byte) int {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	for i := 0; i < n; i++ {
-		if a[i] < b[i] {
-			return -1
-		}
-		if a[i] > b[i] {
-			return 1
-		}
-	}
-	if len(a) < len(b) {
-		return -1
-	}
-	if len(a) > len(b) {
-		return 1
-	}
-	return 0
+	return bytes.Compare(a, b)
 }
 
 // evalCmpOp evaluates a comparison operator against two raw JSON values.
@@ -701,6 +712,10 @@ func byteOffsetToCodepointOffset(content []byte, byteOff int) int {
 
 // trimWhitespace trims leading whitespace from a byte slice.
 func trimWhitespace(b []byte) []byte {
+	// Fast path: first byte is not whitespace (common in compact JSON).
+	if len(b) > 0 && b[0] > ' ' {
+		return b
+	}
 	for len(b) > 0 {
 		switch b[0] {
 		case ' ', '\t', '\n', '\r':
