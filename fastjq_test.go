@@ -217,6 +217,26 @@ func TestFieldAccessNull(t *testing.T) {
 	}
 }
 
+func TestFieldAccessOnNull(t *testing.T) {
+	// jq returns null for null | .field; fastjq now matches this behaviour
+	assertQuery(t, `.foo`, `null`, `null`)
+	assertQuery(t, `.foo.bar`, `null`, `null`)
+	assertQuery(t, `.foo`, `{"foo":null}`, `null`) // existing: field whose value is null
+}
+
+func TestFieldAccessOnNullNonObjectStillErrors(t *testing.T) {
+	// non-null, non-object types still error (without optional)
+	p, _ := Compile(`.foo`)
+	_, err := p.Run([]byte(`42`))
+	if err == nil {
+		t.Error("expected error for number | .foo, got nil")
+	}
+	_, err = p.Run([]byte(`"hello"`))
+	if err == nil {
+		t.Error("expected error for string | .foo, got nil")
+	}
+}
+
 func TestFieldAccessArray(t *testing.T) {
 	p, err := Compile(".items")
 	if err != nil {

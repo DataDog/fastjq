@@ -164,8 +164,8 @@ The skipped tests cover operations not yet implemented: recursive descent (`..`)
 **`select` conditions must be single-valued.**
 `select(.items[] == "x")` silently tests only the first element. Use `any(.[]; . == "x")` instead.
 
-**`.field` on `null` errors — use `.field?` for null-safe access.**
-`null | .field` errors in fastjq (jq returns null). Use `.a?.b?` for full null-safety.
+**`.field` on non-object types errors — use `.field?` for null-safe access.**
+`null | .field` returns `null` (matching jq). Other non-object types (`1 | .field`, `"s" | .field`) return an error. Use `.a?.b?` to suppress errors on any type.
 
 **`map(f)` allocates when `f` constructs new data** (Tier 1 — proportional to output).
 `map(.name)` is 0 allocs (field access returns an input sub-slice). `map({name, price})` allocates ~1 buffer per element to prevent result aliasing. Still 5–8x fewer allocations than gojq.
@@ -186,8 +186,6 @@ Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are 
 jq treats this as `[(a,b) | f]`. Fastjq parses array elements independently.
 
 **No recursive descent** (`..|..` / `recurse`) — allocations scale with input depth, not output. Permanently rejected.
-
-**`sort`, `sort_by`, `group_by`, `unique`, `unique_by`, `transpose` — implemented as Tier 2** (O(n) allocation proportional to collection size; see [BENCHMARKS.md](docs/BENCHMARKS.md) for alloc counts).
 
 **`nan`/`infinite` constants not supported** — they produce non-JSON output.
 

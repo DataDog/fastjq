@@ -4,6 +4,18 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — null | .field returns null (matches jq)
+
+### Fixed
+
+- `null | .field` now returns `null` instead of erroring, matching jq's behaviour. All other non-object types (`1 | .field`, `"s" | .field`, etc.) still error. Chained access on a missing field (`obj.missing.child`) was already correct — it returns `null` and skips the rest of the chain without ever reaching `.child`. This fix only affects an explicit `null` value piped into field access.
+
+### Tradeoffs
+
+- Code that relied on `try (null | .field) catch h` to fire the catch handler will now receive `null` instead. Use `if . == null then ... else .field end` if you need to distinguish null from missing.
+
+---
+
 ## [Unreleased] — sort, sort_by, unique, unique_by, group_by, transpose; multi-output compare and object construction
 
 ### Added

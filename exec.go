@@ -786,6 +786,13 @@ func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 		if node.optional {
 			return nil
 		}
+		// jq returns null for null | .field; all other non-object types error.
+		if s.pos < len(s.data) && s.data[s.pos] == 'n' {
+			if buf == nil {
+				return fn(bNull)
+			}
+			return fn(append(buf, "null"...))
+		}
 		return errExpectedObjectField
 	}
 
@@ -817,6 +824,13 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
 		if node.optional {
+			return append(buf, "null"...), nil
+		}
+		// jq returns null for null | .field; all other non-object types error.
+		if s.pos < len(s.data) && s.data[s.pos] == 'n' {
+			if buf == nil {
+				return bNull, nil
+			}
 			return append(buf, "null"...), nil
 		}
 		return nil, errExpectedObjectField
