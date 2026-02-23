@@ -357,32 +357,31 @@ BenchmarkGojq_Small_GSubRe_Hit-16             	  161991	      7477 ns/op	    940
 
 ## CLI Throughput: fastjq vs jq
 
-End-to-end JSONL throughput benchmarks comparing `fastjq-bench` (Go CLI using the fastjq library) against `jq` (C implementation, v1.8.1). Both read JSONL from stdin, apply a filter per line, write results to `/dev/null`. Median of 3 runs. Apple M4 Max. Updated 2026-02-20.
+End-to-end JSONL throughput benchmarks comparing `fastjq-bench` (Go CLI using the fastjq library) against `jq` (C implementation, v1.8.1). Both read JSONL from stdin, apply a filter per line, write results to `/dev/null`. Both validate JSON: fastjq calls `json.Valid()` per record, jq parses fully. Median of 3 runs. Apple M4 Max.
 
 | Operation | Input | jq (s) | fastjq (s) | Speedup |
 |-----------|-------|--------|-------------|---------|
-| Identity (`.`) | small (100K lines, ~11MB) | 0.343 | 0.026 | **13x** |
-| Field access (`.field_2`) | small | 0.151 | 0.021 | **7x** |
-| Field access (`.field_50`) | large (100 lines, ~16MB) | 0.093 | 0.013 | **7x** |
-| Delete field (`del(.field_2)`) | small | 0.365 | 0.034 | **11x** |
-| Object construction (`{field_0, field_2}`) | small | 0.247 | 0.032 | **8x** |
-| Select all match (`select(.field_2 == "xxx...")`) | small | 0.372 | 0.023 | **16x** |
-| Select none match (`select(.field_2 == "nope")`) | small | 0.141 | 0.023 | **6x** |
-| Alternative (`.field_2 // "default"`) | small | 0.168 | 0.022 | **8x** |
-| Case-insensitive select (`ascii_downcase`) | small | 0.679 | 0.033 | **21x** |
-| Prefix filter (`startswith`) | small | 0.366 | 0.026 | **14x** |
-| Field existence (`has`) | small | 0.365 | 0.023 | **16x** |
-| `to_entries` | small | 0.717 | 0.040 | **18x** |
-| `keys_unsorted` | small | 0.243 | 0.031 | **8x** |
+| Identity (`.`) | small (100K lines, ~11MB) | 0.356 | 0.052 | **6.8x** |
+| Field access (`.field_2`) | small | 0.152 | 0.051 | **3x** |
+| Field access (`.field_50`) | large (100 lines, ~16MB) | 0.091 | 0.043 | **2.1x** |
+| Delete field (`del(.field_2)`) | small | 0.383 | 0.061 | **6.3x** |
+| Object construction (`{field_0, field_2}`) | small | 0.252 | 0.060 | **4.2x** |
+| Select all match (`select(.field_2 == "xxx...")`) | small | 0.408 | 0.049 | **8.3x** |
+| Select none match (`select(.field_2 == "nope")`) | small | 0.143 | 0.050 | **2.9x** |
+| Alternative (`.field_2 // "default"`) | small | 0.164 | 0.050 | **3.3x** |
+| Case-insensitive select (`ascii_downcase`) | small | 0.655 | 0.065 | **10x** |
+| Prefix filter (`startswith`) | small | 0.377 | 0.059 | **6.4x** |
+| Field existence (`has`) | small | 0.359 | 0.051 | **7x** |
+| `to_entries` | small | 0.746 | 0.066 | **11x** |
+| `keys_unsorted` | small | 0.244 | 0.057 | **4.3x** |
 
 ### Key Takeaways (CLI)
 
-- **6x–21x faster** than jq across all operations on real JSONL workloads
-- **Case-insensitive select (`ascii_downcase`) is 21x faster**: near-zero cost for the string transform
-- **`to_entries` is 18x faster**: zero-copy reformatting vs jq's full parse + marshal cycle
-- **Field access improved to 7x** (both small and large) from the `findFieldStr` optimization
-- **Object construction up to 8x faster**: early-exit scan means no wasted work on remaining fields
-- **Select (none match) is only 6x faster** — both engines scan the full document; fastjq's advantage is smaller here
+- **3x–11x faster** than jq across all operations, with both tools validating JSON
+- **`to_entries` and `ascii_downcase` are 10–11x faster**: these ops involve minimal work beyond validation; fastjq's lazy scanning dominates
+- **Simple field access is 3x faster**: the `json.Valid()` validation pass is the dominant cost for both; fastjq's lazy scan still wins the rest
+- **Select with early exit is up to 8x faster**: `select` short-circuits after finding the field, avoiding the rest of the record; jq must complete its full parse first
+- **`json.Valid()` cost context**: for the embedded `RunWithBuffer`/`RunFunc` API on known-valid inputs you can skip validation entirely — the Go benchmarks in the table above show the full 13–75x speedup from the library directly
 
 ### Reproducing
 

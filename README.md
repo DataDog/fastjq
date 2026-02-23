@@ -52,21 +52,23 @@ The speedup is largest on small inputs where gojq's marshal/unmarshal overhead d
 
 ### vs jq CLI (JSONL throughput, 100K lines, ~11MB, Apple M4 Max, jq 1.8.1)
 
+Both tools validate JSON. fastjq calls `json.Valid()` before processing each record.
+
 | Operation | Input | jq (s) | fastjq (s) | Speedup |
 |-----------|-------|--------|------------|---------|
-| `.` (identity) | small | 0.343 | 0.026 | **13x** |
-| `.field` | small | 0.151 | 0.021 | **7x** |
-| `.field` | large (~16MB, 100 lines) | 0.093 | 0.013 | **7x** |
-| `del(.field)` | small | 0.365 | 0.034 | **11x** |
-| `{field_0, field_2}` (construct) | small | 0.247 | 0.032 | **8x** |
-| `select(.f == "x")` (all match) | small | 0.372 | 0.023 | **16x** |
-| `select(.f == "x")` (none match) | small | 0.141 | 0.023 | **6x** |
-| `.field // "default"` | small | 0.168 | 0.022 | **8x** |
-| `select(.f \| ascii_downcase == "x")` | small | 0.679 | 0.033 | **21x** |
-| `select(.f \| startswith("x"))` | small | 0.366 | 0.026 | **14x** |
-| `select(has("field"))` | small | 0.365 | 0.023 | **16x** |
-| `to_entries` | small | 0.717 | 0.040 | **18x** |
-| `keys_unsorted` | small | 0.243 | 0.031 | **8x** |
+| `.` (identity) | small | 0.356 | 0.052 | **6.8x** |
+| `.field` | small | 0.152 | 0.051 | **3x** |
+| `.field` | large (~16MB, 100 lines) | 0.091 | 0.043 | **2.1x** |
+| `del(.field)` | small | 0.383 | 0.061 | **6.3x** |
+| `{field_0, field_2}` (construct) | small | 0.252 | 0.060 | **4.2x** |
+| `select(.f == "x")` (all match) | small | 0.408 | 0.049 | **8.3x** |
+| `select(.f == "x")` (none match) | small | 0.143 | 0.050 | **2.9x** |
+| `.field // "default"` | small | 0.164 | 0.050 | **3.3x** |
+| `select(.f \| ascii_downcase == "x")` | small | 0.655 | 0.065 | **10x** |
+| `select(.f \| startswith("x"))` | small | 0.377 | 0.059 | **6.4x** |
+| `select(has("field"))` | small | 0.359 | 0.051 | **7x** |
+| `to_entries` | small | 0.746 | 0.066 | **11x** |
+| `keys_unsorted` | small | 0.244 | 0.057 | **4.3x** |
 
 See [BENCHMARKS.md](docs/BENCHMARKS.md) for the complete table.
 

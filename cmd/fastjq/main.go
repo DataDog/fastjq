@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -27,6 +28,10 @@ func main() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
+		}
+		if !json.Valid(line) {
+			fmt.Fprintf(os.Stderr, "invalid JSON: %s\n", line)
+			os.Exit(1)
 		}
 		p.RunFunc(line, func(result []byte) error {
 			w.Write(result)
