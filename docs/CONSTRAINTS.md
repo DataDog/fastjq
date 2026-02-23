@@ -9,7 +9,16 @@
 
 The governing principle: **allocations are proportional to what you ask for, never to what the engine scans.**
 
-fastjq distinguishes four tiers of allocation behaviour. When deciding whether to implement a new operation, the question is always: *does the allocation scale with the result, or with the input?* If the caller can control the allocation by choosing what to request, it is acceptable. If the allocation scales with the shape of the data being processed regardless of the query, it is rejected.
+fastjq distinguishes four tiers of allocation behaviour:
+
+| Tier | Rule | Examples |
+|------|------|---------|
+| **Tier 0** | 0 allocs — core processing hot path | access, filter, compare, arithmetic, construction, math |
+| **Tier 1** | Allocs ∝ output size — unavoidable API constraints | `@base64`, `@uri`, `match`, `capture`, `scan`, `gsub` |
+| **Tier 2** | Allocs ∝ collection size — O(n) index, bounded, acceptable | `sort`, `group_by`, `unique` *(planned)* |
+| **Tier 3** | Rejected — allocs ∝ input structure, caller cannot bound | `recurse`/`..`, `range(n)` |
+
+When deciding whether to implement a new operation, the question is always: *does the allocation scale with the result, or with the input?* If the caller can control the allocation by choosing what to request, it is acceptable. If the allocation scales with the shape of the data being processed regardless of the query, it is rejected.
 
 ### Tier 0 — Zero-alloc (core processing)
 
