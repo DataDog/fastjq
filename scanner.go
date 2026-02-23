@@ -563,27 +563,9 @@ func jsonCompare(a, b []byte) (int, bool) {
 }
 
 // bytesCompare compares two byte slices lexicographically.
-// Returns -1, 0, or 1.
+// Returns -1, 0, or 1. Uses bytes.Compare for assembly-optimized comparison.
 func bytesCompare(a, b []byte) int {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	for i := 0; i < n; i++ {
-		if a[i] < b[i] {
-			return -1
-		}
-		if a[i] > b[i] {
-			return 1
-		}
-	}
-	if len(a) < len(b) {
-		return -1
-	}
-	if len(a) > len(b) {
-		return 1
-	}
-	return 0
+	return bytes.Compare(a, b)
 }
 
 // evalCmpOp evaluates a comparison operator against two raw JSON values.
