@@ -4,6 +4,46 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — Restore 0 allocs/op for all Tier 0 operations
+
+### Fixed
+
+- **Escape analysis contamination causing 3+ allocs/op on all Tier 0 operations.** A prior commit (`d44ce30`) introduced two double-nested closure patterns in `execMulti` that caused Go's escape analysis to mark `execMulti`'s `fn func([]byte) error` parameter as always escaping to the heap. This propagated to ALL closures passed to `execMulti` (including `execFirstResult`'s closure, `execArrayConstruct`'s closures, `execIterator`'s closures, etc.), adding 3 allocs/op to every operation that went through `execMulti`.
+
+  **Root cause — two patterns created the escape cycle:**
+  1. `execCompare` used a double-nested `execMulti` call where the inner closure captured `fn` from `execCompare`'s parameter and was itself passed to `execMulti` as `fn`, creating a recursive capture chain.
+  2. `opMinus/opMul/opDiv/opMod` in `execMulti` had the same double-nested pattern.
+
+  **Fix — three-part approach:**
+  1. **`execCompare`**: Use `execSingle` for single-output right sides (the common case). For multi-output right sides (`range(2) == range(2)`), collect right values first without `fn` in the closure, then iterate left calling `fn` directly. `fn` is never captured inside a nested `execMulti` closure.
+  2. **`opMinus/Mul/Div/Mod` in `execMulti`**: Same fix — `execSingle` for single-output right side, collect-then-iterate for multi-output right side.
+  3. **`execSingle` direct dispatch**: Added all Tier 0 operations (`del`, `construct`, `pipe` (single-output), `select`, `has`, `if-then-else`, `add`, `alternative`, `try`, all math ops, `floor/ceil/round`, string interpolation, `contains`, encode ops) directly to `execSingle` with no-closure implementations. These ops now bypass `execMulti` entirely for single-result evaluation, providing defense-in-depth regardless of escape analysis behavior.
+  4. **`collectPairCombos`** (replacing `constructPairsInto`): Redesigned to not capture `fn` from `execConstructMulti` in its recursive helper, eliminating a third potential escape cycle.
+
+### Benchmark results
+
+All operations restored to 0 allocs/op. Representative improvements from the regression state:
+
+| Operation | Before (regressed) | After (restored) |
+|-----------|-------------------|-----------------|
+| `del(.f)` Small | 3 allocs | 0 allocs |
+| `{construct}` Small | 3 allocs | 0 allocs |
+| `select(.f == "x")` Small | 3 allocs | 0 allocs |
+| `has("key")` Small | 6 allocs | 0 allocs |
+| `if-then-else` Small | 3 allocs | 0 allocs |
+| `add` Small | 3 allocs | 0 allocs |
+| `.a * .b` Small | 3 allocs | 0 allocs |
+| `map(.name)` Small | 29 allocs | 0 allocs |
+| `.[]` iterator Small | 1 alloc | 0 allocs |
+| `ascii_downcase` in select | 2 allocs | 0 allocs |
+| `any(gen; cond)` Small | 3 allocs | 0 allocs |
+| `isempty`, `nth` Small | 6-7 allocs | 0 allocs |
+| `try` Small | 4 allocs | 0 allocs |
+| string interpolation Small | 3 allocs | 0 allocs |
+| math ops (sqrt, log, etc.) | 3 allocs | 0 allocs |
+
+---
+
 ## [Unreleased] — nan/infinite support; isnan/isinfinite/isfinite/isnormal; pow(x;y); explode/implode
 
 ### Added

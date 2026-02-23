@@ -34,16 +34,16 @@ The core tier covers the full hot path for log processing. For operations that d
 
 | Operation | Input | fastjq | gojq | Speedup | allocs |
 |-----------|-------|--------|------|---------|--------|
-| `select(.f == "x")` | Small (~100B) | 0.011 µs | 0.57 µs | **51x** | 0 |
-| `select(.f == "x")`¹ | Large (~100KB) | 31 µs | 781 µs | **25x** | 0 |
-| `.field` | Small (~100B) | 0.085 µs | 0.35 µs | **4.1x** | 0 |
-| `.field` | Large (~100KB) | 7.8 µs | 582 µs | **75x** | 0 |
-| `del(.f)` | Large (~100KB) | 34 µs | 813 µs | **24x** | 0 |
-| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 31 µs | 789 µs | **25x** | 0 |
-| `map(.name)` | 200-elem array (~6KB) | 13 µs | 92 µs | **7.1x** | 0 |
-| `min_by(.value)` | 100-elem array (~3KB) | 8.3 µs | 55 µs | **6.6x** | 0 |
-| `.a * .b` (multiply) | Small (~100B) | 0.065 µs | 0.74 µs | **11x** | 0 |
-| `first(.[] \| select(. > 100))` | 200-int array | 3.9 µs | 1.4 µs | **0.4x**² | 0 |
+| `select(.f == "x")` | Small (~100B) | 0.104 µs | 1.66 µs | **16x** | 0 |
+| `select(.f == "x")`¹ | Large (~100KB) | 33 µs | 769 µs | **24x** | 0 |
+| `.field` | Small (~100B) | 0.083 µs | 0.94 µs | **11x** | 0 |
+| `.field` | Large (~100KB) | 7.7 µs | 573 µs | **75x** | 0 |
+| `del(.f)` | Large (~100KB) | 33 µs | 790 µs | **24x** | 0 |
+| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 33 µs | 774 µs | **24x** | 0 |
+| `map(.name)` | 200-elem array (~6KB) | 13 µs | 91 µs | **7x** | 0 |
+| `min_by(.value)` | 100-elem array (~3KB) | 8.2 µs | 54 µs | **6.6x** | 0 |
+| `.a * .b` (multiply) | Small (~100B) | 0.064 µs | 0.70 µs | **11x** | 0 |
+| `first(.[] \| select(. > 100))` | 200-int array | 3.5 µs | 1.4 µs | **0.4x**² | 0 |
 
 ¹ Large select uses the last field in a 200-field object — fastjq scans the full document, no early-exit advantage.
 ² gojq wins on small arrays of raw integers: after unmarshal, element access is native Go slice operations.
