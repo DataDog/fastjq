@@ -73,3 +73,25 @@ func (p *Program) RunAll(input []byte) ([][]byte, error) {
 func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error {
 	return execMulti(p.root, stripBOM(input), nil, fn)
 }
+
+// Validate checks whether input is valid JSON according to RFC 8259.
+// Returns nil for valid JSON, or a descriptive error for invalid JSON.
+// Zero allocations on valid input. Validates: string escapes, control
+// characters, number format, keyword spelling, bracket matching,
+// object structure, and trailing content.
+func Validate(input []byte) error {
+	s := &scanner{data: stripBOM(input)}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return errInvalidJSON
+	}
+	s.validateValue()
+	if s.err != nil {
+		return s.err
+	}
+	s.skipWhitespace()
+	if s.pos < len(s.data) {
+		return errTrailingContent
+	}
+	return nil
+}

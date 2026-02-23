@@ -1,6 +1,9 @@
 package fastjq
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // FuzzCompile ensures no query string causes Compile to panic.
 func FuzzCompile(f *testing.F) {
@@ -294,5 +297,57 @@ func FuzzBoth(f *testing.F) {
 			return // invalid query — compile errors are expected, panics are not
 		}
 		p.Run([]byte(input)) // must not panic
+	})
+}
+
+// FuzzValidate checks that Validate agrees with json.Valid on all inputs.
+// Any disagreement is a bug in our validator.
+func FuzzValidate(f *testing.F) {
+	seeds := []string{
+		// Valid JSON
+		`null`, `true`, `false`, `0`, `1`, `-1`, `123`, `0.5`, `-0.5`,
+		`1.23e10`, `1.23E-5`, `""`, `"hello"`, `"a\"b"`, `"a\\b"`,
+		`"a\nb"`, `"a\tb"`, `"a\u0041b"`, `{}`, `{"a":1}`, `{"a":1,"b":2}`,
+		`[]`, `[1]`, `[1,2,3]`, `[1,"two",true,null,[],{}]`,
+		`{"a":[1,2,{"b":"c"}]}`, `[{"x":1},{"y":2}]`,
+		// Whitespace variations
+		` null `, ` { "a" : 1 } `, "\t\n{\"a\":1}\n",
+		// Invalid JSON
+		``, `   `, `{`, `[`, `"hello`, `"hello\`, `"hello\x"`,
+		`"\u00"`, `"\u00GG"`, `tru`, `fals`, `nul`,
+		`True`, `FALSE`, `NULL`,
+		`01`, `00`, `-`, `1.`, `1e`, `1e+`,
+		`@`, `!`, `,`, `1 2`, `{} []`, `null null`,
+		`{"a":1`, `[1,2`, `{"a" 1}`, `{a:1}`,
+		`{"a":1]`, `[1}`,
+		// Control characters
+		"\"\x00\"", "\"\x1F\"", "\"\t\"", "\"\n\"",
+		// UTF-8 BOM
+		"\xEF\xBB\xBF{\"a\":1}",
+		// Large number
+		`12345678901234567890`,
+		// Nested
+		`{"a":{"b":{"c":[1,2,3]}}}`,
+		`[[[[]]]]`,
+		// Tricky edges
+		`{"":""}`, `[0e0]`, `[-0]`, `[1E2]`,
+		`"\/escaped slash"`,
+		`"\uD800"`, // lone surrogate — json.Valid accepts, check behavior
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		b := []byte(input)
+		stdValid := json.Valid(b)
+		ourValid := Validate(b) == nil
+		if stdValid != ourValid {
+			// Known difference: we strip UTF-8 BOM (matching jq behavior),
+			// json.Valid rejects it. Skip BOM-prefixed inputs.
+			if len(b) >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF {
+				return
+			}
+			t.Errorf("input %q: json.Valid=%v, Validate=%v", input, stdValid, ourValid)
+		}
 	})
 }

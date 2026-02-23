@@ -3,7 +3,7 @@
 ## Safety Constraints
 
 - **Never panics.** fastjq must never panic regardless of input — valid JSON, malformed JSON, empty input, or arbitrary bytes. A panic in a log processing pipeline is worse than wrong output. This guarantee is enforced by `TestNoPanicMalformedInput` (deterministic) and three fuzz test functions (`FuzzCompile`, `FuzzRunFixed`, `FuzzBoth`). Any code path that could panic on bad input is a bug.
-- **Correct results only guaranteed for valid JSON.** With malformed input the output is undefined, but the process remains safe.
+- **Progressive validation on malformed input.** The scanner detects structural errors (unterminated strings/containers, mismatched brackets, invalid value starts, missing object structure) during execution and returns errors. `Validate()` provides full RFC 8259 validation (escapes, control chars, number format, keywords). Both are zero-alloc.
 
 ## Performance Model
 
@@ -74,7 +74,7 @@ These operations are not rejected on principle — they're deferred because impl
 
 - **Supported operations**: identity (`.`), field access (`.foo`, `.foo.bar`), array indexing (`.[0]`, `.[-1]`), slicing (`.[n:m]`, `.[:m]`, `.[n:]`), deletion (`del(.foo)`, `del(.[0])`, `del(.[n:m])`), iteration (`.[]`), object construction (`{name}`, `{a: .foo}`), array construction (`[.foo, .bar]`), `map(expr)`, `add`, `expr + expr` (including object merge), `expr - expr`, `expr * expr` (including `string * n`, `n * string`, `object * object` recursive merge), `expr / expr`, `expr % expr`, `flatten`/`flatten(n)`, `split("s")`, `join("s")`, `min`/`max`, `min_by(f)`/`max_by(f)`, `to_entries`, `from_entries`, `keys_unsorted`, `any`/`any(expr)`/`any(gen; cond)`, `all`/`all(expr)`/`all(gen; cond)`, `first`/`first(expr)`, `last`/`last(expr)`, `limit(n; expr)`, `nth(n; gen)`, `isempty(expr)`, string interpolation (`"\(expr)"`), pipe (`expr | expr`), grouping (`(expr)`), literals (`null`, `true`, `false`, `"string"`, `123`), comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), boolean (`and`, `or`, `not`), `has("key")`, `length`, `ascii_downcase`, `ascii_upcase`, `startswith("s")`, `endswith("s")`, `ltrimstr("s")`, `rtrimstr("s")`, `if-then-elif-...-else-end`, `empty`, select (`select(cond)`), alternative (`//`), optional (`.foo?`), type (`type`), `try`/`try-catch`, `error`/`error(expr)`, `tojson`/`@json`, `fromjson`, `tostring`/`@text`, `tonumber`, `@base64`, `@base64d`, `@uri`, `@urid`, `@html`, `@csv`, `@tsv`, `@sh`, `floor`, `ceil`, `round`, `nearbyint`, `contains(val)`, `inside(val)`, `index(s)`, `rindex(s)`, `indices(s)`, `sqrt`, `fabs`, `atan` (1-arg), `log`, `log2`, `log10`, `exp`, `exp2`, `exp10`, `cbrt`, `logb`, `sin`, `cos`, `tan`, `asin`, `acos`, `tgamma`, `lgamma`, `j0`, `j1`, `test(re)`/`test(re; flags)`, `match(re)`/`match(re; flags)`, `capture(re)`/`capture(re; flags)`, `scan(re)`/`scan(re; flags)`, `sub(re; s)`, `gsub(re; s)`
 - **Input format**: valid JSON objects or arrays — no streaming, no JSONL
-- **No validation**: assumes well-formed JSON input; behavior on malformed input is undefined
+- **Progressive validation**: the scanner detects structural errors during execution; `Validate()` provides full RFC 8259 checking. Validation errors bypass `try-catch` (they indicate malformed input, not query-level errors).
 - **No pretty-printing**: output is compact JSON only
 - **`select` condition must be single-output**: `execSelect` evaluates the condition via `execSingle`, which captures only the first result. Conditions that produce multiple values silently test only the first element. Use simple field comparisons: `select(.field == "value")`.
 - **`if-then-else` condition supports multi-output**: `execIf` uses `execMulti` for the condition, so generators like `if empty then x end` correctly produce zero outputs. Single-output conditions take a fast path to avoid closure allocation.
@@ -82,7 +82,7 @@ These operations are not rejected on principle — they're deferred because impl
 
 ## Design Constraints
 
-- **Scanner is stateless between runs**: `struct { data []byte; pos int }` reset per call
+- **Scanner is stateless between runs**: `struct { data []byte; pos int; err error }` reset per call; `err` captures validation errors during scanning
 - **AST allocates once at compile time**: `Compile()` allocates, `Run()` does not (with buffer reuse, for Tier 0 ops)
 - **Comma reconstruction**: deletion never copies commas from input; reconstructs containers with own commas to avoid trailing-comma bugs
 - **String comparison without allocation**: `bytesEqualStr` compares `[]byte` keys to `string` field names without converting; `findFieldStr` avoids `[]byte(string)` conversion at call sites
@@ -94,7 +94,7 @@ These operations are not rejected on principle — they're deferred because impl
 - **isFalsy by first-byte check**: `n` = null, `f` = false — one branch, zero alloc
 - **Number comparison**: byte-identical fast path (zero-alloc), `parseFloat` slow path using `unsafe.String` to avoid string allocation
 - **Optional is a flag, not an op type**: `node.optional = true` keeps AST simple
-- **`try` propagates `errBreak`**: `errBreak` is a control signal (for `first`/`limit`), not an error — `opTry` in `execMulti` propagates it unchanged
+- **`try` propagates `errBreak` and validation errors**: `errBreak` is a control signal (for `first`/`limit`), not an error — `opTry` in `execMulti` propagates it unchanged. Validation errors (sentinel errors from the scanner) also bypass `try-catch` — they indicate malformed input, not query-recoverable errors
 - **`exec` routes through `execSingle`**: `execSingle` handles all Tier 0 ops with direct return paths (no closures). Multi-output and Tier 1+ ops fall back to `execFirstResult` which uses the closure-based `execMulti` machinery.
 - **`elif` desugars at parse time**: `elif C then X` rewrites to `else (if C then X end)` — no new op type needed
 - **Regex patterns compiled at parse time**: `node.re *regexp.Regexp` holds the compiled RE2 pattern; Go RE2 guarantees linear-time matching (immune to ReDoS)

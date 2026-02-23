@@ -23,130 +23,135 @@ import (
 // fastjq and gojq are the suffixes after "BenchmarkFastjq_" / "BenchmarkGojq_".
 // An empty gojq means no comparison benchmark exists (row is omitted from table).
 type row struct {
-	op    string // human-readable operation syntax
-	input string // input description
-	fq    string // BenchmarkFastjq_<fq> suffix
-	gq    string // BenchmarkGojq_<gq> suffix (empty = fastjq-only, skip)
+	op        string // human-readable operation syntax
+	input     string // input description
+	fq        string // BenchmarkFastjq_<fq> suffix
+	gq        string // BenchmarkGojq_<gq> suffix (empty = fastjq-only, skip)
+	cmpPrefix string // override comparison prefix (default "BenchmarkGojq_")
 }
 
 // tableRows defines the summary table order and descriptions.
 // Add new benchmarks here when adding them to bench_test.go.
 var tableRows = []row{
 	// Access & deletion
-	{"`.field`", "Small (~100B)", "Small_Field", "Small_Field"},
-	{"`.field`", "Large (~100KB)", "Large_Field", "Large_Field"},
-	{"`del(.f)`", "Small (~100B)", "Small_Del", "Small_Del"},
-	{"`del(.f)`", "Medium (~2KB)", "Medium_Del", "Medium_Del"},
-	{"`del(.f)`", "Large (~100KB)", "Large_Del", "Large_Del"},
-	{"`.[n]`", "5-elem array", "Small_Index", "Small_Index"},
-	{"`del(.[n], .[m])`", "5-elem array", "Small_ArrayDel", "Small_ArrayDel"},
+	{"`.field`", "Small (~100B)", "Small_Field", "Small_Field", ""},
+	{"`.field`", "Large (~100KB)", "Large_Field", "Large_Field", ""},
+	{"`del(.f)`", "Small (~100B)", "Small_Del", "Small_Del", ""},
+	{"`del(.f)`", "Medium (~2KB)", "Medium_Del", "Medium_Del", ""},
+	{"`del(.f)`", "Large (~100KB)", "Large_Del", "Large_Del", ""},
+	{"`.[n]`", "5-elem array", "Small_Index", "Small_Index", ""},
+	{"`del(.[n], .[m])`", "5-elem array", "Small_ArrayDel", "Small_ArrayDel", ""},
 	// Construction & iteration
-	{"`{f0, f2}` (construct)", "Small (~100B)", "Small_Construct", "Small_Construct"},
-	{"`{f0, f50}` (construct)", "Large (~100KB)", "Large_Construct", "Large_Construct"},
-	{"`.[]` iterator", "5-elem array", "Small_Iterator", "Small_Iterator"},
-	{"`.[]` iterator", "200-elem array", "Large_Iterator", "Large_Iterator"},
+	{"`{f0, f2}` (construct)", "Small (~100B)", "Small_Construct", "Small_Construct", ""},
+	{"`{f0, f50}` (construct)", "Large (~100KB)", "Large_Construct", "Large_Construct", ""},
+	{"`.[]` iterator", "5-elem array", "Small_Iterator", "Small_Iterator", ""},
+	{"`.[]` iterator", "200-elem array", "Large_Iterator", "Large_Iterator", ""},
 	// Filtering
-	{"`select(.f == \"x\")`", "Small (~100B)", "Small_Select", "Small_Select"},
-	{"`select(.f == \"x\")`¹", "Large (~100KB, last field)", "Large_Select", "Large_Select"},
-	{"`select(.f and .g)`", "Small (~100B)", "Small_SelectAnd", "Small_SelectAnd"},
-	{"`select(.f or .g)`", "Small (~100B)", "Small_SelectOr", "Small_SelectOr"},
-	{"`has(\"key\")` in select", "Small (~100B)", "Small_Has", "Small_Has"},
-	{"`has(\"key\")` in select", "Large (~100KB)", "Large_Has", "Large_Has"},
-	{"`if-then-else`", "Small (~100B)", "Small_IfThenElse", "Small_IfThenElse"},
-	{"`.f // \"default\"`", "Small (~100B)", "Small_Alternative", "Small_Alternative"},
-	{"`try .field` (no error)", "Small (~100B)", "Small_TryNoError", "Small_TryNoError"},
+	{"`select(.f == \"x\")`", "Small (~100B)", "Small_Select", "Small_Select", ""},
+	{"`select(.f == \"x\")`¹", "Large (~100KB, last field)", "Large_Select", "Large_Select", ""},
+	{"`select(.f and .g)`", "Small (~100B)", "Small_SelectAnd", "Small_SelectAnd", ""},
+	{"`select(.f or .g)`", "Small (~100B)", "Small_SelectOr", "Small_SelectOr", ""},
+	{"`has(\"key\")` in select", "Small (~100B)", "Small_Has", "Small_Has", ""},
+	{"`has(\"key\")` in select", "Large (~100KB)", "Large_Has", "Large_Has", ""},
+	{"`if-then-else`", "Small (~100B)", "Small_IfThenElse", "Small_IfThenElse", ""},
+	{"`.f // \"default\"`", "Small (~100B)", "Small_Alternative", "Small_Alternative", ""},
+	{"`try .field` (no error)", "Small (~100B)", "Small_TryNoError", "Small_TryNoError", ""},
 	// Arithmetic
-	{"`.a + .b` (strings)", "Small (~100B)", "Small_Plus", "Small_Plus"},
-	{"`\"prefix\" + .name`", "Small (~100B)", "Small_PlusStr", "Small_PlusStr"},
-	{"`.a - .b` (subtract)", "Small (~100B)", "Small_Subtract", "Small_Subtract"},
-	{"`.a * .b` (multiply)", "Small (~100B)", "Small_Multiply", "Small_Multiply"},
-	{"`.a / .b` (divide)", "Small (~100B)", "Small_Divide", "Small_Divide"},
-	{"`.a - .b` (array diff)", "5-elem arrays", "Small_ArrayDiff", "Small_ArrayDiff"},
+	{"`.a + .b` (strings)", "Small (~100B)", "Small_Plus", "Small_Plus", ""},
+	{"`\"prefix\" + .name`", "Small (~100B)", "Small_PlusStr", "Small_PlusStr", ""},
+	{"`.a - .b` (subtract)", "Small (~100B)", "Small_Subtract", "Small_Subtract", ""},
+	{"`.a * .b` (multiply)", "Small (~100B)", "Small_Multiply", "Small_Multiply", ""},
+	{"`.a / .b` (divide)", "Small (~100B)", "Small_Divide", "Small_Divide", ""},
+	{"`.a - .b` (array diff)", "5-elem arrays", "Small_ArrayDiff", "Small_ArrayDiff", ""},
 	// Aggregation & reduction
-	{"`length`", "Small (~100B)", "Small_Length", "Small_Length"},
-	{"`length`", "Large (~100KB)", "Large_Length", "Large_Length"},
-	{"`add` (numbers)", "5-elem array", "Small_Add", "Small_Add"},
-	{"`add` (strings)", "5-elem array", "Small_AddStrings", "Small_AddStrings"},
-	{"`flatten`", "3-elem nested array", "Small_Flatten", "Small_Flatten"},
-	{"`min`", "200-int array", "Small_Min", "Small_Min"},
-	{"`min_by(.value)`", "100-elem object array", "Small_MinBy", "Small_MinBy"},
+	{"`length`", "Small (~100B)", "Small_Length", "Small_Length", ""},
+	{"`length`", "Large (~100KB)", "Large_Length", "Large_Length", ""},
+	{"`add` (numbers)", "5-elem array", "Small_Add", "Small_Add", ""},
+	{"`add` (strings)", "5-elem array", "Small_AddStrings", "Small_AddStrings", ""},
+	{"`flatten`", "3-elem nested array", "Small_Flatten", "Small_Flatten", ""},
+	{"`min`", "200-int array", "Small_Min", "Small_Min", ""},
+	{"`min_by(.value)`", "100-elem object array", "Small_MinBy", "Small_MinBy", ""},
 	// Array ops
-	{"`map(.name)`", "20-elem array (~600B)", "Small_Map", "Small_Map"},
-	{"`map(.name)`", "200-elem array (~6KB)", "Large_Map", "Large_Map"},
-	{"`any`", "5-elem array", "Small_Any", "Small_Any"},
-	{"`any(expr)`", "5-elem array", "Small_AnyExpr", "Small_AnyExpr"},
-	{"`any(expr)`²", "200-int array", "Large_AnyExpr", "Large_AnyExpr"},
-	{"`any(gen; cond)`²", "200-int array", "Small_AnyTwoArg", "Small_AnyTwoArg"},
-	{"`first(expr)`", "5-elem array", "Small_First", "Small_First"},
-	{"`first(expr)`²", "200-int array", "Large_First", "Large_First"},
-	{"`last(expr)`", "5-elem array", "Small_Last", "Small_Last"},
-	{"`last(expr)`²", "200-int array", "Large_Last", "Large_Last"},
-	{"`limit(3; expr)`", "5-elem array", "Small_Limit", "Small_Limit"},
-	{"`limit(10; expr)`", "200-int array", "Large_Limit", "Large_Limit"},
-	{"`.[1:4]` slice", "6-elem array", "Small_Slice", "Small_Slice"},
-	{"`values`", "9-elem array", "Small_Values", "Small_Values"},
+	{"`map(.name)`", "20-elem array (~600B)", "Small_Map", "Small_Map", ""},
+	{"`map(.name)`", "200-elem array (~6KB)", "Large_Map", "Large_Map", ""},
+	{"`any`", "5-elem array", "Small_Any", "Small_Any", ""},
+	{"`any(expr)`", "5-elem array", "Small_AnyExpr", "Small_AnyExpr", ""},
+	{"`any(expr)`²", "200-int array", "Large_AnyExpr", "Large_AnyExpr", ""},
+	{"`any(gen; cond)`²", "200-int array", "Small_AnyTwoArg", "Small_AnyTwoArg", ""},
+	{"`first(expr)`", "5-elem array", "Small_First", "Small_First", ""},
+	{"`first(expr)`²", "200-int array", "Large_First", "Large_First", ""},
+	{"`last(expr)`", "5-elem array", "Small_Last", "Small_Last", ""},
+	{"`last(expr)`²", "200-int array", "Large_Last", "Large_Last", ""},
+	{"`limit(3; expr)`", "5-elem array", "Small_Limit", "Small_Limit", ""},
+	{"`limit(10; expr)`", "200-int array", "Large_Limit", "Large_Limit", ""},
+	{"`.[1:4]` slice", "6-elem array", "Small_Slice", "Small_Slice", ""},
+	{"`values`", "9-elem array", "Small_Values", "Small_Values", ""},
 	// Object transforms
-	{"`to_entries`", "Small (~100B)", "Small_ToEntries", "Small_ToEntries"},
-	{"`to_entries`", "Large (~100KB)", "Large_ToEntries", "Large_ToEntries"},
-	{"`keys_unsorted`", "Small (~100B)", "Small_KeysUnsorted", "Small_KeysUnsorted"},
-	{"`keys_unsorted`", "Large (~100KB)", "Large_KeysUnsorted", "Large_KeysUnsorted"},
-	{"`object merge .a + .b`", "Small (~100B)", "Small_ObjectMerge", "Small_ObjectMerge"},
+	{"`to_entries`", "Small (~100B)", "Small_ToEntries", "Small_ToEntries", ""},
+	{"`to_entries`", "Large (~100KB)", "Large_ToEntries", "Large_ToEntries", ""},
+	{"`keys_unsorted`", "Small (~100B)", "Small_KeysUnsorted", "Small_KeysUnsorted", ""},
+	{"`keys_unsorted`", "Large (~100KB)", "Large_KeysUnsorted", "Large_KeysUnsorted", ""},
+	{"`object merge .a + .b`", "Small (~100B)", "Small_ObjectMerge", "Small_ObjectMerge", ""},
 	// Type conversion
-	{"`tojson`", "Small (~100B)", "Small_ToJSON", "Small_ToJSON"},
-	{"`fromjson`", "JSON string", "Small_FromJSON", "Small_FromJSON"},
-	{"`tonumber`", "`\"42\"` string", "Small_ToNumber", "Small_ToNumber"},
+	{"`tojson`", "Small (~100B)", "Small_ToJSON", "Small_ToJSON", ""},
+	{"`fromjson`", "JSON string", "Small_FromJSON", "Small_FromJSON", ""},
+	{"`tonumber`", "`\"42\"` string", "Small_ToNumber", "Small_ToNumber", ""},
 	// Strings
-	{"`split(\",\")`", "short string", "Small_Split", "Small_Split"},
-	{"`join(\",\")`", "5-elem array", "Small_Join", "Small_Join"},
-	{"`ascii_downcase` in select", "Small (~100B)", "Small_AsciiDowncase", "Small_AsciiDowncase"},
-	{"`ascii_downcase` in select", "Large (~100KB)", "Large_AsciiDowncase", "Large_AsciiDowncase"},
-	{"`startswith(\"s\")`", "Small (~100B)", "Small_Startswith", "Small_Startswith"},
-	{"`startswith(\"s\")`", "Large (~100KB)", "Large_Startswith", "Large_Startswith"},
-	{"`endswith(\"s\")`", "Small (~100B)", "Small_Endswith", "Small_Endswith"},
-	{"`ltrimstr(\"s\")`", "Small (~100B)", "Small_Ltrimstr", "Small_Ltrimstr"},
-	{"`rtrimstr(\"s\")`", "Small (~100B)", "Small_Rtrimstr", "Small_Rtrimstr"},
+	{"`split(\",\")`", "short string", "Small_Split", "Small_Split", ""},
+	{"`join(\",\")`", "5-elem array", "Small_Join", "Small_Join", ""},
+	{"`ascii_downcase` in select", "Small (~100B)", "Small_AsciiDowncase", "Small_AsciiDowncase", ""},
+	{"`ascii_downcase` in select", "Large (~100KB)", "Large_AsciiDowncase", "Large_AsciiDowncase", ""},
+	{"`startswith(\"s\")`", "Small (~100B)", "Small_Startswith", "Small_Startswith", ""},
+	{"`startswith(\"s\")`", "Large (~100KB)", "Large_Startswith", "Large_Startswith", ""},
+	{"`endswith(\"s\")`", "Small (~100B)", "Small_Endswith", "Small_Endswith", ""},
+	{"`ltrimstr(\"s\")`", "Small (~100B)", "Small_Ltrimstr", "Small_Ltrimstr", ""},
+	{"`rtrimstr(\"s\")`", "Small (~100B)", "Small_Rtrimstr", "Small_Rtrimstr", ""},
 	// Complex multi-feature (array-building queries; allocs expected per element)
-	{"`select` + string ops + arith + construct", "~200B log event", "Complex_LogNormalize", "Complex_LogNormalize"},
-	{"`[.[] | select + arith + construct]`", "20-elem array (~1.5KB)", "Complex_ArrayPipeline", "Complex_ArrayPipeline"},
-	{"`length + map + add + min_by + any`", "20-elem array (~1.5KB)", "Complex_Aggregation", "Complex_Aggregation"},
-	{"`map(try {…} catch …)`", "20-elem array (~1.5KB)", "Complex_TolerantMap", "Complex_TolerantMap"},
-	{"`map(if … elif … else …)`", "20-elem array (~1.5KB)", "Complex_ElifRouting", "Complex_ElifRouting"},
-	{"`[.[] | str + tostring + str]`", "20-elem array (~1.5KB)", "Complex_StringBuild", "Complex_StringBuild"},
-	{"`to_entries | map(select) | from_entries`", "~200B log event", "Complex_EntryFilter", "Complex_EntryFilter"},
+	{"`select` + string ops + arith + construct", "~200B log event", "Complex_LogNormalize", "Complex_LogNormalize", ""},
+	{"`[.[] | select + arith + construct]`", "20-elem array (~1.5KB)", "Complex_ArrayPipeline", "Complex_ArrayPipeline", ""},
+	{"`length + map + add + min_by + any`", "20-elem array (~1.5KB)", "Complex_Aggregation", "Complex_Aggregation", ""},
+	{"`map(try {…} catch …)`", "20-elem array (~1.5KB)", "Complex_TolerantMap", "Complex_TolerantMap", ""},
+	{"`map(if … elif … else …)`", "20-elem array (~1.5KB)", "Complex_ElifRouting", "Complex_ElifRouting", ""},
+	{"`[.[] | str + tostring + str]`", "20-elem array (~1.5KB)", "Complex_StringBuild", "Complex_StringBuild", ""},
+	{"`to_entries | map(select) | from_entries`", "~200B log event", "Complex_EntryFilter", "Complex_EntryFilter", ""},
 	// Format strings
-	{"`@base64`", "34-char string", "Small_Base64Encode", "Small_Base64Encode"},
-	{"`@base64d`", "48-char encoded", "Small_Base64Decode", "Small_Base64Decode"},
-	{"`@uri`", "36-char URL string", "Small_URIEncode", "Small_URIEncode"},
+	{"`@base64`", "34-char string", "Small_Base64Encode", "Small_Base64Encode", ""},
+	{"`@base64d`", "48-char encoded", "Small_Base64Decode", "Small_Base64Decode", ""},
+	{"`@uri`", "36-char URL string", "Small_URIEncode", "Small_URIEncode", ""},
 	// Search
-	{"`index(\",\")`", "short string", "Small_IndexFind", "Small_IndexFind"},
-	{"`indices(\",\")`", "short string", "Small_IndicesAll", "Small_IndicesAll"},
+	{"`index(\",\")`", "short string", "Small_IndexFind", "Small_IndexFind", ""},
+	{"`indices(\",\")`", "short string", "Small_IndicesAll", "Small_IndicesAll", ""},
 	// Math builtins
-	{"`sqrt`", "float (e≈2.718)", "Small_Sqrt", "Small_Sqrt"},
-	{"`log`", "float (e≈2.718)", "Small_Log", "Small_Log"},
-	{"`sin`", "float (e≈2.718)", "Small_Sin", "Small_Sin"},
-	{"`atan`", "integer 1", "Small_Atan", "Small_Atan"},
-	{"`exp`", "integer 1", "Small_Exp", "Small_Exp"},
-	{"`tgamma`", "integer 5", "Small_Tgamma", "Small_Tgamma"},
-	{"`fabs`", "float -3.14", "Small_Fabs", "Small_Fabs"},
+	{"`sqrt`", "float (e≈2.718)", "Small_Sqrt", "Small_Sqrt", ""},
+	{"`log`", "float (e≈2.718)", "Small_Log", "Small_Log", ""},
+	{"`sin`", "float (e≈2.718)", "Small_Sin", "Small_Sin", ""},
+	{"`atan`", "integer 1", "Small_Atan", "Small_Atan", ""},
+	{"`exp`", "integer 1", "Small_Exp", "Small_Exp", ""},
+	{"`tgamma`", "integer 5", "Small_Tgamma", "Small_Tgamma", ""},
+	{"`fabs`", "float -3.14", "Small_Fabs", "Small_Fabs", ""},
 	// String interpolation
-	{"``\"\\(.level): \\(.svc)\"``", "~45B object", "Small_StringInterp", "Small_StringInterp"},
-	{"``\"user \\(.name) …\"``", "~45B object", "Small_StringInterpNum", "Small_StringInterpNum"},
+	{"``\"\\(.level): \\(.svc)\"``", "~45B object", "Small_StringInterp", "Small_StringInterp", ""},
+	{"``\"user \\(.name) …\"``", "~45B object", "Small_StringInterpNum", "Small_StringInterpNum", ""},
 	// Stream ops
-	{"`isempty(empty)`", "null", "Small_IsEmptyTrue", "Small_IsEmptyTrue"},
-	{"`isempty(.[])`", "5-elem array", "Small_IsEmptyFalse", "Small_IsEmptyFalse"},
-	{"`nth(2; .[])`", "5-elem array", "Small_Nth", "Small_Nth"},
+	{"`isempty(empty)`", "null", "Small_IsEmptyTrue", "Small_IsEmptyTrue", ""},
+	{"`isempty(.[])`", "5-elem array", "Small_IsEmptyFalse", "Small_IsEmptyFalse", ""},
+	{"`nth(2; .[])`", "5-elem array", "Small_Nth", "Small_Nth", ""},
 	// range (Tier 2: 1 alloc/value — proportional to what was requested)
-	{"`range(10)` (10 values)", "null", "Small_Range10", "Small_Range10"},
-	{"`limit(3; range(1000))`", "null — only 3 allocs", "Small_RangeLimit", "Small_RangeLimit"},
+	{"`range(10)` (10 values)", "null", "Small_Range10", "Small_Range10", ""},
+	{"`limit(3; range(1000))`", "null — only 3 allocs", "Small_RangeLimit", "Small_RangeLimit", ""},
 	// Regex (Go RE2) — pattern compiled once at Compile() time
-	{"`test(re)` hit", "short string", "Small_TestRe_Hit", "Small_TestRe_Hit"},
-	{"`test(re)` miss", "short string", "Small_TestRe_Miss", "Small_TestRe_Miss"},
-	{"`match(re)` hit", "short string", "Small_MatchRe_Hit", "Small_MatchRe_Hit"},
-	{"`match(re)` miss", "short string", "Small_MatchRe_Miss", "Small_MatchRe_Miss"},
-	{"`capture(re)` hit", "short string", "Small_CaptureRe_Hit", ""},
-	{"`scan(re)` no groups (4 matches)", "short string", "Small_ScanRe_NoGroups", ""},
-	{"`sub(re; s)` hit", "short string", "Small_SubRe_Hit", ""},
-	{"`gsub(re; s)` hit (4 matches)", "short string", "Small_GSubRe_Hit", ""},
+	{"`test(re)` hit", "short string", "Small_TestRe_Hit", "Small_TestRe_Hit", ""},
+	{"`test(re)` miss", "short string", "Small_TestRe_Miss", "Small_TestRe_Miss", ""},
+	{"`match(re)` hit", "short string", "Small_MatchRe_Hit", "Small_MatchRe_Hit", ""},
+	{"`match(re)` miss", "short string", "Small_MatchRe_Miss", "Small_MatchRe_Miss", ""},
+	{"`capture(re)` hit", "short string", "Small_CaptureRe_Hit", "", ""},
+	{"`scan(re)` no groups (4 matches)", "short string", "Small_ScanRe_NoGroups", "", ""},
+	{"`sub(re; s)` hit", "short string", "Small_SubRe_Hit", "", ""},
+	{"`gsub(re; s)` hit (4 matches)", "short string", "Small_GSubRe_Hit", "", ""},
+	// Validate (fastjq.Validate vs json.Valid)
+	{"`Validate`³", "Small (~100B)", "Small_Validate", "Small_Validate", "BenchmarkStdlib_"},
+	{"`Validate`³", "Medium (~2KB)", "Medium_Validate", "Medium_Validate", "BenchmarkStdlib_"},
+	{"`Validate`³", "Large (~100KB)", "Large_Validate", "Large_Validate", "BenchmarkStdlib_"},
 }
 
 type result struct {
@@ -212,13 +217,17 @@ func formatSpeedup(fqNs, gqNs float64) string {
 
 func buildTable(results map[string]result) string {
 	var sb strings.Builder
-	sb.WriteString("All times in µs. ¹Large Select uses the last field — fastjq scans the full document. ²gojq wins: after unmarshal, integer arrays are native Go slices.\n\n")
+	sb.WriteString("All times in µs. ¹Large Select uses the last field — fastjq scans the full document. ²gojq wins: after unmarshal, integer arrays are native Go slices. ³Validate rows compare against `json.Valid` (stdlib), not gojq.\n\n")
 	sb.WriteString("| Operation | Input | fastjq (µs) | gojq (µs) | Speedup | fastjq allocs | gojq allocs |\n")
 	sb.WriteString("|-----------|-------|------------|----------|---------|---------------|-------------|\n")
 
 	for _, r := range tableRows {
 		fqKey := "BenchmarkFastjq_" + r.fq
-		gqKey := "BenchmarkGojq_" + r.gq
+		cmpPrefix := "BenchmarkGojq_"
+		if r.cmpPrefix != "" {
+			cmpPrefix = r.cmpPrefix
+		}
+		gqKey := cmpPrefix + r.gq
 
 		fq, fqOK := results[fqKey]
 		gq, gqOK := results[gqKey]

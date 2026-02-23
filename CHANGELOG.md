@@ -4,6 +4,47 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — progressive JSON validation
+
+### Added
+
+- **Progressive validation in scanner** — the scanner now detects structural JSON errors during execution: unterminated strings/containers, mismatched brackets, invalid value starts, missing object structure (quotes on keys, colons). Errors are stored in `s.err` and propagated to callers instead of producing wrong results.
+- **`Validate(input []byte) error`** — new public API for full RFC 8259 validation: string escapes, control characters, number format, keyword spelling, bracket matching, and trailing content. Zero allocations. 2.5–3x faster than `json.Valid()`.
+- **Validation error propagation in exec** — all exec functions check `s.err` after scanner operations and return validation errors to the caller. `isValidationError()` helper identifies the 11 sentinel error types.
+- **Validation errors bypass `try-catch`** — structural input errors are not query-recoverable; they propagate directly past `opTry` handlers.
+
+### Fixed
+
+- **CLI single-pass validation** — replaced `json.Valid(line)` with `fastjq.Validate(line)` in the CLI. Removed `encoding/json` import from both CLI and exec.go.
+- **`fromjson` validation** — replaced `json.Valid()` with internal `Validate()` in `execFromJSON`, eliminating the stdlib dependency from the execution engine.
+
+### Tradeoffs
+
+- **Two-tier validation design**: Normal scanning (during query execution) catches structural errors cheaply. Full RFC 8259 validation (escape sequences, control chars, number format, keywords) runs only in `Validate()`. This keeps execution overhead minimal (<5% regression on most benchmarks) while `Validate()` provides complete checking.
+- **Sentinel errors are pre-allocated** — zero allocations even on invalid input. All 11 error types (`errUnterminatedString`, `errInvalidEscape`, `errInvalidControlChar`, `errInvalidUnicodeEscape`, `errInvalidKeyword`, `errInvalidNumber`, `errMismatchedBracket`, `errInvalidValueStart`, `errUnterminatedContainer`, `errInvalidJSON`, `errTrailingContent`) are package-level `errors.New` values.
+
+### Benchmark results
+
+`Validate` vs `json.Valid` (Apple M4 Max):
+
+| Input | fastjq | json.Valid | Speedup |
+|-------|--------|-----------|---------|
+| Small (~100B) | 86 ns | 220 ns | **2.6x** |
+| Medium (~2KB) | 1,502 ns | 4,018 ns | **2.7x** |
+| Large (~100KB) | 105 µs | 302 µs | **2.9x** |
+
+Execution overhead (progressive validation during query execution):
+
+| Benchmark | Before | After | Change |
+|-----------|--------|-------|--------|
+| Small_Field | 82 ns | 84 ns | +2% |
+| Small_Del | 196 ns | 180 ns | -8% |
+| Small_Iterator | 42 ns | 44 ns | +5% |
+| Small_Select | 44 ns | 42 ns | -5% |
+| Large_Field | 7,450 ns | 8,060 ns | +8% |
+
+---
+
 ## [Unreleased] — regex: test, match, capture, scan, sub, gsub (Go RE2)
 
 ### Added

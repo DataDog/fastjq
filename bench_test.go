@@ -855,3 +855,44 @@ func BenchmarkFastjq_Small_RangeLimit(b *testing.B) {
 func BenchmarkGojq_Small_RangeLimit(b *testing.B) {
 	benchGojqIter(b, `limit(3; range(1000))`, []byte(`null`))
 }
+
+// --- Validate (fastjq.Validate vs json.Valid) ---
+
+func BenchmarkFastjq_Small_Validate(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		Validate(smallJSON)
+	}
+}
+func BenchmarkStdlib_Small_Validate(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		json.Valid(smallJSON)
+	}
+}
+
+func BenchmarkFastjq_Medium_Validate(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		Validate(mediumJSON)
+	}
+}
+func BenchmarkStdlib_Medium_Validate(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		json.Valid(mediumJSON)
+	}
+}
+
+func BenchmarkFastjq_Large_Validate(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		Validate(largeJSON)
+	}
+}
+func BenchmarkStdlib_Large_Validate(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		json.Valid(largeJSON)
+	}
+}

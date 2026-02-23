@@ -1,7 +1,6 @@
 package fastjq
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -15,6 +14,20 @@ var (
 	errExpectedIterable    = errors.New("expected array or object for .[]")
 	errBreak               = errors.New("stop iteration") // sentinel for first/limit
 )
+
+// isValidationError reports whether err is a structural JSON validation error
+// from the scanner. Validation errors bypass try-catch — they indicate the
+// input itself is malformed, not a query-level recoverable error.
+func isValidationError(err error) bool {
+	switch err {
+	case errUnterminatedString, errInvalidEscape, errInvalidControlChar,
+		errInvalidUnicodeEscape, errInvalidKeyword, errInvalidNumber,
+		errMismatchedBracket, errInvalidValueStart, errUnterminatedContainer,
+		errInvalidJSON, errTrailingContent:
+		return true
+	}
+	return false
+}
 
 // jsonError carries a JSON value thrown by the `error` builtin.
 // jq's catch handler receives the actual JSON value, not a string representation.
@@ -258,6 +271,11 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opTry:
 		err := execMulti(node.left, input, buf, fn)
 		if err == nil || err == errBreak {
+			return err
+		}
+		// Validation errors bypass try-catch — structural input errors
+		// are not recoverable by the query.
+		if isValidationError(err) {
 			return err
 		}
 		// Real error — suppress or run catch handler
@@ -754,6 +772,9 @@ func execIdentity(input []byte, buf []byte) ([]byte, error) {
 	s.skipWhitespace()
 	start := s.pos
 	s.skipValue()
+	if s.err != nil {
+		return nil, s.err
+	}
 	if buf == nil {
 		end := s.pos
 		return input[start:end:end], nil
@@ -774,6 +795,9 @@ func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	}
 
 	vs, ve := s.findFieldStr(node.field)
+	if s.err != nil {
+		return s.err
+	}
 	if vs == -1 {
 		// Missing field: return null without following the child chain.
 		if buf == nil {
@@ -807,6 +831,9 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 	}
 
 	vs, ve := s.findFieldStr(node.field)
+	if s.err != nil {
+		return nil, s.err
+	}
 	if vs == -1 {
 		if buf == nil {
 			return bNull, nil
@@ -940,6 +967,9 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 			}
 			return true
 		})
+		if s.err != nil {
+			return s.err
+		}
 		return caught
 	case '{':
 		var caught error
@@ -954,6 +984,9 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 			}
 			return true
 		})
+		if s.err != nil {
+			return s.err
+		}
 		return caught
 	default:
 		if node.optional {
@@ -1034,6 +1067,9 @@ func execDeleteObject(node *op, input []byte, buf []byte, s *scanner) ([]byte, e
 		buf = append(buf, input[valueStart:valueEnd]...)
 		return true
 	})
+	if s.err != nil {
+		return nil, s.err
+	}
 
 	buf = append(buf, '}')
 	return buf, nil
@@ -1083,6 +1119,9 @@ func execDeleteArray(node *op, input []byte, buf []byte, s *scanner) ([]byte, er
 		buf = append(buf, input[elemStart:elemEnd]...)
 		return true
 	})
+	if s.err != nil {
+		return nil, s.err
+	}
 
 	buf = append(buf, ']')
 	return buf, nil
@@ -1394,10 +1433,16 @@ func execLengthSingle(input []byte, buf []byte) ([]byte, error) {
 	case '[':
 		count := 0
 		s.arrayIter(func(i, _, _ int) bool { count++; return true })
+		if s.err != nil {
+			return nil, s.err
+		}
 		return appendInt(buf, count), nil
 	case '{':
 		count := 0
 		s.objectIter(func(_ []byte, _, _ int) bool { count++; return true })
+		if s.err != nil {
+			return nil, s.err
+		}
 		return appendInt(buf, count), nil
 	case 'n': // null
 		return appendInt(buf, 0), nil
@@ -1524,6 +1569,9 @@ func execToEntries(input []byte, buf []byte) ([]byte, error) {
 		buf = appendKV(buf, key, input[valueStart:valueEnd])
 		return true
 	})
+	if s.err != nil {
+		return nil, s.err
+	}
 	buf = append(buf, ']')
 	return buf, nil
 }
@@ -1555,6 +1603,9 @@ func execFromEntries(input []byte, buf []byte) ([]byte, error) {
 		buf = append(buf, input[elemStart:elemEnd][valStart:valEnd]...)
 		return true
 	})
+	if s.err != nil {
+		return nil, s.err
+	}
 	buf = append(buf, '}')
 	return buf, nil
 }
@@ -1649,6 +1700,9 @@ func execAdd(input []byte, buf []byte, fn func([]byte) error) error {
 		}
 		return true
 	})
+	if s2.err != nil {
+		return s2.err
+	}
 	if elemType == 0 {
 		return fn(append(buf, "null"...)) // empty or all-null
 	}
@@ -1664,6 +1718,9 @@ func execAdd(input []byte, buf []byte, fn func([]byte) error) error {
 			}
 			return true
 		})
+		if s.err != nil {
+			return s.err
+		}
 		buf = append(buf, '"')
 	case '[': // array concatenation
 		buf = append(buf, '[')
@@ -1683,6 +1740,9 @@ func execAdd(input []byte, buf []byte, fn func([]byte) error) error {
 			}
 			return true
 		})
+		if s.err != nil {
+			return s.err
+		}
 		buf = append(buf, ']')
 	case '{': // object merge (last-wins, first-occurrence key order)
 		// Collect all object byte slices (allocates a small slice of pointers).
@@ -1695,6 +1755,9 @@ func execAdd(input []byte, buf []byte, fn func([]byte) error) error {
 			}
 			return true
 		})
+		if s.err != nil {
+			return s.err
+		}
 		buf = append(buf, '{')
 		first := true
 		// Iterate keys in first-occurrence order: for each key in objects[0], then
@@ -1742,6 +1805,9 @@ func execAdd(input []byte, buf []byte, fn func([]byte) error) error {
 			}
 			return true
 		})
+		if s.err != nil {
+			return s.err
+		}
 		buf = appendNumber(buf, sum)
 	}
 	return fn(buf)
@@ -2598,6 +2664,9 @@ func execKeysUnsorted(input []byte, buf []byte) ([]byte, error) {
 			buf = append(buf, '"')
 			return true
 		})
+		if s.err != nil {
+			return nil, s.err
+		}
 	case '[':
 		count := s.arrayLen()
 		for i := 0; i < count; i++ {
@@ -3433,7 +3502,7 @@ func execFromJSON(input []byte, buf []byte) ([]byte, error) {
 		s.pos++
 	}
 	result := buf[startLen:]
-	if !json.Valid(result) {
+	if err := Validate(result); err != nil {
 		return nil, fromJSONError(result)
 	}
 	return buf, nil

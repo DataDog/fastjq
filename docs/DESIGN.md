@@ -99,10 +99,16 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 
 ### 1. Scanner
 
-Uses a simple `struct { data []byte; pos int }`. Skips values via depth-counting
-(no recursion for nested objects/arrays). `readString()` returns a sub-slice of
-input — zero allocation. `objectIter` and `arrayIter` provide callback-based
-iteration over containers.
+Uses a simple `struct { data []byte; pos int; err error }`. Skips values via
+depth-counting (no recursion for nested objects/arrays). `readString()` returns
+a sub-slice of input — zero allocation. `objectIter` and `arrayIter` provide
+callback-based iteration over containers.
+
+The `err` field enables progressive validation: structural errors (unterminated
+strings, mismatched brackets, invalid value starts, missing object structure)
+are detected during normal scanning and set `s.err`. All scanner methods
+short-circuit when `err` is set. Exec functions check `s.err` after scanner
+operations and propagate validation errors to the caller.
 
 ### 2. Multi-Output via Callback
 
@@ -218,23 +224,39 @@ allocate. For strings it's a pure byte-range scan.
 key ordering. Keys appear in the order of their first occurrence across all
 objects; the value used is the last one seen.
 
+### 20. Progressive Validation
+
+The scanner detects structural JSON errors during normal execution (unterminated
+strings/containers, mismatched brackets, invalid value starts, missing object
+structure). Errors are stored in `s.err` and propagated to callers. This catches
+most malformed input without a separate validation pass.
+
+For full RFC 8259 validation, `Validate()` uses dedicated methods
+(`validateString`, `validateValue`, `validateObject`, `validateArray`) that also
+check escape sequences, control characters, number format, and keyword spelling.
+
+Design: validation errors are pre-allocated sentinels (zero-alloc even on invalid
+input). They bypass `try-catch` — structural input errors are not query-recoverable.
+
 ## File Structure
 
 ```
-fastjq.go           — Public API: Compile, Run, RunWithBuffer, RunAll, RunFunc; BOM stripping
-scanner.go          — Zero-alloc JSON scanner: skipValue, readString, objectIter, arrayIter,
+fastjq.go           — Public API: Compile, Run, RunWithBuffer, RunAll, RunFunc, Validate; BOM stripping
+scanner.go          — Zero-alloc JSON scanner with progressive validation: skipValue, readString,
+                      objectIter, arrayIter, validateValue/String/Object/Array,
                       jsonEqual (key-order independent for objects), jsonContains, isFalsy,
                       byteOffsetToCodepointOffset, compareJSONOrder
 query.go            — Query parser + AST (~55 op types); parseGeneratorExpr for comma bodies
-exec.go             — Executor: all op implementations; jsonError type; execPlusValues;
+exec.go             — Executor: all op implementations; jsonError type; isValidationError;
                       execArrayConstruct; execDeleteArray (slices); execFindIndex (overlapping,
                       Unicode codepoints, array subsequences); format string decoders
 float.go            — Zero-alloc float parsing via unsafe.String
 fastjq_test.go      — Unit tests (~430 tests)
 correctness_test.go — Edge case, no-panic, and Unicode tests
+validation_test.go  — Validate() and progressive validation error tests
 complex_test.go     — Complex multi-step query tests
 fuzz_test.go        — Fuzz tests (FuzzCompile, FuzzRunFixed, FuzzBoth)
-bench_test.go       — Benchmarks: fastjq vs gojq (159 benchmarks)
+bench_test.go       — Benchmarks: fastjq vs gojq/stdlib (165 benchmarks)
 jqtest/run_test.go  — Official jq test harness (jq.test + man.test, 751 total)
 cmd/fastjq/main.go  — JSONL processor CLI
 bench_vs_jq.sh      — CLI throughput benchmark script
@@ -254,9 +276,16 @@ func (p *Program) RunWithBuffer(input []byte, buf []byte) ([]byte, error)
 // Multi-output
 func (p *Program) RunAll(input []byte) ([][]byte, error)
 func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
+
+// Validation
+func Validate(input []byte) error
 ```
 
 `Compile` parses once. `Run`/`RunWithBuffer` execute against raw bytes and
 return the first result. `RunAll` collects all results. `RunFunc` streams
 results via callback with zero steady-state allocations. All API methods strip
 a UTF-8 BOM from input before parsing.
+
+`Validate` performs full RFC 8259 validation: string escapes, control characters,
+number format, keyword spelling, bracket matching, and trailing content. Zero
+allocations. 2.5–3x faster than `json.Valid()`.

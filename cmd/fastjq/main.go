@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 
@@ -29,15 +28,15 @@ func main() {
 		if len(line) == 0 {
 			continue
 		}
-		if !json.Valid(line) {
-			fmt.Fprintf(os.Stderr, "invalid JSON: %s\n", line)
-			os.Exit(1)
-		}
-		p.RunFunc(line, func(result []byte) error {
+		err := p.RunFunc(line, func(result []byte) error {
 			w.Write(result)
 			w.WriteByte('\n')
 			return nil
 		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	w.Flush()
 }

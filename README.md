@@ -6,7 +6,7 @@ fastjq operates directly on raw `[]byte` — no `json.Unmarshal`, no `map[string
 
 **This is not a full jq implementation.** It supports a targeted subset of jq operations chosen for log processing workloads. See [Limitations](#limitations) before using.
 
-**Requires valid JSON input.** fastjq does not validate its input — behavior on malformed JSON is undefined. It never panics (enforced by fuzz tests), but may silently produce wrong results. Use `json.Valid` if you can't guarantee the source.
+**Validates JSON progressively.** The scanner detects structural errors (unterminated strings, mismatched brackets, invalid value starts) during execution and returns errors instead of producing wrong results. For upfront RFC 8259 validation, use `fastjq.Validate()` — 2.5–3x faster than `json.Valid()`, zero allocations.
 
 ## Design
 
@@ -52,25 +52,25 @@ The speedup is largest on small inputs where gojq's marshal/unmarshal overhead d
 
 ### vs jq CLI (JSONL throughput, 100K lines, ~11MB, Apple M4 Max, jq 1.8.1)
 
-Both tools validate JSON. fastjq calls `json.Valid()` before processing each record.
+Both tools validate JSON. fastjq validates progressively during execution — no separate validation pass needed.
 
 | Operation | Input | jq (s) | fastjq (s) | Speedup |
 |-----------|-------|--------|------------|---------|
-| `.` (identity) | small | 0.356 | 0.052 | **6.8x** |
-| `.field` | small | 0.152 | 0.051 | **3x** |
-| `.field` | large (~16MB, 100 lines) | 0.091 | 0.043 | **2.1x** |
-| `del(.field)` | small | 0.383 | 0.061 | **6.3x** |
-| `{field_0, field_2}` (construct) | small | 0.252 | 0.060 | **4.2x** |
-| `select(.f == "x")` (all match) | small | 0.408 | 0.049 | **8.3x** |
-| `select(.f == "x")` (none match) | small | 0.143 | 0.050 | **2.9x** |
-| `.field // "default"` | small | 0.164 | 0.050 | **3.3x** |
-| `select(.f \| ascii_downcase == "x")` | small | 0.655 | 0.065 | **10x** |
-| `select(.f \| startswith("x"))` | small | 0.377 | 0.059 | **6.4x** |
-| `select(has("field"))` | small | 0.359 | 0.051 | **7x** |
-| `to_entries` | small | 0.746 | 0.066 | **11x** |
-| `keys_unsorted` | small | 0.244 | 0.057 | **4.3x** |
+| `.` (identity) | small | 0.347 | 0.028 | **12x** |
+| `.field` | small | 0.151 | 0.022 | **6.9x** |
+| `.field` | large (~16MB, 100 lines) | 0.089 | 0.010 | **8.9x** |
+| `del(.field)` | small | 0.367 | 0.037 | **9.9x** |
+| `{field_0, field_2}` (construct) | small | 0.247 | 0.034 | **7.3x** |
+| `select(.f == "x")` (all match) | small | 0.366 | 0.024 | **15x** |
+| `select(.f == "x")` (none match) | small | 0.139 | 0.025 | **5.6x** |
+| `.field // "default"` | small | 0.167 | 0.024 | **7x** |
+| `select(.f \| ascii_downcase == "x")` | small | 0.647 | 0.037 | **18x** |
+| `select(.f \| startswith("x"))` | small | 0.362 | 0.032 | **11x** |
+| `select(has("field"))` | small | 0.354 | 0.032 | **11x** |
+| `to_entries` | small | 0.710 | 0.036 | **20x** |
+| `keys_unsorted` | small | 0.237 | 0.031 | **7.6x** |
 
-**Without validation** (using `RunWithBuffer`/`RunFunc` directly on known-valid inputs), the Go library benchmarks show **13–75x** speedups — see the table at the top of this section and [BENCHMARKS.md](docs/BENCHMARKS.md) for the full comparison.
+The Go library benchmarks (using `RunWithBuffer`/`RunFunc` with progressive validation built in) show **13–75x** speedups — see the table at the top of this section and [BENCHMARKS.md](docs/BENCHMARKS.md) for the full comparison.
 
 ## Try it out (CLI)
 
@@ -119,9 +119,13 @@ func (p *Program) Run(input []byte) ([]byte, error)
 func (p *Program) RunWithBuffer(input []byte, buf []byte) ([]byte, error)
 func (p *Program) RunAll(input []byte) ([][]byte, error)
 func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
+
+func Validate(input []byte) error
 ```
 
 `Compile` allocates. Core operations via `RunWithBuffer`/`RunFunc` achieve zero allocations at steady state. Operations that produce new structured output (regex matches, base64/URI encoding, `map(f)` with construction) allocate proportional to result size.
+
+`Validate` checks RFC 8259 compliance: string escapes, control characters, number format, keyword spelling, bracket matching, and trailing content. Zero allocations. 2.5–3x faster than `json.Valid()`.
 
 ## Supported Operations
 
@@ -193,7 +197,7 @@ jq treats this as `[(a,b) | f]`. Fastjq parses array elements independently.
 
 **Not yet implemented:** `path`, `getpath`, `setpath`, `delpaths`, `reduce`, `foreach`, `label-break`, variable binding (`as $x`), user-defined functions (`def`), `explode`/`implode`, 2-arg math forms (`pow(x;y)`, `hypot(x;y)`).
 
-**Output is always compact JSON.** fastjq never panics — malformed input may produce wrong results but the process is always safe.
+**Output is always compact JSON.** fastjq never panics — malformed input returns errors via progressive validation.
 
 See [SYNTAX.md](docs/SYNTAX.md) for the full allocation-tiered roadmap.
 

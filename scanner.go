@@ -1,12 +1,40 @@
 package fastjq
 
-import "bytes"
+import (
+	"bytes"
+	"errors"
+)
+
+// Pre-allocated sentinel errors — zero allocation even on invalid input.
+var (
+	errUnterminatedString   = errors.New("unterminated string")
+	errInvalidEscape        = errors.New("invalid escape sequence in string")
+	errInvalidControlChar   = errors.New("unescaped control character in string")
+	errInvalidUnicodeEscape = errors.New("invalid \\uXXXX escape in string")
+	errInvalidKeyword       = errors.New("invalid keyword (expected true/false/null)")
+	errInvalidNumber        = errors.New("invalid number")
+	errMismatchedBracket    = errors.New("mismatched bracket")
+	errInvalidValueStart    = errors.New("invalid character at start of value")
+	errUnterminatedContainer = errors.New("unterminated object or array")
+	errInvalidJSON          = errors.New("invalid JSON")
+	errTrailingContent      = errors.New("trailing content after JSON value")
+)
 
 // scanner is a zero-allocation JSON scanner that operates on raw bytes.
 // It never copies data — all string reads return sub-slices of the input.
+// When invalid JSON is encountered, err is set and all methods short-circuit.
+// On valid JSON, err stays nil — zero allocations.
 type scanner struct {
 	data []byte
 	pos  int
+	err  error
+}
+
+// setErr records the first validation error. Subsequent errors are ignored.
+func (s *scanner) setErr(e error) {
+	if s.err == nil {
+		s.err = e
+	}
 }
 
 // skipWhitespace advances past spaces, tabs, newlines, carriage returns.
@@ -49,30 +77,36 @@ func (s *scanner) readString() []byte {
 		}
 		s.pos++
 	}
+	s.setErr(errUnterminatedString)
 	return s.data[start:s.pos]
 }
 
 // skipValue skips a complete JSON value (object, array, string, number, bool, null).
 // Uses depth-counting for objects/arrays — no recursion needed.
+// Validates value start byte and delegates to type-specific skipping.
 func (s *scanner) skipValue() {
+	if s.err != nil {
+		return
+	}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) {
 		return
 	}
-	ch := s.data[s.pos]
-	switch ch {
+	switch s.data[s.pos] {
 	case '"':
 		s.skipString()
 	case '{', '[':
 		s.skipContainer()
-	default:
-		// number, bool, null — scan until delimiter
+	case 't', 'f', 'n', '-',
+		'0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		s.skipPrimitive()
+	default:
+		s.setErr(errInvalidValueStart)
 	}
 }
 
 // skipString skips a JSON string including its quotes.
-// Short strings (<=32 bytes) are scanned byte-by-byte to avoid function call
+// Short strings (<=16 bytes) are scanned byte-by-byte to avoid function call
 // overhead. Longer strings use bytes.IndexByte for SIMD-accelerated scanning.
 func (s *scanner) skipString() {
 	s.pos++ // skip opening '"'
@@ -98,8 +132,7 @@ func (s *scanner) skipString() {
 		rest := s.data[s.pos:]
 		qi := bytes.IndexByte(rest, '"')
 		if qi == -1 {
-			s.pos = len(s.data)
-			return
+			break
 		}
 		bi := bytes.IndexByte(rest[:qi], '\\')
 		if bi == -1 {
@@ -108,10 +141,17 @@ func (s *scanner) skipString() {
 		}
 		s.pos += bi + 2
 	}
+	// Reached EOF without finding closing '"'
+	s.pos = len(s.data)
+	s.setErr(errUnterminatedString)
 }
 
 // skipContainer skips a JSON object or array using depth counting.
 func (s *scanner) skipContainer() {
+	if s.err != nil {
+		return
+	}
+	open := s.data[s.pos]
 	depth := 1
 	s.pos++ // skip opening '{' or '['
 	for s.pos < len(s.data) && depth > 0 {
@@ -119,17 +159,35 @@ func (s *scanner) skipContainer() {
 		switch ch {
 		case '"':
 			s.skipString()
+			if s.err != nil {
+				return
+			}
 			continue
 		case '{', '[':
 			depth++
-		case '}', ']':
+		case '}':
 			depth--
+			if depth == 0 && open != '{' {
+				s.setErr(errMismatchedBracket)
+				return
+			}
+		case ']':
+			depth--
+			if depth == 0 && open != '[' {
+				s.setErr(errMismatchedBracket)
+				return
+			}
 		}
 		s.pos++
 	}
+	if depth > 0 {
+		s.setErr(errUnterminatedContainer)
+	}
 }
 
-// skipPrimitive skips a JSON primitive (number, bool, null).
+// skipPrimitive skips a JSON primitive (number, bool, null) by scanning to
+// the next delimiter. Keyword and number format validation is performed only
+// by the dedicated Validate() path (validateValue).
 func (s *scanner) skipPrimitive() {
 	for s.pos < len(s.data) {
 		switch s.data[s.pos] {
@@ -140,11 +198,84 @@ func (s *scanner) skipPrimitive() {
 	}
 }
 
+// skipKeyword validates and skips an exact JSON keyword (true, false, null).
+// Direct byte comparison — faster than the old scan-to-delimiter loop for
+// these fixed-length tokens.
+func (s *scanner) skipKeyword(kw string) {
+	if s.pos+len(kw) > len(s.data) {
+		s.setErr(errInvalidKeyword)
+		s.pos = len(s.data)
+		return
+	}
+	for i := 0; i < len(kw); i++ {
+		if s.data[s.pos+i] != kw[i] {
+			s.setErr(errInvalidKeyword)
+			s.pos += i
+			return
+		}
+	}
+	s.pos += len(kw)
+}
+
+// skipNumber validates and skips a JSON number.
+// Validates: no leading zeros, valid fraction/exponent format.
+func (s *scanner) skipNumber() {
+	// Optional minus
+	if s.data[s.pos] == '-' {
+		s.pos++
+		if s.pos >= len(s.data) || s.data[s.pos] < '0' || s.data[s.pos] > '9' {
+			s.setErr(errInvalidNumber)
+			return
+		}
+	}
+	// Integer part: '0' must not be followed by another digit (no leading zeros)
+	if s.data[s.pos] == '0' {
+		s.pos++
+		if s.pos < len(s.data) && s.data[s.pos] >= '0' && s.data[s.pos] <= '9' {
+			s.setErr(errInvalidNumber)
+			return
+		}
+	} else {
+		s.skipDigits()
+	}
+	// Fraction
+	if s.pos < len(s.data) && s.data[s.pos] == '.' {
+		s.pos++
+		if s.pos >= len(s.data) || s.data[s.pos] < '0' || s.data[s.pos] > '9' {
+			s.setErr(errInvalidNumber)
+			return
+		}
+		s.skipDigits()
+	}
+	// Exponent
+	if s.pos < len(s.data) && (s.data[s.pos] == 'e' || s.data[s.pos] == 'E') {
+		s.pos++
+		if s.pos < len(s.data) && (s.data[s.pos] == '+' || s.data[s.pos] == '-') {
+			s.pos++
+		}
+		if s.pos >= len(s.data) || s.data[s.pos] < '0' || s.data[s.pos] > '9' {
+			s.setErr(errInvalidNumber)
+			return
+		}
+		s.skipDigits()
+	}
+}
+
+// skipDigits advances past a run of ASCII digits.
+func (s *scanner) skipDigits() {
+	for s.pos < len(s.data) && s.data[s.pos] >= '0' && s.data[s.pos] <= '9' {
+		s.pos++
+	}
+}
+
 // objectIter iterates over key-value pairs of a JSON object.
 // Assumes pos is at the opening '{'.
 // Calls fn with each key (unquoted content) and the start/end positions of the value.
 // If fn returns false, iteration stops early.
 func (s *scanner) objectIter(fn func(key []byte, valueStart, valueEnd int) bool) {
+	if s.err != nil {
+		return
+	}
 	s.pos++ // skip '{'
 	s.skipWhitespace()
 	if s.pos < len(s.data) && s.data[s.pos] == '}' {
@@ -155,18 +286,27 @@ func (s *scanner) objectIter(fn func(key []byte, valueStart, valueEnd int) bool)
 		s.skipWhitespace()
 		// read key
 		if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+			s.setErr(errInvalidJSON)
 			return
 		}
 		key := s.readString()
+		if s.err != nil {
+			return
+		}
 		s.skipWhitespace()
 		// skip ':'
-		if s.pos < len(s.data) && s.data[s.pos] == ':' {
-			s.pos++
+		if s.pos >= len(s.data) || s.data[s.pos] != ':' {
+			s.setErr(errInvalidJSON)
+			return
 		}
+		s.pos++
 		s.skipWhitespace()
 		// record value boundaries
 		valueStart := s.pos
 		s.skipValue()
+		if s.err != nil {
+			return
+		}
 		valueEnd := s.pos
 
 		if !fn(key, valueStart, valueEnd) {
@@ -185,18 +325,26 @@ func (s *scanner) objectIter(fn func(key []byte, valueStart, valueEnd int) bool)
 	s.skipWhitespace()
 	if s.pos < len(s.data) && s.data[s.pos] == '}' {
 		s.pos++
+	} else if s.err == nil {
+		s.setErr(errUnterminatedContainer)
 	}
 }
 
 // skipToEndOfObject skips to the closing '}' of the current object,
 // accounting for nesting. Used after early-exit from objectIter.
 func (s *scanner) skipToEndOfObject() {
+	if s.err != nil {
+		return
+	}
 	depth := 1
 	for s.pos < len(s.data) && depth > 0 {
 		ch := s.data[s.pos]
 		switch ch {
 		case '"':
 			s.skipString()
+			if s.err != nil {
+				return
+			}
 			continue
 		case '{', '[':
 			depth++
@@ -212,6 +360,9 @@ func (s *scanner) skipToEndOfObject() {
 // Calls fn with each element's index and start/end positions.
 // If fn returns false, iteration stops early.
 func (s *scanner) arrayIter(fn func(index int, elemStart, elemEnd int) bool) {
+	if s.err != nil {
+		return
+	}
 	s.pos++ // skip '['
 	s.skipWhitespace()
 	if s.pos < len(s.data) && s.data[s.pos] == ']' {
@@ -223,6 +374,9 @@ func (s *scanner) arrayIter(fn func(index int, elemStart, elemEnd int) bool) {
 		s.skipWhitespace()
 		elemStart := s.pos
 		s.skipValue()
+		if s.err != nil {
+			return
+		}
 		elemEnd := s.pos
 
 		if !fn(idx, elemStart, elemEnd) {
@@ -242,18 +396,26 @@ func (s *scanner) arrayIter(fn func(index int, elemStart, elemEnd int) bool) {
 	s.skipWhitespace()
 	if s.pos < len(s.data) && s.data[s.pos] == ']' {
 		s.pos++
+	} else if s.err == nil {
+		s.setErr(errUnterminatedContainer)
 	}
 }
 
 // skipToEndOfArray skips to the closing ']' of the current array,
 // accounting for nesting. Used after early-exit from arrayIter.
 func (s *scanner) skipToEndOfArray() {
+	if s.err != nil {
+		return
+	}
 	depth := 1
 	for s.pos < len(s.data) && depth > 0 {
 		ch := s.data[s.pos]
 		switch ch {
 		case '"':
 			s.skipString()
+			if s.err != nil {
+				return
+			}
 			continue
 		case '{', '[':
 			depth++
@@ -284,6 +446,9 @@ func (s *scanner) arrayLen() int {
 // rest of the object. When the scanner position after the call doesn't matter,
 // this avoids wasted work proportional to the remaining fields.
 func (s *scanner) findField(name []byte) (valueStart, valueEnd int) {
+	if s.err != nil {
+		return -1, -1
+	}
 	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
 		return -1, -1
 	}
@@ -294,6 +459,9 @@ func (s *scanner) findField(name []byte) (valueStart, valueEnd int) {
 			return -1, -1
 		}
 		key := s.readString()
+		if s.err != nil {
+			return -1, -1
+		}
 		s.skipWhitespace()
 		if s.pos < len(s.data) && s.data[s.pos] == ':' {
 			s.pos++
@@ -301,6 +469,9 @@ func (s *scanner) findField(name []byte) (valueStart, valueEnd int) {
 		s.skipWhitespace()
 		vs := s.pos
 		s.skipValue()
+		if s.err != nil {
+			return -1, -1
+		}
 		ve := s.pos
 
 		if bytesEqual(key, name) {
@@ -323,6 +494,9 @@ func (s *scanner) findField(name []byte) (valueStart, valueEnd int) {
 // cost of scanning all remaining fields in the object.
 // Assumes pos is at the opening '{'.
 func (s *scanner) findFieldStr(name string) (valueStart, valueEnd int) {
+	if s.err != nil {
+		return -1, -1
+	}
 	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
 		return -1, -1
 	}
@@ -333,6 +507,9 @@ func (s *scanner) findFieldStr(name string) (valueStart, valueEnd int) {
 			return -1, -1
 		}
 		key := s.readString()
+		if s.err != nil {
+			return -1, -1
+		}
 		s.skipWhitespace()
 		if s.pos < len(s.data) && s.data[s.pos] == ':' {
 			s.pos++
@@ -340,6 +517,9 @@ func (s *scanner) findFieldStr(name string) (valueStart, valueEnd int) {
 		s.skipWhitespace()
 		vs := s.pos
 		s.skipValue()
+		if s.err != nil {
+			return -1, -1
+		}
 		ve := s.pos
 
 		if bytesEqualStr(key, name) {
@@ -521,6 +701,11 @@ func parseJSONFloat(b []byte) (float64, bool) {
 
 func isNumberByte(ch byte) bool {
 	return (ch >= '0' && ch <= '9') || ch == '-'
+}
+
+// isHexDigit reports whether ch is a valid hexadecimal digit.
+func isHexDigit(ch byte) bool {
+	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
 }
 
 // jsonCompare compares two raw JSON values for ordering.
@@ -725,4 +910,162 @@ func trimWhitespace(b []byte) []byte {
 		}
 	}
 	return b
+}
+
+// --- Validate: full RFC 8259 validation ---
+
+// validateString validates a JSON string including escape sequences and control
+// characters. Used by Validate() for full validation.
+// Assumes pos is at the opening '"'.
+func (s *scanner) validateString() {
+	s.pos++ // skip opening '"'
+	for s.pos < len(s.data) {
+		ch := s.data[s.pos]
+		if ch == '\\' {
+			s.pos++
+			if s.pos >= len(s.data) {
+				s.setErr(errInvalidEscape)
+				return
+			}
+			esc := s.data[s.pos]
+			switch esc {
+			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+				s.pos++
+			case 'u':
+				s.pos++
+				if s.pos+4 > len(s.data) {
+					s.setErr(errInvalidUnicodeEscape)
+					return
+				}
+				for i := 0; i < 4; i++ {
+					if !isHexDigit(s.data[s.pos]) {
+						s.setErr(errInvalidUnicodeEscape)
+						return
+					}
+					s.pos++
+				}
+			default:
+				s.setErr(errInvalidEscape)
+				return
+			}
+			continue
+		}
+		if ch == '"' {
+			s.pos++
+			return
+		}
+		if ch < 0x20 {
+			s.setErr(errInvalidControlChar)
+			return
+		}
+		s.pos++
+	}
+	s.setErr(errUnterminatedString)
+}
+
+// validateValue validates a complete JSON value with full RFC 8259 checking.
+// Used by Validate() for full validation.
+func (s *scanner) validateValue() {
+	if s.err != nil {
+		return
+	}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		s.setErr(errInvalidJSON)
+		return
+	}
+	ch := s.data[s.pos]
+	switch ch {
+	case '"':
+		s.validateString()
+	case '{':
+		s.validateObject()
+	case '[':
+		s.validateArray()
+	case 't':
+		s.skipKeyword("true")
+	case 'f':
+		s.skipKeyword("false")
+	case 'n':
+		s.skipKeyword("null")
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		s.skipNumber()
+	default:
+		s.setErr(errInvalidValueStart)
+	}
+}
+
+// validateObject validates a JSON object with full checking.
+func (s *scanner) validateObject() {
+	s.pos++ // skip '{'
+	s.skipWhitespace()
+	if s.pos < len(s.data) && s.data[s.pos] == '}' {
+		s.pos++
+		return
+	}
+	for {
+		s.skipWhitespace()
+		if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+			s.setErr(errInvalidJSON)
+			return
+		}
+		s.validateString()
+		if s.err != nil {
+			return
+		}
+		s.skipWhitespace()
+		if s.pos >= len(s.data) || s.data[s.pos] != ':' {
+			s.setErr(errInvalidJSON)
+			return
+		}
+		s.pos++
+		s.validateValue()
+		if s.err != nil {
+			return
+		}
+		s.skipWhitespace()
+		if s.pos >= len(s.data) {
+			s.setErr(errUnterminatedContainer)
+			return
+		}
+		if s.data[s.pos] == '}' {
+			s.pos++
+			return
+		}
+		if s.data[s.pos] != ',' {
+			s.setErr(errInvalidJSON)
+			return
+		}
+		s.pos++
+	}
+}
+
+// validateArray validates a JSON array with full checking.
+func (s *scanner) validateArray() {
+	s.pos++ // skip '['
+	s.skipWhitespace()
+	if s.pos < len(s.data) && s.data[s.pos] == ']' {
+		s.pos++
+		return
+	}
+	for {
+		s.validateValue()
+		if s.err != nil {
+			return
+		}
+		s.skipWhitespace()
+		if s.pos >= len(s.data) {
+			s.setErr(errUnterminatedContainer)
+			return
+		}
+		if s.data[s.pos] == ']' {
+			s.pos++
+			return
+		}
+		if s.data[s.pos] != ',' {
+			s.setErr(errInvalidJSON)
+			return
+		}
+		s.pos++
+	}
 }
