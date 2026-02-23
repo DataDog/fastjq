@@ -28,6 +28,23 @@ func stripBOM(b []byte) []byte {
 	return b
 }
 
+// normalizeNaNInf converts top-level NaN/infinite sentinel bytes to null,
+// maintaining valid JSON output. Values nested inside arrays/objects are
+// converted by the array/object construction code paths.
+// "NaN" → "null", "infinite" → "null", "-infinite" → "null"
+func normalizeNaNInf(v []byte) []byte {
+	if len(v) >= 3 && v[0] == 'N' && v[1] == 'a' && v[2] == 'N' {
+		return []byte("null")
+	}
+	if len(v) >= 8 && v[0] == 'i' && v[1] == 'n' && v[2] == 'f' {
+		return []byte("null")
+	}
+	if len(v) >= 9 && v[0] == '-' && v[1] == 'i' && v[2] == 'n' {
+		return []byte("null")
+	}
+	return v
+}
+
 // Run executes the compiled query against the input JSON bytes.
 // Returns the first result as a new byte slice. For multi-output queries
 // (e.g. .[]), only the first result is returned; use RunAll or RunFunc
@@ -35,7 +52,11 @@ func stripBOM(b []byte) []byte {
 func (p *Program) Run(input []byte) ([]byte, error) {
 	input = stripBOM(input)
 	buf := make([]byte, 0, len(input))
-	return exec(p.root, input, buf)
+	result, err := exec(p.root, input, buf)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeNaNInf(result), nil
 }
 
 // RunWithBuffer executes the compiled query, reusing the provided buffer
@@ -44,7 +65,11 @@ func (p *Program) Run(input []byte) ([]byte, error) {
 // For multi-output queries, only the first result is returned.
 func (p *Program) RunWithBuffer(input []byte, buf []byte) ([]byte, error) {
 	buf = buf[:0]
-	return exec(p.root, stripBOM(input), buf)
+	result, err := exec(p.root, stripBOM(input), buf)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeNaNInf(result), nil
 }
 
 // RunAll executes the compiled query and collects all results.
@@ -54,6 +79,7 @@ func (p *Program) RunAll(input []byte) ([][]byte, error) {
 	input = stripBOM(input)
 	var results [][]byte
 	err := execMulti(p.root, input, nil, func(result []byte) error {
+		result = normalizeNaNInf(result)
 		// Copy result since buf may be reused
 		cp := make([]byte, len(result))
 		copy(cp, result)
@@ -71,5 +97,7 @@ func (p *Program) RunAll(input []byte) ([][]byte, error) {
 // result slices. The result bytes passed to fn are only valid for the
 // duration of the callback.
 func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error {
-	return execMulti(p.root, stripBOM(input), nil, fn)
+	return execMulti(p.root, stripBOM(input), nil, func(result []byte) error {
+		return fn(normalizeNaNInf(result))
+	})
 }

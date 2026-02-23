@@ -133,7 +133,8 @@ fastjq supports a large targeted subset of jq. The complete reference with examp
 - **Modification:** `del(.foo)`, `del(.[n:m])`, `{name, a: .b}`, `[.a, .b]`
 - **Control flow:** `\|`, `select`, `if-elif-else`, `try-catch`, `//`, `empty`, `"\(expr)"`
 - **Arithmetic:** `+`, `-`, `*`, `/`, `%`, `add`, `floor`, `ceil`, `round`, `nearbyint`
-- **Math:** `sqrt`, `log`, `exp`, `sin`, `cos`, `atan`, `tgamma`, `j0`, and 15 more — all zero-alloc
+- **Math:** `sqrt`, `log`, `exp`, `sin`, `cos`, `atan`, `tgamma`, `j0`, `pow(x;y)`, and 15 more — all zero-alloc
+- **Special values:** `nan`, `infinite`, `-nan`, `-infinite`; `isnan`, `isinfinite`, `isfinite`, `isnormal`; `nan`/`infinite` output as `null` (JSON-safe)
 - **Arrays:** `map`, `flatten`, `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `min/max`, `min_by/max_by`, `any/all`, `first/last`, `limit`, `nth`, `isempty`, `values`, type filters, `index/indices`
 - **Strings:** `split/join`, `ascii_downcase/upcase`, `startswith/endswith`, `ltrimstr/rtrimstr`, `"\(expr)"` interpolation, `explode`, `implode`
 - **Format strings:** `@base64/d`, `@uri/d`, `@html`, `@csv`, `@tsv`, `@sh`, `@text`, `@json`
@@ -147,15 +148,16 @@ fastjq is validated against two official jq test files (`go test ./jqtest/`).
 
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
-| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 305 | 216 | **210 (97.2%)** | 6 |
-| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 95 | 135 | **134 (99.3%)** | 1 |
-| **Combined** | **751** | **400** | **351** | **344 (98.0%)** | **7** |
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 301 | 220 | **213 (96.8%)** | 7 |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 94 | 136 | **135 (99.3%)** | 1 |
+| **Combined** | **751** | **395** | **356** | **348 (97.8%)** | **8** |
 
-The 7 failures are all known, intentional differences — not bugs:
+The 8 failures are all known, intentional differences — not bugs:
 
 - **3 (jq.test — string normalisation)**: jq normalises escape sequences (`\r` → `\u000d`, `\u0020` → literal space); fastjq passes bytes through unchanged (zero-copy constraint).
-- **3 (jq.test — architectural)**: Error message format (`"expected object for field access"` vs jq's verbose form); `try body catch h` catches errors from the entire callback chain not just the body (see CHANGELOG for details).
-- **1 (man.test)**: `[a, b | f]` parses as `[a, (b|f)]` — parser precedence difference.
+- **3 (jq.test — architectural)**: Error message format; `try body catch h` catches errors from the entire callback chain not just the body (see CHANGELOG for details).
+- **1 (jq.test — parser precedence)**: `[nan % 1, 1 % nan | isnan]` — jq parses as `[(a,b)|f]`; fastjq parses as `[a,(b|f)]`.
+- **1 (man.test)**: `[a, b | f]` parses as `[a, (b|f)]` — same parser precedence difference.
 
 The skipped tests cover operations not yet implemented: recursive descent (`..`), path operations, `reduce`/`foreach`, string interpolation (jq's `onig.test` uses PCRE/Oniguruma syntax), date functions, `env`, and others listed in the [Limitations](#limitations) section.
 
@@ -187,9 +189,9 @@ jq treats this as `[(a,b) | f]`. Fastjq parses array elements independently.
 
 **No recursive descent** (`..|..` / `recurse`) — allocations scale with input depth, not output. Permanently rejected.
 
-**`nan`/`infinite` constants not supported** — they produce non-JSON output.
+**`nan`/`infinite` are supported but serialize to `null` at output.** `nan | type` = `"number"`, `nan | isnan` = `true`, `infinite * -1 < 0` = `true`. `nan` and `infinite` values convert to JSON `null` at the API boundary. Values inside arrays/objects are also normalized to `null`.
 
-**Not yet implemented:** `path`, `getpath`, `setpath`, `delpaths`, `reduce`, `foreach`, `label-break`, variable binding (`as $x`), user-defined functions (`def`), 2-arg math forms (`pow(x;y)`, `hypot(x;y)`).
+**Not yet implemented:** `path`, `getpath`, `setpath`, `delpaths`, `reduce`, `foreach`, `label-break`, variable binding (`as $x`), user-defined functions (`def`), `hypot(x;y)`, `fma(x;y;z)`.
 
 **Output is always compact JSON.** fastjq never panics — malformed input may produce wrong results but the process is always safe.
 

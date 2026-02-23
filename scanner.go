@@ -1,6 +1,9 @@
 package fastjq
 
-import "bytes"
+import (
+	"bytes"
+	"math"
+)
 
 // scanner is a zero-allocation JSON scanner that operates on raw bytes.
 // It never copies data — all string reads return sub-slices of the input.
@@ -486,6 +489,20 @@ func parseJSONFloat(b []byte) (float64, bool) {
 		return 0, false
 	}
 
+	// Recognise jq special float constants (internal representation, not valid JSON).
+	// "NaN" is our internal nan sentinel; "infinite"/"-infinite" are +/-Inf.
+	if len(b) == 3 && b[0] == 'N' && b[1] == 'a' && b[2] == 'N' {
+		return math.NaN(), true
+	}
+	if len(b) == 8 && b[0] == 'i' && b[1] == 'n' && b[2] == 'f' && b[3] == 'i' &&
+		b[4] == 'n' && b[5] == 'i' && b[6] == 't' && b[7] == 'e' {
+		return math.Inf(1), true
+	}
+	if len(b) == 9 && b[0] == '-' && b[1] == 'i' && b[2] == 'n' && b[3] == 'f' &&
+		b[4] == 'i' && b[5] == 'n' && b[6] == 'i' && b[7] == 't' && b[8] == 'e' {
+		return math.Inf(-1), true
+	}
+
 	// Integer fast path: optional minus, then all digits
 	neg := false
 	start := 0
@@ -520,7 +537,7 @@ func parseJSONFloat(b []byte) (float64, bool) {
 }
 
 func isNumberByte(ch byte) bool {
-	return (ch >= '0' && ch <= '9') || ch == '-'
+	return (ch >= '0' && ch <= '9') || ch == '-' || ch == 'N' || ch == 'i'
 }
 
 // jsonCompare compares two raw JSON values for ordering.

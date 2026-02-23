@@ -51,10 +51,10 @@ var unsupportedOps = []string{
 	"def ",
 	// Reduce / foreach / label-break
 	"reduce", "foreach", "label", "break",
-	// nan/infinite: produce non-JSON output — rejected
-	"nan", "infinite", "isinfinite", "isnan", "isfinite", "isnormal",
-	// 2/3-arg math: REJECTED — 0 exclusive tests (all also blocked by as-$)
-	"pow(", "hypot", "fma",
+	// nan/infinite/predicates: now implemented
+	// 2/3-arg math: hypot/fma REJECTED — 0 exclusive tests (all also blocked by as-$)
+	// pow(x;y) is now implemented
+	"hypot", "fma",
 	// frexp/modf/ldexp/scalb/scalbln/significand: REJECTED — 0 exclusive tests
 	"frexp", "modf", "ldexp", "scalb", "scalbln", "significand",
 	// splits( — streaming split variant, 0 exclusive tests

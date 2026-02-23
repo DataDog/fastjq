@@ -4,6 +4,39 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — nan/infinite support; isnan/isinfinite/isfinite/isnormal; pow(x;y); explode/implode
+
+### Added
+
+- **`nan`** — NaN constant; `nan | type` = `"number"`, `nan | isnan` = `true`. Propagates through arithmetic (NaN + x = NaN). At JSON output, converts to `null`.
+- **`infinite`** — positive infinity constant; `-infinite` = negative infinity. Arithmetic-correct: `infinite * -1 < 0` = `true`.
+- **`-nan`** — negative NaN (equivalent to NaN in fastjq).
+- **`isnan(x)`** — true if input is NaN.
+- **`isinfinite(x)`** — true if input is ±infinite.
+- **`isfinite(x)`** — true if input is a finite number (not NaN, not infinite).
+- **`isnormal(x)`** — true if input is a non-zero finite number.
+- **`fromjson("nan")` / `fromjson("NaN")` / `fromjson("-NaN")`** — parse NaN strings from `fromjson`.
+- **`pow(x; y)`** — `math.Pow(x, y)`. 2-arg semicolon-separated syntax: `pow(2; 10)` = `1024`.
+- **`explode`** — string → array of Unicode codepoints. `"ABC"` → `[65,66,67]`.
+- **`implode`** — array of codepoints → string. `[65,66,67]` → `"ABC"`. Out-of-range/surrogate codepoints → U+FFFD.
+
+### Tradeoffs
+
+- `nan` and `infinite` produce non-JSON output internally (`"NaN"`, `"infinite"`, `"-infinite"` sentinel bytes). At the public API boundary (`Run`, `RunWithBuffer`, `RunAll`, `RunFunc`) these are converted to `null`. Array and object construction also normalizes NaN/infinite element values to `null`. This means `nan | isnan` = `true` but `nan | .` = `null`.
+- `fromjson` column numbers for invalid numeric literals corrected (was off by 1).
+- `has(nan)` always returns `false` (NaN is not a valid index).
+- `string * nan` = `null` (matching jq).
+
+### Official jq test suite coverage
+
+| | Before | After |
+|-|--------|-------|
+| Combined | 344/351 (98.0%) | 348/356 (97.8%) |
+
+(+4 absolute passing; 5 more tests attempted including the nan/isnan parser-precedence test that blocks)
+
+---
+
 ## [Unreleased] — null | .field returns null (matches jq)
 
 ### Fixed
