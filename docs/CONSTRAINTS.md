@@ -55,9 +55,13 @@ Operations where allocation is proportional to *what the caller asked to produce
 |-----------|--------|--------|
 | `range(n)` | 1 per value | Each generated integer is a fresh byte slice. For `range(10)`: 10 allocs. |
 | `range(from;to;step)` | 1 per value | Same model with explicit bounds and step. |
-| `sort`, `sort_by(f)` *(planned)* | O(n) index | Collect element offsets, sort, re-emit. |
-| `group_by(f)` *(planned)* | O(n) index | Sort-based grouping. |
-| `unique`, `unique_by(f)` *(planned)* | O(n) index | Sort-based deduplication. |
+| `sort` | ~n+O(log n) | Collect element sub-slices into index, sort, re-emit. No element copies. |
+| `sort_by(f)` | ~3n | Collect elements + compute keys + sort index. Keys with nil buf are sub-slices (no copy); constructed keys allocate their own buffers. |
+| `unique`, `unique_by(f)` | ~n | Same as sort, then deduplicate consecutive equal keys. |
+| `group_by(f)` | ~3n | Same as sort_by; groups consecutive elements with equal keys. |
+| `transpose` | ~n×m | Build transposed matrix: n rows × m columns, each element copied once. |
+| `.[]` == `.[]` multi-output compare | 0 | true/false are static literals; operands use nil-buf path. |
+| `{a: .x[]}` object construction | ~n per multi-output pair | Cartesian product: one prefix copy per value per level. |
 
 Rule: Tier 2 operations must document their alloc model in CHANGELOG and SYNTAX.md. They must not appear in hot-path benchmarks that assert 0 allocs.
 
@@ -72,7 +76,7 @@ These operations are not rejected on principle — they're deferred because impl
 
 ## Scope Constraints
 
-- **Supported operations**: identity (`.`), field access (`.foo`, `.foo.bar`), array indexing (`.[0]`, `.[-1]`), slicing (`.[n:m]`, `.[:m]`, `.[n:]`), deletion (`del(.foo)`, `del(.[0])`, `del(.[n:m])`), iteration (`.[]`), object construction (`{name}`, `{a: .foo}`), array construction (`[.foo, .bar]`), `map(expr)`, `add`, `expr + expr` (including object merge), `expr - expr`, `expr * expr` (including `string * n`, `n * string`, `object * object` recursive merge), `expr / expr`, `expr % expr`, `flatten`/`flatten(n)`, `split("s")`, `join("s")`, `min`/`max`, `min_by(f)`/`max_by(f)`, `to_entries`, `from_entries`, `keys_unsorted`, `any`/`any(expr)`/`any(gen; cond)`, `all`/`all(expr)`/`all(gen; cond)`, `first`/`first(expr)`, `last`/`last(expr)`, `limit(n; expr)`, `nth(n; gen)`, `isempty(expr)`, string interpolation (`"\(expr)"`), pipe (`expr | expr`), grouping (`(expr)`), literals (`null`, `true`, `false`, `"string"`, `123`), comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), boolean (`and`, `or`, `not`), `has("key")`, `length`, `ascii_downcase`, `ascii_upcase`, `startswith("s")`, `endswith("s")`, `ltrimstr("s")`, `rtrimstr("s")`, `if-then-elif-...-else-end`, `empty`, select (`select(cond)`), alternative (`//`), optional (`.foo?`), type (`type`), `try`/`try-catch`, `error`/`error(expr)`, `tojson`/`@json`, `fromjson`, `tostring`/`@text`, `tonumber`, `@base64`, `@base64d`, `@uri`, `@urid`, `@html`, `@csv`, `@tsv`, `@sh`, `floor`, `ceil`, `round`, `nearbyint`, `contains(val)`, `inside(val)`, `index(s)`, `rindex(s)`, `indices(s)`, `sqrt`, `fabs`, `atan` (1-arg), `log`, `log2`, `log10`, `exp`, `exp2`, `exp10`, `cbrt`, `logb`, `sin`, `cos`, `tan`, `asin`, `acos`, `tgamma`, `lgamma`, `j0`, `j1`, `test(re)`/`test(re; flags)`, `match(re)`/`match(re; flags)`, `capture(re)`/`capture(re; flags)`, `scan(re)`/`scan(re; flags)`, `sub(re; s)`, `gsub(re; s)`
+- **Supported operations**: identity (`.`), field access (`.foo`, `.foo.bar`), array indexing (`.[0]`, `.[-1]`), slicing (`.[n:m]`, `.[:m]`, `.[n:]`), deletion (`del(.foo)`, `del(.[0])`, `del(.[n:m])`), iteration (`.[]`), object construction (`{name}`, `{a: .foo}`, `{a: .items[]}`), array construction (`[.foo, .bar]`), `map(expr)`, `add`, `expr + expr` (including object merge), `expr - expr`, `expr * expr` (including `string * n`, `n * string`, `object * object` recursive merge), `expr / expr`, `expr % expr`, `flatten`/`flatten(n)`, `split("s")`, `join("s")`, `min`/`max`, `min_by(f)`/`max_by(f)`, `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `to_entries`, `from_entries`, `keys_unsorted`, `any`/`any(expr)`/`any(gen; cond)`, `all`/`all(expr)`/`all(gen; cond)`, `first`/`first(expr)`, `last`/`last(expr)`, `limit(n; expr)`, `nth(n; gen)`, `isempty(expr)`, string interpolation (`"\(expr)"`), pipe (`expr | expr`), grouping (`(expr)`), literals (`null`, `true`, `false`, `"string"`, `123`), comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`) with multi-output support, boolean (`and`, `or`, `not`), `has("key")`, `length`, `ascii_downcase`, `ascii_upcase`, `startswith("s")`, `endswith("s")`, `ltrimstr("s")`, `rtrimstr("s")`, `if-then-elif-...-else-end`, `empty`, select (`select(cond)`), alternative (`//`), optional (`.foo?`), type (`type`), `try`/`try-catch`, `error`/`error(expr)`, `tojson`/`@json`, `fromjson`, `tostring`/`@text`, `tonumber`, `@base64`, `@base64d`, `@uri`, `@urid`, `@html`, `@csv`, `@tsv`, `@sh`, `floor`, `ceil`, `round`, `nearbyint`, `contains(val)`, `inside(val)`, `index(s)`, `rindex(s)`, `indices(s)`, `sqrt`, `fabs`, `atan` (1-arg), `log`, `log2`, `log10`, `exp`, `exp2`, `exp10`, `cbrt`, `logb`, `sin`, `cos`, `tan`, `asin`, `acos`, `tgamma`, `lgamma`, `j0`, `j1`, `test(re)`/`test(re; flags)`, `match(re)`/`match(re; flags)`, `capture(re)`/`capture(re; flags)`, `scan(re)`/`scan(re; flags)`, `sub(re; s)`, `gsub(re; s)`
 - **Input format**: valid JSON objects or arrays — no streaming, no JSONL
 - **No validation**: assumes well-formed JSON input; behavior on malformed input is undefined
 - **No pretty-printing**: output is compact JSON only
@@ -99,6 +103,9 @@ These operations are not rejected on principle — they're deferred because impl
 - **`elif` desugars at parse time**: `elif C then X` rewrites to `else (if C then X end)` — no new op type needed
 - **Regex patterns compiled at parse time**: `node.re *regexp.Regexp` holds the compiled RE2 pattern; Go RE2 guarantees linear-time matching (immune to ReDoS)
 - **`findFieldStr` stops on match**: field lookups stop scanning as soon as the target key is found — no wasted scan of remaining fields
+- **`compareJSONOrder` follows jq type ordering**: null < false < true < numbers < strings < arrays < objects. Object comparison collects and sorts key-value pairs (allocates; acceptable for Tier 2 sort paths). This ordering drives all sort/min/max operations.
+- **`hasMultiOutput` compile-time detection**: object construction (`opConstruct`) checks all pair expressions at compile time. Single-output pairs use `execConstruct` (zero-alloc fast path); multi-output pairs use `execConstructMulti` (Cartesian product).
+- **Sort uses index-based sorting**: `sort_by`/`group_by`/`unique_by` precompute keys then sort a `[]int` index to avoid mismatching precomputed keys with reordered elements.
 
 ## Testing Constraints
 

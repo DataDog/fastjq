@@ -4,6 +4,52 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — sort, sort_by, unique, unique_by, group_by, transpose; multi-output compare and object construction
+
+### Added
+
+**Sort / deduplication / grouping (Tier 2):**
+
+- **`sort`** — sorts array using jq's canonical type ordering: null < false < true < numbers < strings < arrays < objects. Object comparison uses sorted key-value pairs. ~n+O(log n) allocs.
+- **`sort_by(f)`** / **`sort_by(.a, .b)`** — sort by key function. Multi-key via generator: `.a, .b` produces a tuple per element, compared lexicographically. Uses index-based sort to preserve key-element correspondence. ~3n allocs.
+- **`unique`** — sort then remove consecutive duplicates. ~n allocs.
+- **`unique_by(f)`** — sort by key, keep first of each key group. ~3n allocs.
+- **`group_by(f)`** — sort by key, emit `[[group1], [group2], ...]`. ~3n allocs.
+- **`transpose`** — matrix transpose / zip. Short rows padded with `null`. ~n×m allocs.
+
+**Multi-output comparisons:**
+
+- `.[] == 1` now produces one boolean per element instead of only the first. The `execCompare` function uses `execMulti` for both operands, supporting Cartesian comparisons like `range(2) == range(2)` → `true, false, false, true`. The single-output fast path (`execCompareSingle` via `execSingle`) is unchanged — zero allocs.
+
+**Object construction with multi-output values:**
+
+- `{user, title: .titles[]}` now produces one object per title value (Cartesian product across all pair values). Multi-output pair detection uses `hasMultiOutput()` at compile time — single-output pairs continue using `execConstruct` (zero overhead), only multi-output pairs route through `execConstructMulti`.
+
+### Tradeoffs
+
+- `compareJSONOrder` now uses jq's correct ordering (null < false < true < numbers < strings < arrays < objects). Previously it used `number < string < array < object < boolean < null`. This change affects `min_by`/`max_by` on heterogeneous arrays but only homogeneous tests existed previously.
+- Object comparison in `compareJSONOrder` allocates (collects and sorts key-value pairs). This only activates when comparing objects for sort order — all existing Tier 0 benchmarks are unaffected.
+- `{a: .x[]}` multi-output construction allocates one prefix copy per output value per nesting level (Tier 2). Single-output construction remains zero-alloc via the fast path.
+
+### Benchmark results
+
+| Operation | fastjq | gojq | Speedup | allocs |
+|-----------|--------|------|---------|--------|
+| `sort` (200-int array) | 6.2 µs | 21.8 µs | **3.5x** | 15 |
+| `sort_by(.value)` (100-elem objects) | 16.7 µs | 80.8 µs | **4.8x** | 422 |
+| `unique` (200-int array) | 8.2 µs | 24.0 µs | **2.9x** | 15 |
+| `group_by(.active)` (100-elem objects) | 21.1 µs | 88.7 µs | **4.2x** | 422 |
+
+### Official jq test suite coverage
+
+| | Before | After |
+|-|--------|-------|
+| jq.test | 204/210 (97.1%) | 209/215 (97.2%) |
+| man.test | 122/125 (97.6%) | 132/133 (99.2%) |
+| **Combined** | **326/335 (97.3%)** | **341/348 (98.0%)** |
+
+---
+
 ## [Unreleased] — regex: test, match, capture, scan, sub, gsub (Go RE2)
 
 ### Added

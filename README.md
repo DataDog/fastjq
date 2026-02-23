@@ -134,7 +134,7 @@ fastjq supports a large targeted subset of jq. The complete reference with examp
 - **Control flow:** `\|`, `select`, `if-elif-else`, `try-catch`, `//`, `empty`, `"\(expr)"`
 - **Arithmetic:** `+`, `-`, `*`, `/`, `%`, `add`, `floor`, `ceil`, `round`, `nearbyint`
 - **Math:** `sqrt`, `log`, `exp`, `sin`, `cos`, `atan`, `tgamma`, `j0`, and 15 more — all zero-alloc
-- **Arrays:** `map`, `flatten`, `min/max`, `any/all`, `first/last`, `limit`, `nth`, `isempty`, `values`, type filters, `index/indices`
+- **Arrays:** `map`, `flatten`, `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `min/max`, `min_by/max_by`, `any/all`, `first/last`, `limit`, `nth`, `isempty`, `values`, type filters, `index/indices`
 - **Strings:** `split/join`, `ascii_downcase/upcase`, `startswith/endswith`, `ltrimstr/rtrimstr`, `"\(expr)"` interpolation
 - **Format strings:** `@base64/d`, `@uri/d`, `@html`, `@csv`, `@tsv`, `@sh`, `@text`, `@json`
 - **Regex (Go RE2):** `test(re)` *(0 allocs)*, `match(re)`, `capture(re)`, `scan(re)`, `sub(re; s)`, `gsub(re; s)`
@@ -147,17 +147,17 @@ fastjq is validated against two official jq test files (`go test ./jqtest/`).
 
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
-| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 311 | 210 | **204 (97.1%)** | 6 |
-| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 105 | 125 | **122 (97.6%)** | 3 |
-| **Combined** | **751** | **416** | **335** | **326 (97.3%)** | **9** |
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 306 | 215 | **209 (97.2%)** | 6 |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 97 | 133 | **132 (99.2%)** | 1 |
+| **Combined** | **751** | **403** | **348** | **341 (98.0%)** | **7** |
 
-The 9 failures are all known, intentional differences — not bugs:
+The 7 failures are all known, intentional differences — not bugs:
 
 - **3 (jq.test — string normalisation)**: jq normalises escape sequences (`\r` → `\u000d`, `\u0020` → literal space); fastjq passes bytes through unchanged (zero-copy constraint).
 - **3 (jq.test — architectural)**: Error message format (`"expected object for field access"` vs jq's verbose form); `try body catch h` catches errors from the entire callback chain not just the body (see CHANGELOG for details).
-- **3 (man.test)**: Object construction with multi-output iterator value; `==` uses `execSingle` on both operands; `[a, b | f]` parses as `[a, (b|f)]`.
+- **1 (man.test)**: `[a, b | f]` parses as `[a, (b|f)]` — parser precedence difference.
 
-The skipped tests cover operations not yet implemented: recursive descent (`..`), `sort`/`group_by`/`unique` (planned as Tier 2), path operations, `reduce`/`foreach`, string interpolation (jq's `onig.test` uses PCRE/Oniguruma syntax), date functions, `env`, and others listed in the [Limitations](#limitations) section.
+The skipped tests cover operations not yet implemented: recursive descent (`..`), path operations, `reduce`/`foreach`, string interpolation (jq's `onig.test` uses PCRE/Oniguruma syntax), date functions, `env`, and others listed in the [Limitations](#limitations) section.
 
 ## Limitations
 
@@ -187,7 +187,7 @@ jq treats this as `[(a,b) | f]`. Fastjq parses array elements independently.
 
 **No recursive descent** (`..|..` / `recurse`) — allocations scale with input depth, not output. Permanently rejected.
 
-**`sort`, `sort_by`, `group_by`, `unique`, `unique_by` — not yet implemented** (planned as Tier 2: O(n) allocation bounded by collection size).
+**`sort`, `sort_by`, `group_by`, `unique`, `unique_by`, `transpose` — implemented as Tier 2** (O(n) allocation proportional to collection size; see [BENCHMARKS.md](docs/BENCHMARKS.md) for alloc counts).
 
 **`nan`/`infinite` constants not supported** — they produce non-JSON output.
 

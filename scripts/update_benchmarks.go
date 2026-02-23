@@ -70,6 +70,10 @@ var tableRows = []row{
 	{"`flatten`", "3-elem nested array", "Small_Flatten", "Small_Flatten"},
 	{"`min`", "200-int array", "Small_Min", "Small_Min"},
 	{"`min_by(.value)`", "100-elem object array", "Small_MinBy", "Small_MinBy"},
+	{"`sort`", "200-int array", "Sort", "Sort"},
+	{"`sort_by(.value)`", "100-elem object array", "SortBy", "SortBy"},
+	{"`unique`", "200-int array", "Unique", "Unique"},
+	{"`group_by(.active)`", "100-elem object array", "GroupBy", "GroupBy"},
 	// Array ops
 	{"`map(.name)`", "20-elem array (~600B)", "Small_Map", "Small_Map"},
 	{"`map(.name)`", "200-elem array (~6KB)", "Large_Map", "Large_Map"},
