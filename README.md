@@ -1,6 +1,6 @@
 # fastjq
 
-A fast, allocation-conscious jq engine for Go, designed for high-throughput structured log processing.
+A fast jq engine for Go with a principled allocation model, designed for high-throughput structured log processing.
 
 fastjq operates directly on raw `[]byte` — no `json.Unmarshal`, no `map[string]interface{}`, no marshal/unmarshal cycle. It compiles a query once and executes it against JSON bytes by scanning byte positions, copying only what it needs into an output buffer.
 
@@ -22,7 +22,15 @@ The standard approach costs ~800 µs and ~4,600 allocations just to parse a 100K
 
 Compared against [gojq](https://github.com/itchyny/gojq), the standard jq library for Go. gojq times include the full `json.Unmarshal → execute → json.Marshal` cycle. Apple M4 Max, Go 1.25.
 
-fastjq's allocation model: **core operations are 0 allocs** (access, filtering, comparison, arithmetic, construction, math, `test(re)`). Operations that return new structured data allocate proportional to their *output* size — never to input size: `@base64`/`@uri` (4 allocs; string decoding), `match`/`capture` (1 alloc on a hit; `[]int` for subgroup indices), `scan`/`gsub` (allocs per match), `map(f)` when `f` builds new data (~1 per element). See the `allocs` column in [BENCHMARKS.md](docs/BENCHMARKS.md).
+**Allocation model — allocations are proportional to what you ask for, never to what the engine scans:**
+
+| Tier | Operations | Allocs/op |
+|------|-----------|-----------|
+| **Core** | access, filter, compare, arithmetic, construction, math, `test(re)`, and most others | **0** |
+| **Output-encoding** | `@base64`, `@uri` (string decoding), `match`/`capture` (result struct), `scan`/`gsub` (multi-match) | ∝ output size |
+| **Construction** | `map(f)` when `f` builds new data (object/arithmetic), `[.[] \| f]` | ~1 per element |
+
+The core tier covers the full hot path for log processing. For operations that do allocate, the allocation is bounded by the result they produce — not by the document size they scan. See `allocs` column in [BENCHMARKS.md](docs/BENCHMARKS.md) for per-operation detail.
 
 | Operation | Input | fastjq | gojq | Speedup | allocs |
 |-----------|-------|--------|------|---------|--------|
@@ -147,11 +155,9 @@ The 9 failures are all known, intentional differences — not bugs:
 - **3 (jq.test — architectural)**: Error message format (`"expected object for field access"` vs jq's verbose form); `try body catch h` catches errors from the entire callback chain not just the body (see CHANGELOG for details).
 - **3 (man.test)**: Object construction with multi-output iterator value; `==` uses `execSingle` on both operands; `[a, b | f]` parses as `[a, (b|f)]`.
 
-The skipped tests cover operations outside fastjq's scope: recursive descent (`..`), `sort`/`group_by`/`unique`, path operations, `reduce`/`foreach`, string interpolation (jq's `onig.test` regex tests use PCRE/Oniguruma syntax), math builtins, date functions, `env`, and others listed in the [Limitations](#limitations) section.
+The skipped tests cover operations not yet implemented: recursive descent (`..`), `sort`/`group_by`/`unique` (planned as Tier 2), path operations, `reduce`/`foreach`, string interpolation (jq's `onig.test` uses PCRE/Oniguruma syntax), date functions, `env`, and others listed in the [Limitations](#limitations) section.
 
 ## Limitations
-
-fastjq is intentionally scope-limited. It will not grow into a full jq implementation.
 
 **`select` conditions must be single-valued.**
 `select(.items[] == "x")` silently tests only the first element. Use `any(.[]; . == "x")` instead.
@@ -159,33 +165,35 @@ fastjq is intentionally scope-limited. It will not grow into a full jq implement
 **`.field` on `null` errors — use `.field?` for null-safe access.**
 `null | .field` errors in fastjq (jq returns null). Use `.a?.b?` for full null-safety.
 
-**`map(f)` / `[.[] | f]` allocates when `f` constructs new data.**
-`map(.name)` is 0 allocs. `map({name, price})` allocates ~1 buffer per element. fastjq still uses 5–8x fewer allocations than gojq on these queries.
+**`map(f)` allocates when `f` constructs new data** (Tier 1 — proportional to output).
+`map(.name)` is 0 allocs (field access returns an input sub-slice). `map({name, price})` allocates ~1 buffer per element to prevent result aliasing. Still 5–8x fewer allocations than gojq.
 
 **String escape sequences pass through unchanged.**
 fastjq does not normalise string escapes on output (`\r` stays `\r`, not `\u000d`). Re-encoding every string would violate the zero-copy constraint.
 
 **Regex uses Go RE2, not PCRE/Oniguruma.**
-Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are unsupported. `test(re)` is 0-alloc; `match`/`capture` alloc one `[]int` on a hit; `scan`/`gsub` alloc per match. Replacement strings in `sub`/`gsub` are literals (no `\(...)` references).
+Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are unsupported. `test(re)` is 0-alloc; `match`/`capture` alloc one `[]int` on a hit; `scan`/`gsub` alloc per match. Replacement strings in `sub`/`gsub` are literals.
 
 **`@format "template"` combined syntax not supported.**
-`@html "<b>\(.)</b>"` applies the format to each interpolated value — not yet implemented. Plain string interpolation `"\(.field)"` and standalone format strings (`@html`, `@csv`, `@sh`, etc.) both work fine.
+`@html "<b>\(.)</b>"` is not yet implemented. Plain `"\(.field)"` and standalone `@html`, `@csv`, `@sh`, etc. all work.
 
 **try-catch catches errors from the full callback chain, not just the body.**
-`(try . catch h) | right` — if `right` errors, the try catches it. jq scopes the catch to the body only. Complex nested try patterns may behave differently.
+`(try . catch h) | right` — if `right` errors, the catch fires. jq scopes the catch to the body only.
 
 **`[a, b | f]` parses as `[a, (b|f)]`.**
-jq treats `[a, b | f]` as `[(a,b) | f]`. fastjq parses array elements independently, so `[true, false | not]` gives `[true, true]` not `[false, true]`.
+jq treats this as `[(a,b) | f]`. Fastjq parses array elements independently.
 
-**No recursive descent** (`..|..` / `recurse`).
+**No recursive descent** (`..|..` / `recurse`) — allocations scale with input depth, not output. Permanently rejected.
 
-**No sorting, grouping, or deduplication** — `sort`, `sort_by`, `group_by`, `unique`, `unique_by` require O(n) auxiliary storage.
+**`sort`, `sort_by`, `group_by`, `unique`, `unique_by` — not yet implemented** (planned as Tier 2: O(n) allocation bounded by collection size).
 
-**Not yet implemented:** `path`, `getpath`, `setpath`, `delpaths`, `reduce`, `foreach`, `label-break`, variable binding (`as $x`), user-defined functions (`def`), `explode`/`implode`, `nan`/`infinite` constants, 2-arg math forms (`pow(x;y)`, `hypot(x;y)`, `atan(y;x)`).
+**`nan`/`infinite` constants not supported** — they produce non-JSON output.
+
+**Not yet implemented:** `path`, `getpath`, `setpath`, `delpaths`, `reduce`, `foreach`, `label-break`, variable binding (`as $x`), user-defined functions (`def`), `explode`/`implode`, 2-arg math forms (`pow(x;y)`, `hypot(x;y)`).
 
 **Output is always compact JSON.** fastjq never panics — malformed input may produce wrong results but the process is always safe.
 
-See [SYNTAX.md](docs/SYNTAX.md) for the full categorised roadmap of unimplemented operations.
+See [SYNTAX.md](docs/SYNTAX.md) for the full allocation-tiered roadmap.
 
 ## Further reading
 

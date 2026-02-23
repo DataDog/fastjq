@@ -71,6 +71,8 @@ Use `RunAll` or `RunFunc` to consume multiple outputs. `Run`/`RunWithBuffer` ret
 | `[.name, .age]` | Build array from fields | `{"name":"alice","age":30}` | `["alice",30]` |
 | `[.name]` | Single-element array | `{"name":"alice"}` | `["alice"]` |
 
+**Allocation note:** `[.[] | f]` / `map(f)` — when `f` returns an input sub-slice (field access, identity, comparison), the array is built 0-alloc. When `f` constructs new data (object `{…}`, arithmetic, string concat), ~1 alloc per element is needed to prevent result aliasing. `map(.name)` = 0 allocs; `map({name, value})` = ~1 alloc/element.
+
 ### Pipe
 
 | Syntax | Description | Example Input | Example Output |
@@ -207,21 +209,20 @@ When `error` is thrown, the `catch` handler receives the **actual JSON value** (
 
 ### Format Strings
 
-| Syntax | Description | Example Input | Example Output |
-|--------|-------------|---------------|----------------|
-| `@base64` | Base64-encode a JSON string | `"hello"` | `"aGVsbG8="` |
-| `@base64d` | Base64-decode a JSON string | `"aGVsbG8="` | `"hello"` |
-| `@uri` | URL percent-encode (RFC 3986 unreserved chars pass through) | `"hello world"` | `"hello%20world"` |
-| `@urid` | URL percent-decode | `"%CE%BC"` | `"\u03bc"` |
-| `@json` / `tojson` | Serialize any value as a JSON string | `{"a":1}` | `"{\"a\":1}"` |
-| `@text` / `tostring` | Identity for strings; `tojson` for other types | `42` | `"42"` |
-| `@html` | HTML-escape `&`, `<`, `>`, `'`, `"` | `"<b>&</b>"` | `"&lt;b&gt;&amp;&lt;/b&gt;"` |
-| `@csv` | Format array as CSV (strings double-quoted, internal quotes doubled) | `[1,"a,b"]` | `"1,\"a,b\""` |
-| `@tsv` | Format array as TSV (tab/newline/backslash escaped) | `[1,"a\tb"]` | `"1\ta\\tb"` |
-| `@sh` | POSIX shell-quote a string (single-quote wrapping) | `"O'Hara"` | `"'O'\\''Hara'"` |
+| Syntax | Allocs | Description | Example Input | Example Output |
+|--------|--------|-------------|---------------|----------------|
+| `@base64` | ~4 | Base64-encode a JSON string | `"hello"` | `"aGVsbG8="` |
+| `@base64d` | 0 | Base64-decode a JSON string | `"aGVsbG8="` | `"hello"` |
+| `@uri` | ~4 | URL percent-encode (RFC 3986 unreserved chars pass through) | `"hello world"` | `"hello%20world"` |
+| `@urid` | ~2 | URL percent-decode | `"%CE%BC"` | `"\u03bc"` |
+| `@json` / `tojson` | 0 | Serialize any value as a JSON string | `{"a":1}` | `"{\"a\":1}"` |
+| `@text` / `tostring` | 0 | Identity for strings; `tojson` for other types | `42` | `"42"` |
+| `@html` | ~1 | HTML-escape `&`, `<`, `>`, `'`, `"` | `"<b>&</b>"` | `"&lt;b&gt;&amp;&lt;/b&gt;"` |
+| `@csv` | ~1 | Format array as CSV (strings double-quoted, internal quotes doubled) | `[1,"a,b"]` | `"1,\"a,b\""` |
+| `@tsv` | ~1 | Format array as TSV (tab/newline/backslash escaped) | `[1,"a\tb"]` | `"1\ta\\tb"` |
+| `@sh` | ~1 | POSIX shell-quote a string (single-quote wrapping) | `"O'Hara"` | `"'O'\\''Hara'"` |
 
-`@base64d` accepts standard (`+/`), URL-safe (`-_`), padded and unpadded input. Non-printable decoded bytes are escaped as `\uXXXX`.
-All format strings (`@base64`, `@uri`, `@html`, `@csv`, `@tsv`, `@sh`) decode JSON string escape sequences before encoding — `\n` becomes byte `0x0a`, `\uXXXX` is decoded to its UTF-8 bytes — matching jq behaviour.
+`@base64`, `@uri`, `@html`, `@csv`, `@tsv`, `@sh` allocate because they decode JSON string escape sequences before encoding — `\n` becomes byte `0x0a`, `\uXXXX` decoded to UTF-8. These are Tier 1 (output-encoding) allocations: proportional to the string being encoded, not the document being scanned. `@base64d`, `@json`, `@text` write directly into the output buffer and are 0-alloc.
 
 ### Numeric Rounding and Math
 
@@ -493,35 +494,48 @@ These operations are implementable at zero allocation but involve more complexit
 | `delpaths(paths)` | Delete at multiple paths | Like `setpath` but removing. Same reconstruction complexity. |
 | `walk(f)` | Recursive transform | Apply f to every value bottom-up. Reconstruct entire tree with transformed values. Intermediate results from inner expressions may need temp storage. |
 
-### Rejected — structurally incompatible with zero-alloc constraint
+### Feasible — bounded O(n) allocation (Tier 2)
 
-These operations were evaluated and rejected after benchmarking confirmed unavoidable allocations incompatible with the zero-alloc guarantee.
+These operations require allocating an auxiliary index structure, but the allocation is **bounded by the collection the user explicitly provided** — not by the document being scanned. This is consistent with fastjq's governing principle.
 
-| Syntax | Reason |
-|--------|--------|
-| `range(n)` / `range(from; to; step)` | **Synthesizes new data not present in the input.** Every other fastjq operation transforms or extracts bytes already in the input. `range` generates integer values from scratch. Formatting each integer requires a buffer passed to `fn func([]byte) error` — Go's escape analysis conservatively heap-allocates any buffer passed to a function interface, giving 1 alloc/call. Additionally, a fixed `[64]byte` buffer silently overflows for extreme float steps, causing unbounded extra allocations. |
-| `recurse` / `..` | **Recursive closures escape to heap, scaling with JSON depth.** The recursive descent creates an `objectIter`/`arrayIter` closure at every nesting level that captures `fn func([]byte) error`. Because `fn` is a function interface, Go assumes the closure may outlive the stack frame and heap-allocates it — ~3-4 allocs per level. For a 3-level JSON object, that is ~11 allocs/call. Unlike `range` (fixed 1 alloc), `recurse` allocs scale with input depth. Fixing this would require a full stack-based redesign that avoids closures entirely, incompatible with the current callback architecture. |
-| `with_entries(f)` | **Requires a dedicated scratch buffer per call.** `with_entries` must build each `{"key":k,"value":v}` entry as a temporary JSON object, pass it to `f`, and write the result to the output. The entry bytes cannot alias the output buffer (they may be read by `f` and written by `from_entries` simultaneously), so a separate scratch buffer is mandatory. A `make([]byte, 0, 64)` allocation is unavoidable — 1 alloc/call that is real at 100x steady-state. Use `to_entries \| map(f) \| from_entries` explicitly; the composed form reuses the caller-supplied buffer correctly. |
+Planned for implementation. Each will document its allocation profile explicitly.
 
-### Challenging — likely require allocation
+| Syntax | Alloc model | Notes |
+|--------|-------------|-------|
+| `sort`, `sort_by(f)` | O(n) `[]int` index | Collect element offsets, sort, re-emit in order. |
+| `group_by(f)` | O(n) index | Requires sort, then grouping into sub-arrays. |
+| `unique`, `unique_by(f)` | O(n) index | Sort-based deduplication. |
+| `keys` (sorted) | O(n) index | Sorted object keys. (`keys_unsorted` is already 0-alloc.) |
+| `with_entries(f)` | 1 alloc/call | Needs a small scratch buffer per entry (aliasing constraint). Use `to_entries \| map(f) \| from_entries` as the 0-alloc alternative. |
+| `implode` | O(n) | Array of codepoints → UTF-8 string. |
+| `explode` | O(n) | String → array of Unicode codepoints. |
 
-These operations fundamentally conflict with zero-allocation execution.
+### Rejected — allocations proportional to INPUT structure
 
-| Syntax | Description | Why |
-|--------|-------------|-----|
-| `sort`, `sort_by(expr)` | **Sorting** | Requires O(n) auxiliary storage. Must collect all element positions before reordering. An `[]int` index of offsets is the minimum allocation. For `sort_by`, must also evaluate and store the sort key for each element. |
-| `group_by(expr)` | **Grouping** | Requires sort (above), then grouping into sub-arrays. Needs at least an offset index. |
-| `unique`, `unique_by(expr)` | **Deduplication** | Efficient dedup requires a hash set or sorted index. O(n^2) byte comparison is zero-alloc but impractical for large arrays. |
-| `keys` (sorted) | **Sorted object keys** | Must collect all key positions, sort lexicographically, then emit. Same constraint as `sort`. (`keys_unsorted` is zero-alloc and trivial.) |
-| *(none — regex is now supported)* | — | `test`, `match`, `capture`, `scan`, `sub`, `gsub` are all implemented. See the Regex section above. |
-| `ascii`, `implode`, `explode` | **Unicode codepoint operations** | `explode` produces an array of codepoints requiring multi-byte UTF-8 decoding. The decoding itself is zero-alloc, but the interaction with variable-width encoding adds edge cases. |
-| `$ENV` | **Full environment map** | Building a JSON object from all env vars requires allocation for the result. |
-| `getpath`/`setpath` (deeply nested) | **Deep path operations** | While possible at zero-alloc, deep nesting (10+ levels) requires multi-level tree reconstruction. Each level reconstructs into the output buffer. The code complexity scales linearly with max supported depth. |
-| `walk(f)` (with construction) | **Recursive transform with new values** | If `f` produces constructed output at each level, intermediate results accumulate. Buffer management becomes very complex. |
+The governing principle rejects operations where allocation scales with the *shape of the data being processed*, not with the result being produced. The caller cannot control these allocations by choosing what to ask for.
+
+| Syntax | Why rejected |
+|--------|-------------|
+| `range(n)` / `range(from; to; step)` | **Synthesises data.** `range` generates values from scratch rather than transforming input. Every integer emitted requires a buffer passed through the `func([]byte) error` interface — Go's escape analysis conservatively heap-allocates it, giving 1 alloc per value regardless of what the caller does with them. |
+| `recurse` / `..` | **Allocs scale with input depth.** The recursive descent creates an `objectIter`/`arrayIter` closure at every JSON nesting level (~3–4 heap allocs per level). A 10-deep object costs ~40 allocs per call. The caller cannot bound this. Fixing it would require a full stack-based executor redesign incompatible with the callback architecture. |
+
+### Not yet implemented (feasible, zero-alloc)
+
+| Syntax | Description | Challenge |
+|--------|-------------|-----------|
+| `path(expr)` | Output path as array | Track current path during descent — needs a path accumulator. |
+| `getpath(path)` | Get value at path | Navigate nested structure following path array. |
+| `setpath(path; val)` | Set value at path | Navigate to position, reconstruct tree with modified value. |
+| `delpaths(paths)` | Delete at multiple paths | Like `setpath` but removing. |
+| `as $x \| expr` | Variable binding | Zero-alloc if bound values reference input; allocates if they hold constructed data. |
+| `reduce .[] as $x (init; update)` | Fold/accumulate | Needs mutable accumulator; double-buffering keeps it near-zero-alloc. |
+| `foreach` | Stateful iteration | Same accumulator challenge as `reduce`. |
+| `label-break` | Control flow | Achievable with a sentinel error value for stack unwinding. |
+| `@format "template"` combined syntax | `@html "<b>\(.)</b>"` | Applies format to each interpolated value; requires parser + executor extension. |
+| `def f: body; expr` | User-defined functions | AST-level feature; recursive definitions add complexity. |
+| `walk(f)` | Bottom-up tree transform | Feasible; complex buffer management when `f` constructs new data. |
 
 ### Not applicable (streaming/CLI concerns)
-
-These are part of jq's CLI or streaming interface, not relevant for an embedded library:
 
 | Syntax | Description |
 |--------|-------------|
@@ -530,16 +544,14 @@ These are part of jq's CLI or streaming interface, not relevant for an embedded 
 | `--raw-output`, `-r` | CLI output formatting |
 | `--slurp`, `-s` | CLI input mode |
 | `--arg`, `--argjson` | CLI variable injection |
-| `--jsonargs`, `--args` | CLI argument passing |
 
 ---
 
 ## Summary
 
-**Most of jq's core functionality is achievable at zero allocation.** The byte-scanning + output-buffer approach covers field access, filtering, construction, iteration, and simple transforms naturally.
+**fastjq's allocation model:** allocations are proportional to what you ask for, never to what the engine scans.
 
-**Operations that require reordering** (`sort`, `group_by`, `unique`, sorted `keys`) are the hardest category. They fundamentally need an auxiliary index structure — at minimum a `[]int` of offsets. The pragmatic approach is to allow a small `[]int` allocation for these while keeping everything else zero-alloc.
-
-**Regex is supported via Go RE2.** `test(re)` is 0-alloc; `match`/`capture` allocate one `[]int` on a match; `scan`/`gsub` allocate per match. All allocations are proportional to result size, not input size. Patterns compile once at `Compile()` time.
-
-**Numeric arithmetic** is feasible at zero-alloc using `strconv.AppendFloat`/`strconv.AppendInt` directly into the output buffer.
+- **Tier 0 (zero-alloc):** field access, filtering, comparison, arithmetic, construction, `map(.field)`, math, `test(re)` — the full hot path for log processing.
+- **Tier 1 (alloc ∝ output):** `@base64`, `@uri`, `match`, `capture`, `scan`, `gsub`, `map(f)` with construction — allocate proportional to the data they produce, never to the input size.
+- **Tier 2 (alloc ∝ collection, planned):** `sort`, `group_by`, `unique` — O(n) index bounded by the array the user explicitly collected.
+- **Rejected:** `recurse`/`..` (allocs scale with input depth) and `range` (synthesises data from scratch).
