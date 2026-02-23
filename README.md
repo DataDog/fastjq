@@ -70,7 +70,7 @@ Both tools validate JSON. fastjq calls `json.Valid()` before processing each rec
 | `to_entries` | small | 0.746 | 0.066 | **11x** |
 | `keys_unsorted` | small | 0.244 | 0.057 | **4.3x** |
 
-See [BENCHMARKS.md](docs/BENCHMARKS.md) for the complete table.
+**Without validation** (using `RunWithBuffer`/`RunFunc` directly on known-valid inputs), the Go library benchmarks show **13–75x** speedups — see the table at the top of this section and [BENCHMARKS.md](docs/BENCHMARKS.md) for the full comparison.
 
 ## Try it out (CLI)
 
@@ -147,9 +147,9 @@ fastjq is validated against two official jq test files (`go test ./jqtest/`).
 
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
-| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 321 | 200 | **194 (97.0%)** | 6 |
-| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 112 | 118 | **115 (97.5%)** | 3 |
-| **Combined** | **751** | **433** | **318** | **309 (97.2%)** | **9** |
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 311 | 210 | **204 (97.1%)** | 6 |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 105 | 125 | **122 (97.6%)** | 3 |
+| **Combined** | **751** | **416** | **335** | **326 (97.3%)** | **9** |
 
 The 9 failures are all known, intentional differences — not bugs:
 
