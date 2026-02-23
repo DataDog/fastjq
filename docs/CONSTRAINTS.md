@@ -5,15 +5,70 @@
 - **Never panics.** fastjq must never panic regardless of input — valid JSON, malformed JSON, empty input, or arbitrary bytes. A panic in a log processing pipeline is worse than wrong output. This guarantee is enforced by `TestNoPanicMalformedInput` (deterministic) and three fuzz test functions (`FuzzCompile`, `FuzzRunFixed`, `FuzzBoth`). Any code path that could panic on bad input is a bug.
 - **Correct results only guaranteed for valid JSON.** With malformed input the output is undefined, but the process remains safe.
 
-## Performance Constraints
+## Performance Model
 
-- **Zero allocations** on the hot path when using `RunWithBuffer` with a reused buffer — all operations including select, compare, and alternative achieve 0 allocs
-- **Exception — array construction with data-building element expressions**: `[.[] | f]` where `f` constructs new data (object construction `{…}`, arithmetic, string concatenation) allocates ~1 buffer per element. This is a structural limitation: `execArrayConstruct` must pass `nil` scratch to `execMulti` to prevent aliasing when an element's iterator emits multiple results across callback invocations. Elements that return input sub-slices (field access, identity, comparisons) remain 0 allocs. fastjq still uses 5–8x fewer allocations than gojq on these queries.
-- **Regex allocation exception**: `test(re)` is 0 allocs (Go RE2 `Match` on `[]byte` is allocation-free for compiled patterns). `match(re)` and `capture(re)` allocate one `[]int` on a match (unavoidable — Go's `FindSubmatchIndex` API). `scan`, `sub`, `gsub` allocate proportional to match count. All regex patterns are compiled once at `Compile()` time (stored in `node.re`). Go's RE2 engine guarantees linear-time matching regardless of input — immune to ReDoS.
-- **Static error sentinels** on hot-path functions: `fmt.Errorf` with dynamic args poisons escape analysis, so hot-path error returns use pre-allocated `errors.New` values
-- **No marshal/unmarshal**: never converts to `interface{}`, `map[string]interface{}`, or any Go type — operates entirely on raw `[]byte`
-- **No data copying** except into the output buffer: scanner returns sub-slices of input, field values are copied verbatim
-- **Output <= input**: deletion output is always smaller than or equal to input, so output buffer can be pre-allocated at `cap = len(input)`
+The governing principle: **allocations are proportional to what you ask for, never to what the engine scans.**
+
+fastjq distinguishes four tiers of allocation behaviour:
+
+| Tier | Rule | Examples |
+|------|------|---------|
+| **Tier 0** | 0 allocs — core processing hot path | access, filter, compare, arithmetic, construction, math |
+| **Tier 1** | Allocs ∝ output size — unavoidable API constraints | `@base64`, `@uri`, `match`, `capture`, `scan`, `gsub` |
+| **Tier 2** | Allocs ∝ output count — bounded by what was requested | `range(n)` (1 alloc/value); `sort`, `group_by`, `unique` *(planned)* |
+| **Tier 3** | Deferred — requires executor redesign, not a policy decision | `recurse`/`..` |
+
+When deciding whether to implement a new operation, the question is always: *does the allocation scale with the result, or with the input?* If the caller can control the allocation by choosing what to request, it is acceptable. If the allocation scales with the shape of the data being processed regardless of the query, it is rejected.
+
+### Tier 0 — Zero-alloc (core processing)
+
+Field access, filtering, comparison, arithmetic, construction, `map(.field)`, math builtins, `test(re)`, string operations, and most other operations achieve **0 allocs/op** at steady state when using `RunWithBuffer` or `RunFunc` with a reused buffer.
+
+This is the hot path for log processing. Any regression to non-zero allocs on these operations is a bug.
+
+Implementation rules:
+- `RunWithBuffer` / `RunFunc` must achieve 0 allocs for all Tier 0 operations
+- Static error sentinels (`errors.New`) on hot-path functions — `fmt.Errorf` with dynamic args poisons escape analysis
+- No `interface{}`, `map[string]interface{}`, or any Go type conversion — operate entirely on raw `[]byte`
+- No data copying except into the output buffer
+
+### Tier 1 — Alloc ∝ output size (unavoidable)
+
+Some operations must allocate to produce their result. The allocation is proportional to the *output*, not the input being scanned. Even gojq allocates thousands of times just to begin; these ops allocate a handful of times for specific results.
+
+| Operation | Allocs | Reason |
+|-----------|--------|--------|
+| `@base64`, `@uri` | ~4 | String-escape decoding before encoding |
+| `match(re)`, `capture(re)` | 1 on hit, 0 on miss | Go's `FindSubmatchIndex` `[]int` (unavoidable API) |
+| `scan(re)`, `gsub(re)` | ∝ match count | Multi-result output |
+| `sub(re)` | 1 on hit | `FindIndex []int` |
+| `map(f)` when `f` constructs | ~1 per element | `execArrayConstruct` aliasing constraint |
+| `error(expr)` | 1 on throw | `jsonError` payload copy (exceptional path only) |
+
+**Exception — array construction aliasing:** `[.[] | f]` where `f` constructs new data (object construction, arithmetic, string concatenation) allocates ~1 buffer per element. This is a structural limitation: `execArrayConstruct` must pass `nil` scratch to `execMulti` to prevent aliasing when an element's iterator emits multiple results across callback invocations. Elements that return input sub-slices (field access, identity, comparisons) remain 0 allocs.
+
+### Tier 2 — Alloc ∝ output count (bounded, acceptable)
+
+Operations where allocation is proportional to *what the caller asked to produce*, not what was scanned. The caller controls the allocation by deciding what to request.
+
+| Operation | Allocs | Reason |
+|-----------|--------|--------|
+| `range(n)` | 1 per value | Each generated integer is a fresh byte slice. For `range(10)`: 10 allocs. |
+| `range(from;to;step)` | 1 per value | Same model with explicit bounds and step. |
+| `sort`, `sort_by(f)` *(planned)* | O(n) index | Collect element offsets, sort, re-emit. |
+| `group_by(f)` *(planned)* | O(n) index | Sort-based grouping. |
+| `unique`, `unique_by(f)` *(planned)* | O(n) index | Sort-based deduplication. |
+
+Rule: Tier 2 operations must document their alloc model in CHANGELOG and SYNTAX.md. They must not appear in hot-path benchmarks that assert 0 allocs.
+
+### Tier 3 — Deferred (requires executor redesign)
+
+These operations are not rejected on principle — they're deferred because implementing them correctly requires a different execution architecture, not just documented allocations.
+
+| Operation | Why deferred |
+|-----------|-------------|
+| `recurse` / `..` | The callback-based executor (`fn func([]byte) error`) forces Go's escape analysis to heap-allocate a closure at every JSON nesting level (~3–4 allocs/level). On a 10-deep record that's ~40 allocs regardless of query complexity, and the caller cannot bound it. Fixing this requires replacing the callback architecture with an explicit stack — a significant redesign. |
+| `range(n)` / `range(from;to;step)` | Synthesises new data not present in the input. Formatting each integer requires a buffer passed through the function interface — Go's escape analysis heap-allocates it, giving 1 alloc/value. This is the one case where the allocation comes from the operation itself, not its input or output. |
 
 ## Scope Constraints
 
@@ -28,27 +83,27 @@
 ## Design Constraints
 
 - **Scanner is stateless between runs**: `struct { data []byte; pos int }` reset per call
-- **AST allocates once at compile time**: `Compile()` allocates, `Run()` does not (with buffer reuse, for basic ops)
+- **AST allocates once at compile time**: `Compile()` allocates, `Run()` does not (with buffer reuse, for Tier 0 ops)
 - **Comma reconstruction**: deletion never copies commas from input; reconstructs containers with own commas to avoid trailing-comma bugs
-- **String comparison without allocation**: `bytesEqualStr` compares `[]byte` keys to `string` field names without converting
+- **String comparison without allocation**: `bytesEqualStr` compares `[]byte` keys to `string` field names without converting; `findFieldStr` avoids `[]byte(string)` conversion at call sites
 - **Multi-output via callback**: `execMulti` uses `func([]byte) error` callback to avoid allocating result slices internally
 - **Negative indexing is two-pass**: `arrayLen()` counts first (no alloc), then iterates to resolved index
-- **Precedence via function chain**: `parseExpr` → `parseAlt` → `parseCmp` → `parseAtom` — no precedence table
+- **Precedence via function chain**: `parsePipeExpr` → `parseExpr` → `parseAlt` → `parseOr` → `parseAnd` → `parseCmp` → `parseAtom` — no precedence table
 - **`//` operator collects all truthy left outputs**: `execAlternative` uses `execMulti` for left side; if any output is truthy, it passes through; only if ALL outputs are falsy does right side run
-- **`try-catch` handler uses `parseMulExpr`**: prevents catch handler from greedily consuming `+`/`-` operators — `try 2 catch 3 + 4` parses as `(try 2 catch 3) + 4`
 - **Literals store raw JSON bytes**: compiled at parse time, zero-alloc at runtime
 - **isFalsy by first-byte check**: `n` = null, `f` = false — one branch, zero alloc
 - **Number comparison**: byte-identical fast path (zero-alloc), `parseFloat` slow path using `unsafe.String` to avoid string allocation
 - **Optional is a flag, not an op type**: `node.optional = true` keeps AST simple
 - **`try` propagates `errBreak`**: `errBreak` is a control signal (for `first`/`limit`), not an error — `opTry` in `execMulti` propagates it unchanged
-- **`objectContainsKey` uses manual scan loop**: no closure/callback to avoid heap allocation — same pattern as `arrayContainsElem`
+- **`exec` routes through `execSingle`**: `execSingle` handles all Tier 0 ops with direct return paths (no closures). Multi-output and Tier 1+ ops fall back to `execFirstResult` which uses the closure-based `execMulti` machinery.
 - **`elif` desugars at parse time**: `elif C then X` rewrites to `else (if C then X end)` — no new op type needed
-- **`try-catch` error message allocation**: only when an actual error occurs (exceptional path), so the `make([]byte, 0, 64)` is acceptable
-- **`execSingle` for `opTry` falls back to `exec`**: `try` may suppress errors so the single-result path cannot guarantee a value; uses `exec` fallback
+- **Regex patterns compiled at parse time**: `node.re *regexp.Regexp` holds the compiled RE2 pattern; Go RE2 guarantees linear-time matching (immune to ReDoS)
+- **`findFieldStr` stops on match**: field lookups stop scanning as soon as the target key is found — no wasted scan of remaining fields
 
 ## Testing Constraints
 
 - All operations must be covered by unit tests
 - Benchmarks must compare against gojq on small (~100B), medium (~2KB), and large (~100KB+) JSON
-- Benchmarks report ns/op, B/op, and allocs/op
+- Benchmarks report ns/op, B/op, and allocs/op — **any unexpected non-zero allocs/op on a Tier 0 operation is a bug**
+- Tier 1+ operations must document their alloc profile in the benchmark comment
 - CLI throughput benchmarks compare against jq CLI on JSONL streams via `bench_vs_jq.sh`

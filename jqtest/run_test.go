@@ -64,7 +64,7 @@ var unsupportedOps = []string{
 	// are meaningless without a coherent nan/infinite representation.
 	"nan", "infinite", "isinfinite", "isnan", "isfinite", "isnormal",
 	// 2-arg and 3-arg math functions: REJECTED.
-	// Every test for these is also blocked by as-$ or range(); 0 exclusive tests.
+	// Every test for these is also blocked by as-$ binding; 0 exclusive tests.
 	// pow(x;y), hypot(x;y), atan(y;x), fma(x;y;z) require a 2/3-arg parser.
 	"pow(", "hypot", "fma",
 	// frexp / modf return array pairs; ldexp/scalb/scalbln require an integer arg.
@@ -89,8 +89,7 @@ var unsupportedOps = []string{
 	"implode", "explode",
 	// Reflection
 	"builtins", "modulemeta", "$__loc__",
-	// Generators not supported in our form
-	"range(",
+	// range( is now implemented (Tier 2: 1 alloc per generated value)
 	// walk
 	"walk(",
 	// ascii() function (not ascii_downcase/upcase)

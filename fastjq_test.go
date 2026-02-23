@@ -4000,3 +4000,37 @@ func TestMathNonNumberInput(t *testing.T) {
 	assertQuery(t, `sqrt`, `null`, `null`)
 	assertQuery(t, `sqrt`, `"hello"`, `null`)
 }
+
+// --- range ---
+
+func TestRangeOneArg(t *testing.T) {
+	assertQuery(t, `[range(3)]`, `null`, `[0,1,2]`)
+	assertQuery(t, `[range(0)]`, `null`, `[]`)
+	assertQuery(t, `[range(1)]`, `null`, `[0]`)
+}
+func TestRangeTwoArg(t *testing.T) {
+	assertQuery(t, `[range(2;5)]`, `null`, `[2,3,4]`)
+	assertQuery(t, `[range(0;3)]`, `null`, `[0,1,2]`)
+	assertQuery(t, `[range(5;5)]`, `null`, `[]`)
+}
+func TestRangeThreeArg(t *testing.T) {
+	assertQuery(t, `[range(0;10;3)]`, `null`, `[0,3,6,9]`)
+	assertQuery(t, `[range(0;1;0.25)]`, `null`, `[0,0.25,0.5,0.75]`)
+	assertQuery(t, `[range(5;0;-1)]`, `null`, `[5,4,3,2,1]`)
+}
+func TestRangeWithLimit(t *testing.T) {
+	// limit works with range: stops early, only 3 allocs not 100
+	assertQuery(t, `[limit(3; range(100))]`, `null`, `[0,1,2]`)
+}
+func TestRangeWithFirst(t *testing.T) {
+	assertQuery(t, `first(range(10))`, `null`, `0`)
+}
+func TestRangeInPipeline(t *testing.T) {
+	assertQuery(t, `[range(3) | . * 2]`, `null`, `[0,2,4]`)
+}
+func TestRangeArithBothSides(t *testing.T) {
+	// range can be on either side of arithmetic (both sides now use execMulti)
+	assertQuery(t, `[1 * range(3)]`, `null`, `[0,1,2]`)
+	assertQuery(t, `[range(3) * 2]`, `null`, `[0,2,4]`)
+	assertQuery(t, `[range(3) + 10]`, `null`, `[10,11,12]`)
+}
