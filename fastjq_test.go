@@ -4105,6 +4105,89 @@ func TestConstructMultiOutputEmpty(t *testing.T) {
 	assertQueryAll(t, `{a: .x[], b: .y}`, `{"x":[],"y":1}`)
 }
 
+// --- nan / infinite ---
+
+func TestNaNType(t *testing.T) {
+	assertQuery(t, `nan | type`, `null`, `"number"`)
+	assertQuery(t, `infinite | type`, `null`, `"number"`)
+}
+
+func TestNaNIsNaN(t *testing.T) {
+	assertQuery(t, `nan | isnan`, `null`, `true`)
+	assertQuery(t, `1 | isnan`, `null`, `false`)
+	assertQuery(t, `null | isnan`, `null`, `false`)
+}
+
+func TestInfiniteIsInfinite(t *testing.T) {
+	assertQuery(t, `infinite | isinfinite`, `null`, `true`)
+	assertQuery(t, `1 | isinfinite`, `null`, `false`)
+}
+
+func TestIsFiniteIsNormal(t *testing.T) {
+	assertQuery(t, `1 | isfinite`, `null`, `true`)
+	assertQuery(t, `nan | isfinite`, `null`, `false`)
+	assertQuery(t, `infinite | isfinite`, `null`, `false`)
+	assertQuery(t, `1 | isnormal`, `null`, `true`)
+	assertQuery(t, `0 | isnormal`, `null`, `false`)
+	assertQuery(t, `nan | isnormal`, `null`, `false`)
+}
+
+func TestNaNArithmetic(t *testing.T) {
+	// nan in arithmetic → null in output (NaN converted at output boundary)
+	assertQuery(t, `nan | .`, `null`, `null`)
+	assertQuery(t, `infinite | .`, `null`, `null`)
+	// string * nan = null
+	assertQuery(t, `. * nan`, `"abc"`, `null`)
+	assertQuery(t, `. * infinite`, `"abc"`, `null`)
+	// infinite * number comparisons (use RunAll to avoid buf-reuse with .[] multi-output)
+	assertQueryAll(t, `.[] | (infinite * .) < 0`, `[-1, 1]`, `true`, `false`)
+}
+
+func TestFromJSONNaN(t *testing.T) {
+	assertQuery(t, `fromjson | isnan`, `"nan"`, `true`)
+	assertQuery(t, `fromjson | isnan`, `"NaN"`, `true`)
+	assertQuery(t, `fromjson | isnan`, `"-NaN"`, `true`)
+}
+
+func TestNegativeNaN(t *testing.T) {
+	assertQuery(t, `-nan | isnan`, `null`, `true`)
+}
+
+func TestNegativeInfinite(t *testing.T) {
+	assertQuery(t, `-infinite | isinfinite`, `null`, `true`)
+}
+
+func TestPow(t *testing.T) {
+	assertQuery(t, `pow(2; 10)`, `null`, `1024`)
+	assertQuery(t, `pow(2; 0)`, `null`, `1`)
+	assertQuery(t, `pow(2; -1)`, `null`, `0.5`)
+	assertQuery(t, `pow(4; 0.5)`, `null`, `2`)
+}
+
+// --- explode / implode ---
+
+func TestExplode(t *testing.T) {
+	assertQuery(t, `explode`, `"foobar"`, `[102,111,111,98,97,114]`)
+	assertQuery(t, `explode`, `""`, `[]`)
+	assertQuery(t, `explode`, `"ABC"`, `[65,66,67]`)
+}
+
+func TestImplode(t *testing.T) {
+	assertQuery(t, `implode`, `[65, 66, 67]`, `"ABC"`)
+	assertQuery(t, `implode`, `[]`, `""`)
+	assertQuery(t, `implode`, `[65.9]`, `"A"`) // truncate toward zero
+	// Out-of-range and surrogate codepoints → U+FFFD (raw UTF-8: EF BF BD)
+	fffd := "\"\xef\xbf\xbd\""
+	assertQuery(t, `implode`, `[-1]`, fffd)
+	assertQuery(t, `implode`, `[1114112]`, fffd) // above U+10FFFF
+	assertQuery(t, `implode`, `[55296]`, fffd)   // U+D800 surrogate
+}
+
+func TestImplodeExplodeRoundtrip(t *testing.T) {
+	assertQuery(t, `implode | explode`, `[65, 66, 67]`, `[65,66,67]`)
+	assertQuery(t, `explode | implode`, `"hello"`, `"hello"`)
+}
+
 // --- sort ---
 
 func TestSort(t *testing.T) {

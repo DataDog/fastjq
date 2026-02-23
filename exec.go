@@ -198,6 +198,32 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opExplode:
+		result, err := execExplode(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opImplode:
+		result, err := execImplode(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opIsNaN:
+		return fn(execIsNaN(input, buf))
+	case opIsInfinite:
+		return fn(execIsInfinite(input, buf))
+	case opIsFinite:
+		return fn(execIsFinite(input, buf))
+	case opIsNormal:
+		return fn(execIsNormal(input, buf))
+	case opPow:
+		result, err := execPow(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opStartsWith:
 		return fn(execStringPredicate(input, buf, node.field, true, false))
 	case opEndsWith:
@@ -693,6 +719,20 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execTrimStr(input, buf, node.field, true), nil
 	case opRtrimStr:
 		return execTrimStr(input, buf, node.field, false), nil
+	case opExplode:
+		return execExplode(input, buf)
+	case opImplode:
+		return execImplode(input, buf)
+	case opIsNaN:
+		return execIsNaN(input, buf), nil
+	case opIsInfinite:
+		return execIsInfinite(input, buf), nil
+	case opIsFinite:
+		return execIsFinite(input, buf), nil
+	case opIsNormal:
+		return execIsNormal(input, buf), nil
+	case opPow:
+		return execPow(node, input, buf)
 	case opMinus, opMul, opDiv, opMod:
 		return execArith(node, input, buf)
 	case opMin, opMinBy:
@@ -1191,7 +1231,7 @@ func execConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("in object construction for key %q: %w", p.key, err)
 		}
-		buf = append(buf, val...)
+		buf = append(buf, normalizeNaNInf(val)...)
 	}
 	buf = append(buf, '}')
 	return buf, nil
@@ -1227,7 +1267,7 @@ func constructPairsInto(pairs []pair, idx int, input []byte, prefix []byte, fn f
 		obj = append(obj, '"')
 		obj = append(obj, p.key...)
 		obj = append(obj, '"', ':')
-		obj = append(obj, val...)
+		obj = append(obj, normalizeNaNInf(val)...)
 		return constructPairsInto(pairs, idx+1, input, obj, fn)
 	})
 }
@@ -1256,7 +1296,7 @@ func execArrayConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 				buf = append(buf, ',')
 			}
 			first = false
-			buf = append(buf, val...)
+			buf = append(buf, normalizeNaNInf(val)...)
 			return nil
 		})
 		if err != nil {
@@ -1510,6 +1550,15 @@ func appendInt(buf []byte, n int) []byte {
 // appendNumber formats a float64 as compact JSON: integer form when the value is whole,
 // otherwise strconv.AppendFloat with shortest representation.
 func appendNumber(buf []byte, f float64) []byte {
+	if math.IsNaN(f) {
+		return append(buf, "NaN"...)
+	}
+	if math.IsInf(f, 1) {
+		return append(buf, "infinite"...)
+	}
+	if math.IsInf(f, -1) {
+		return append(buf, "-infinite"...)
+	}
 	if f == float64(int64(f)) && f >= -1e15 && f <= 1e15 {
 		return appendInt(buf, int(f))
 	}
@@ -2824,6 +2873,178 @@ func execAsciiCase(input []byte, buf []byte, upcase bool) ([]byte, error) {
 	return buf, nil
 }
 
+// execExplode converts a JSON string to a JSON array of Unicode codepoints.
+// "ABC" → [65,66,67]. JSON escape sequences are decoded first.
+// Allocation model: Tier 2 — O(n) proportional to string length.
+func execExplode(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
+		return nil, fmt.Errorf("explode input must be a string")
+	}
+	content := s.readString() // raw bytes between quotes (may contain \uXXXX etc.)
+	// Decode JSON escapes → UTF-8 bytes
+	decoded := decodeJSONStringContent(nil, content)
+	// Walk UTF-8 bytes, emit codepoints as JSON array
+	buf = append(buf[:0], '[')
+	first := true
+	for len(decoded) > 0 {
+		var r rune
+		var size int
+		b := decoded[0]
+		switch {
+		case b < 0x80:
+			r, size = rune(b), 1
+		case b < 0xE0:
+			if len(decoded) >= 2 {
+				r = rune(b&0x1F)<<6 | rune(decoded[1]&0x3F)
+				size = 2
+			} else {
+				r, size = 0xFFFD, 1
+			}
+		case b < 0xF0:
+			if len(decoded) >= 3 {
+				r = rune(b&0x0F)<<12 | rune(decoded[1]&0x3F)<<6 | rune(decoded[2]&0x3F)
+				size = 3
+			} else {
+				r, size = 0xFFFD, 1
+			}
+		default:
+			if len(decoded) >= 4 {
+				r = rune(b&0x07)<<18 | rune(decoded[1]&0x3F)<<12 | rune(decoded[2]&0x3F)<<6 | rune(decoded[3]&0x3F)
+				size = 4
+			} else {
+				r, size = 0xFFFD, 1
+			}
+		}
+		decoded = decoded[size:]
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = strconv.AppendInt(buf, int64(r), 10)
+	}
+	buf = append(buf, ']')
+	return buf, nil
+}
+
+// execImplode converts a JSON array of Unicode codepoints to a JSON string.
+// [65,66,67] → "ABC". Invalid codepoints (negative, > U+10FFFF, surrogates) → U+FFFD.
+// Non-integer floats are truncated toward zero.
+// Allocation model: Tier 2 — O(n) proportional to array length.
+func execImplode(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return nil, fmt.Errorf("implode input must be an array")
+	}
+	// Build raw UTF-8 bytes, then re-encode as JSON string
+	var utf8Bytes []byte
+	var iterErr error
+	s.arrayIter(func(_ int, start, end int) bool {
+		elem := input[start:end]
+		f, ok := parseJSONFloat(elem)
+		if !ok || math.IsNaN(f) || math.IsInf(f, 0) {
+			iterErr = fmt.Errorf("implode: element is not a valid unicode codepoint")
+			return false
+		}
+		// Truncate toward zero (1.9 → 1, -1.9 → -1)
+		cp := int32(f)
+		// Replace invalid codepoints with U+FFFD
+		if cp < 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF) {
+			cp = 0xFFFD
+		}
+		utf8Bytes = appendRuneUTF8(utf8Bytes, rune(cp))
+		return true
+	})
+	if iterErr != nil {
+		return nil, iterErr
+	}
+	// Encode UTF-8 bytes as JSON string
+	buf = append(buf[:0], '"')
+	buf = appendJSONStringContent(buf, utf8Bytes)
+	buf = append(buf, '"')
+	return buf, nil
+}
+
+// execIsNaN returns true if the input is the NaN sentinel or a float that is NaN.
+func execIsNaN(input, buf []byte) []byte {
+	f, ok := parseJSONFloat(trimWhitespace(input))
+	if ok && math.IsNaN(f) {
+		if buf == nil {
+			return bTrue
+		}
+		return append(buf[:0], "true"...)
+	}
+	if buf == nil {
+		return bFalse
+	}
+	return append(buf[:0], "false"...)
+}
+
+// execIsInfinite returns true if the input is ±infinite.
+func execIsInfinite(input, buf []byte) []byte {
+	f, ok := parseJSONFloat(trimWhitespace(input))
+	if ok && math.IsInf(f, 0) {
+		if buf == nil {
+			return bTrue
+		}
+		return append(buf[:0], "true"...)
+	}
+	if buf == nil {
+		return bFalse
+	}
+	return append(buf[:0], "false"...)
+}
+
+// execIsFinite returns true if the input is a finite number (not NaN, not infinite).
+func execIsFinite(input, buf []byte) []byte {
+	f, ok := parseJSONFloat(trimWhitespace(input))
+	if ok && !math.IsNaN(f) && !math.IsInf(f, 0) {
+		if buf == nil {
+			return bTrue
+		}
+		return append(buf[:0], "true"...)
+	}
+	if buf == nil {
+		return bFalse
+	}
+	return append(buf[:0], "false"...)
+}
+
+// execIsNormal returns true if the input is a normal number (finite, nonzero, not subnormal).
+func execIsNormal(input, buf []byte) []byte {
+	f, ok := parseJSONFloat(trimWhitespace(input))
+	if ok && !math.IsNaN(f) && !math.IsInf(f, 0) && f != 0 {
+		if buf == nil {
+			return bTrue
+		}
+		return append(buf[:0], "true"...)
+	}
+	if buf == nil {
+		return bFalse
+	}
+	return append(buf[:0], "false"...)
+}
+
+// execPow implements pow(x; y) = math.Pow(x, y).
+func execPow(node *op, input []byte, buf []byte) ([]byte, error) {
+	xVal, err := execSingle(node.left, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	yVal, err := execSingle(node.right, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	xf, xok := parseJSONFloat(xVal)
+	yf, yok := parseJSONFloat(yVal)
+	if !xok || !yok {
+		return nil, fmt.Errorf("pow inputs must be numbers")
+	}
+	return appendNumber(buf[:0], math.Pow(xf, yf)), nil
+}
+
 // execStringPredicate implements startswith and endswith.
 // Returns bTrue/bFalse when buf is nil (zero-alloc in condition context).
 func execStringPredicate(input []byte, buf []byte, s string, start, end bool) []byte {
@@ -3040,8 +3261,8 @@ func execArithValues(typ opType, leftVal, rightVal, buf []byte) ([]byte, error) 
 			numF = lf
 		}
 		if strVal != nil {
-			if numF < 0 {
-				// negative: null
+			if math.IsNaN(numF) || math.IsInf(numF, 0) || numF < 0 {
+				// nan, infinite, or negative count: null
 				if buf == nil {
 					return bNull, nil
 				}
@@ -3770,7 +3991,9 @@ func jsonTypeOrderVal(b byte) int {
 		return 1
 	case 't': // true
 		return 2
-	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+		'N', // NaN  (internal sentinel, first byte 'N')
+		'i': // infinite (internal sentinel, first byte 'i')
 		return 3 // number
 	case '"':
 		return 4 // string
@@ -3882,6 +4105,27 @@ func execFromJSON(input []byte, buf []byte) ([]byte, error) {
 		s.pos++
 	}
 	result := buf[startLen:]
+	// Recognise jq special numeric strings that aren't valid JSON.
+	// "nan" / "NaN" / "-NaN" / "-nan" → our internal NaN sentinel "NaN"
+	// "infinite" / "Inf" / "+Inf" → "infinite"; "-infinite" / "-Inf" → "-infinite"
+	if len(result) == 3 && (result[0] == 'n' || result[0] == 'N') &&
+		(result[1] == 'a' || result[1] == 'A') && (result[2] == 'n' || result[2] == 'N') {
+		buf = buf[:startLen]
+		return append(buf, "NaN"...), nil
+	}
+	if len(result) == 4 && result[0] == '-' && (result[1] == 'N' || result[1] == 'n') &&
+		(result[2] == 'a' || result[2] == 'A') && (result[3] == 'N' || result[3] == 'n') {
+		buf = buf[:startLen]
+		return append(buf, "NaN"...), nil
+	}
+	if len(result) == 8 && result[0] == 'i' && result[1] == 'n' && result[2] == 'f' {
+		buf = buf[:startLen]
+		return append(buf, "infinite"...), nil
+	}
+	if len(result) == 9 && result[0] == '-' && result[1] == 'i' && result[2] == 'n' {
+		buf = buf[:startLen]
+		return append(buf, "-infinite"...), nil
+	}
 	if !json.Valid(result) {
 		return nil, fromJSONError(result)
 	}
@@ -3933,8 +4177,8 @@ func fromJSONError(data []byte) error {
 		}
 		col++
 	}
-	// Generic error
-	return fmt.Errorf("Invalid numeric literal at EOF at line 1, column %d (while parsing '%s')", col, content)
+	// Generic error — col is 1-past-end; jq reports the last valid column (col-1).
+	return fmt.Errorf("Invalid numeric literal at EOF at line 1, column %d (while parsing '%s')", col-1, content)
 }
 
 

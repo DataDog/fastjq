@@ -128,6 +128,14 @@ const (
 	opUniqueBy  // unique_by(f) — child=key function
 	opGroupBy   // group_by(f) — child=key function
 	opTranspose // transpose
+	opExplode   // explode — string → array of Unicode codepoints (Tier 2)
+	opImplode   // implode — array of codepoints → string (Tier 2)
+	// nan/infinite predicates
+	opIsNaN      // isnan  — true if input is NaN
+	opIsInfinite // isinfinite — true if input is ±Inf
+	opIsFinite   // isfinite — true if finite and not NaN
+	opIsNormal   // isnormal — true if non-zero, finite, not subnormal
+	opPow        // pow(x; y) — left=x, right=y
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -711,6 +719,14 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opAsciiUpcase}, s[12:], nil
 	}
 
+	// explode / implode
+	if strings.HasPrefix(s, "explode") && (len(s) == 7 || !isIdentChar(s[7])) {
+		return &op{typ: opExplode}, s[7:], nil
+	}
+	if strings.HasPrefix(s, "implode") && (len(s) == 7 || !isIdentChar(s[7])) {
+		return &op{typ: opImplode}, s[7:], nil
+	}
+
 	// startswith(s) / endswith(s) / ltrimstr(s) / rtrimstr(s)
 	if strings.HasPrefix(s, "startswith(") {
 		return parseStringArgBuiltin(s[11:], opStartsWith)
@@ -825,6 +841,47 @@ func parseAtom(s string) (*op, string, error) {
 			return &op{typ: opError, child: inner}, rest[1:], nil
 		}
 		return &op{typ: opError}, s[5:], nil
+	}
+
+	// nan/infinite constants and predicates
+	if strings.HasPrefix(s, "nan") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return &op{typ: opLiteral, literal: []byte("NaN")}, s[3:], nil
+	}
+	if strings.HasPrefix(s, "infinite") && (len(s) == 8 || !isIdentChar(s[8])) {
+		return &op{typ: opLiteral, literal: []byte("infinite")}, s[8:], nil
+	}
+	// isinfinite before isnan/isfinite/isnormal (longer prefix first)
+	if strings.HasPrefix(s, "isinfinite") && (len(s) == 10 || !isIdentChar(s[10])) {
+		return &op{typ: opIsInfinite}, s[10:], nil
+	}
+	if strings.HasPrefix(s, "isnan") && (len(s) == 5 || !isIdentChar(s[5])) {
+		return &op{typ: opIsNaN}, s[5:], nil
+	}
+	if strings.HasPrefix(s, "isfinite") && (len(s) == 8 || !isIdentChar(s[8])) {
+		return &op{typ: opIsFinite}, s[8:], nil
+	}
+	if strings.HasPrefix(s, "isnormal") && (len(s) == 8 || !isIdentChar(s[8])) {
+		return &op{typ: opIsNormal}, s[8:], nil
+	}
+	// pow(x; y) — 2-arg power function
+	if strings.HasPrefix(s, "pow(") {
+		xExpr, rest, err := parsePipeExpr(s[4:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected ';' in pow(x; y)")
+		}
+		yExpr, rest, err := parsePipeExpr(strings.TrimSpace(rest[1:]))
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after pow(x; y)")
+		}
+		return &op{typ: opPow, left: xExpr, right: yExpr}, rest[1:], nil
 	}
 
 	// isempty(expr) — true if expr produces no outputs
@@ -983,7 +1040,16 @@ func parseAtom(s string) (*op, string, error) {
 		return parseArrayConstruct(s)
 	}
 
-	// Number literal: digit or '-' followed by digit
+	// Number literal: digit or '-' followed by digit.
+	// Check nan/infinite FIRST because -nan and -infinite start with '-'.
+	if s[0] == '-' && len(s) > 1 && !isDigit(s[1]) {
+		if strings.HasPrefix(s, "-nan") && (len(s) == 4 || !isIdentChar(s[4])) {
+			return &op{typ: opLiteral, literal: []byte("NaN")}, s[4:], nil
+		}
+		if strings.HasPrefix(s, "-infinite") && (len(s) == 9 || !isIdentChar(s[9])) {
+			return &op{typ: opLiteral, literal: []byte("-infinite")}, s[9:], nil
+		}
+	}
 	if isDigit(s[0]) || (s[0] == '-' && len(s) > 1 && isDigit(s[1])) {
 		return parseNumberLiteral(s)
 	}
@@ -1150,6 +1216,15 @@ func parseStringArgBuiltin(s string, typ opType) (*op, string, error) {
 // parseHas parses has("key") or has(n) — object key / array index membership.
 func parseHas(s string) (*op, string, error) {
 	s = strings.TrimSpace(s[4:]) // skip "has("
+
+	// has(nan) — NaN is never a valid index/key; always returns false
+	if strings.HasPrefix(s, "nan") && (len(s) == 3 || !isIdentChar(s[3])) {
+		rest := strings.TrimSpace(s[3:])
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after has(nan)")
+		}
+		return &op{typ: opLiteral, literal: []byte("false")}, rest[1:], nil
+	}
 
 	// has(n) — integer argument for array index check
 	if len(s) > 0 && (isDigit(s[0]) || (s[0] == '-' && len(s) > 1 && isDigit(s[1]))) {
