@@ -32,7 +32,15 @@
       "Bash(/tmp/test_error.go:*)",
       "Bash(python3:*)",
       "Bash(/tmp/man_debug.go:*)",
-      "Bash(/tmp/debug_interp.go:*)"
+      "Bash(/tmp/debug_interp.go:*)",
+      "Bash(git push:*)",
+      "Bash(git checkout docs/allocation-model-reframe)",
+      "Bash(/Users/brian.floersch/dev/fastjq/exec.go:*)",
+      "Bash(/tmp/range_test.go:*)",
+      "Bash(/tmp/rangedebug.go:*)",
+      "Bash(git fetch:*)",
+      "Bash(git rebase:*)",
+      "Bash(git stash:*)"
     ]
   }
 }

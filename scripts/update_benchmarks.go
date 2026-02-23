@@ -135,6 +135,9 @@ var tableRows = []row{
 	{"`isempty(empty)`", "null", "Small_IsEmptyTrue", "Small_IsEmptyTrue"},
 	{"`isempty(.[])`", "5-elem array", "Small_IsEmptyFalse", "Small_IsEmptyFalse"},
 	{"`nth(2; .[])`", "5-elem array", "Small_Nth", "Small_Nth"},
+	// range (Tier 2: 1 alloc/value — proportional to what was requested)
+	{"`range(10)` (10 values)", "null", "Small_Range10", "Small_Range10"},
+	{"`limit(3; range(1000))`", "null — only 3 allocs", "Small_RangeLimit", "Small_RangeLimit"},
 	// Regex (Go RE2) — pattern compiled once at Compile() time
 	{"`test(re)` hit", "short string", "Small_TestRe_Hit", "Small_TestRe_Hit"},
 	{"`test(re)` miss", "short string", "Small_TestRe_Miss", "Small_TestRe_Miss"},

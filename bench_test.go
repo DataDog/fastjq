@@ -837,3 +837,21 @@ func BenchmarkFastjq_Small_Nth(b *testing.B) {
 func BenchmarkGojq_Small_Nth(b *testing.B) {
 	benchGojqObj(b, `nth(2; .[])`, []byte(`[10,20,30,40,50]`))
 }
+
+// --- range (Tier 2: 1 alloc per generated value) ---
+
+func BenchmarkFastjq_Small_Range10(b *testing.B) {
+	// 10 values → 10 allocs/op (Tier 2: proportional to output count)
+	benchFastjqFunc(b, `range(10)`, []byte(`null`))
+}
+func BenchmarkGojq_Small_Range10(b *testing.B) {
+	benchGojqIter(b, `range(10)`, []byte(`null`))
+}
+
+func BenchmarkFastjq_Small_RangeLimit(b *testing.B) {
+	// limit(3; range(1000)): only 3 values generated → 3 allocs, not 1000
+	benchFastjqFunc(b, `limit(3; range(1000))`, []byte(`null`))
+}
+func BenchmarkGojq_Small_RangeLimit(b *testing.B) {
+	benchGojqIter(b, `limit(3; range(1000))`, []byte(`null`))
+}

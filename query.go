@@ -118,6 +118,9 @@ const (
 	opScan    // scan(re) / scan(re; flags)   — allocs per match (multi-output)
 	opSub     // sub(re; "literal")           — replace first match
 	opGSub    // gsub(re; "literal")          — replace all matches
+	// range — Tier 2 (1 alloc per generated value, proportional to output count)
+	opRange // range(n) / range(from;to) / range(from;to;step)
+	         // left=from, right=to, child=step (nil → step 1)
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -893,6 +896,11 @@ func parseAtom(s string) (*op, string, error) {
 	}
 	if strings.HasPrefix(s, "tgamma") && (len(s) == 6 || !isIdentChar(s[6])) {
 		return &op{typ: opMathTgamma}, s[6:], nil
+	}
+
+	// range(n) / range(from;to) / range(from;to;step) — Tier 2: 1 alloc per value
+	if strings.HasPrefix(s, "range(") {
+		return parseRange(s[6:])
 	}
 
 	// Regex builtins — pattern compiled at parse time (Go RE2, linear-time matching).
@@ -1763,6 +1771,53 @@ func parseRegexWithReplacement(s string, typ opType) (*op, string, error) {
 		return nil, rest[1:], fmt.Errorf("invalid regexp %q: %w", pattern, err)
 	}
 	return &op{typ: typ, re: re, field: replacement}, rest[1:], nil
+}
+
+// parseRange parses range(n), range(from;to), range(from;to;step).
+// s starts after the opening '(' has been consumed.
+// Desugaring: range(n) → range(0; n; 1), range(from;to) → range(from; to; 1).
+// Stored as opRange{left:from, right:to, child:step-or-nil}.
+func parseRange(s string) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	arg1, rest, err := parsePipeExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+
+	if len(rest) > 0 && rest[0] == ')' {
+		// range(n): from=0, to=n, step=1
+		zero := &op{typ: opLiteral, literal: []byte("0")}
+		return &op{typ: opRange, left: zero, right: arg1}, rest[1:], nil
+	}
+	if len(rest) == 0 || rest[0] != ';' {
+		return nil, rest, fmt.Errorf("expected ';' or ')' in range()")
+	}
+	rest = strings.TrimSpace(rest[1:])
+	arg2, rest, err := parsePipeExpr(rest)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+
+	if len(rest) > 0 && rest[0] == ')' {
+		// range(from; to): step=1
+		return &op{typ: opRange, left: arg1, right: arg2}, rest[1:], nil
+	}
+	if len(rest) == 0 || rest[0] != ';' {
+		return nil, rest, fmt.Errorf("expected ';' or ')' in range()")
+	}
+	rest = strings.TrimSpace(rest[1:])
+	arg3, rest, err := parsePipeExpr(rest)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after range() arguments")
+	}
+	// range(from; to; step)
+	return &op{typ: opRange, left: arg1, right: arg2, child: arg3}, rest[1:], nil
 }
 
 // simplify optimizes the AST. Currently: removes identity from pipes.

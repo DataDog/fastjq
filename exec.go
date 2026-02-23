@@ -213,17 +213,17 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opAlternative:
 		return execAlternative(node, input, buf, fn)
 	case opMinus, opMul, opDiv, opMod:
-		// Use execMulti for left side to support generators as operands (.[] % 7 etc.)
+		// Use execMulti for BOTH sides: supports generators as either operand.
+		// a * range(3) and range(3) * a both produce one result per range value.
+		// For scalar * scalar the Cartesian product is a single result — no change.
 		return execMulti(node.left, input, nil, func(leftVal []byte) error {
-			rightVal, err := execSingle(node.right, input, nil)
-			if err != nil {
-				return err
-			}
-			result, err := execArithValues(node.typ, leftVal, rightVal, buf)
-			if err != nil {
-				return err
-			}
-			return fn(result)
+			return execMulti(node.right, input, nil, func(rightVal []byte) error {
+				result, err := execArithValues(node.typ, leftVal, rightVal, buf)
+				if err != nil {
+					return err
+				}
+				return fn(result)
+			})
 		})
 	case opMin:
 		result, err := execMinMax(input, buf, node, false)
@@ -345,6 +345,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opRange:
+		return execRange(node, input, fn)
 	case opFloor:
 		return fn(execRoundMode(input, buf, roundFloor))
 	case opCeil:
@@ -4406,4 +4408,61 @@ func execGSub(node *op, input []byte, buf []byte) ([]byte, error) {
 	}
 	buf = append(buf, content[prev:]...)
 	return append(buf, '"'), nil
+}
+
+// --- range ---
+
+// execRange implements range(n), range(from;to), range(from;to;step).
+//
+// Tier 2 allocation: 1 alloc per generated value (the output byte slice).
+// The allocation is proportional to the count the caller requested, not to
+// the input being scanned.
+//
+// Supports errBreak for early exit: limit(3; range(100)) stops after 3 values.
+// Float steps and negative steps are supported. Step of 0 returns an error.
+func execRange(node *op, input []byte, fn func([]byte) error) error {
+	fromBytes, err := execSingle(node.left, input, nil)
+	if err != nil {
+		return err
+	}
+	toBytes, err := execSingle(node.right, input, nil)
+	if err != nil {
+		return err
+	}
+
+	from, ok := parseJSONFloat(fromBytes)
+	if !ok {
+		return fmt.Errorf("range: 'from' must be a number, got %s", fromBytes)
+	}
+	to, ok := parseJSONFloat(toBytes)
+	if !ok {
+		return fmt.Errorf("range: 'to' must be a number, got %s", toBytes)
+	}
+
+	step := 1.0
+	if node.child != nil {
+		stepBytes, err := execSingle(node.child, input, nil)
+		if err != nil {
+			return err
+		}
+		step, ok = parseJSONFloat(stepBytes)
+		if !ok {
+			return fmt.Errorf("range: 'step' must be a number, got %s", stepBytes)
+		}
+		if step == 0 {
+			return fmt.Errorf("range: step cannot be zero")
+		}
+	}
+
+	for i := from; (step > 0 && i < to) || (step < 0 && i > to); i += step {
+		// 1 alloc per value — proportional to what was asked for (Tier 2).
+		out := appendJSONFloat(nil, i)
+		if err := fn(out); err != nil {
+			if err == errBreak {
+				return nil
+			}
+			return err
+		}
+	}
+	return nil
 }

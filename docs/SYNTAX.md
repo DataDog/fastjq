@@ -265,7 +265,7 @@ All math functions are zero-alloc. NaN/Infinity results are output as `null` to 
 |--------|--------|
 | `nan`, `infinite` | Produce non-JSON output, violating the "output is always compact JSON" constraint |
 | `isnan`, `isinfinite`, `isfinite`, `isnormal` | Depend on nan/infinite representation; meaningless without it |
-| `pow(x; y)`, `hypot(x; y)`, `atan(y; x)`, `fma(x;y;z)` | 2/3-arg forms. Every test for these is blocked by `as $` or `range(` (0 exclusive tests). Parser would need 2-arg semicolon-separated forms. |
+| `pow(x; y)`, `hypot(x; y)`, `atan(y; x)`, `fma(x;y;z)` | 2/3-arg forms. Every test for these is blocked by `as $` binding (0 exclusive tests). Parser would need 2-arg semicolon-separated forms. |
 | `frexp`, `modf` | Return array pairs `[mantissa, exponent]`; 0 exclusive tests |
 | `ldexp`, `scalb`, `scalbln` | Take a float + integer exponent; 0 exclusive tests |
 | `significand` | Complex semantics (mantissa in [1,2)); 0 exclusive tests |
@@ -384,15 +384,21 @@ Numbers compared by value; strings lexicographically. Empty array → `null`.
 
 ### Stream Control
 
-| Syntax | Description | Example Input | Example Output |
-|--------|-------------|---------------|----------------|
-| `first` | First element (no-arg: `.[0]`) | `[10,20,30]` | `10` |
-| `last` | Last element (no-arg: `.[-1]`) | `[10,20,30]` | `30` |
-| `first(expr)` | First output of expr | `[1,2,3,4,5]` (with `first(.[] \| select(. > 2))`) | `3` |
-| `last(expr)` | Last output of expr | `[1,2,3,4,5]` (with `last(.[] \| select(. > 2))`) | `5` |
-| `limit(n; expr)` | First N outputs of expr as a stream | `[1,2,3,4,5]` (with `limit(3; .[])`) | `1`, `2`, `3` |
+| Syntax | Allocs | Description | Example Input | Example Output |
+|--------|--------|-------------|---------------|----------------|
+| `first` | 0 | First element (no-arg: `.[0]`) | `[10,20,30]` | `10` |
+| `last` | 0 | Last element (no-arg: `.[-1]`) | `[10,20,30]` | `30` |
+| `first(expr)` | 0 | First output of expr | `[1,2,3,4,5]` (with `first(.[] \| select(. > 2))`) | `3` |
+| `last(expr)` | 0 | Last output of expr | `[1,2,3,4,5]` (with `last(.[] \| select(. > 2))`) | `5` |
+| `limit(n; expr)` | 0 | First N outputs of expr as a stream | `[1,2,3,4,5]` (with `limit(3; .[])`) | `1`, `2`, `3` |
+| `range(n)` | 1/value | Generate integers 0, 1, …, n−1 | — | `0`, `1`, `2` |
+| `range(from; to)` | 1/value | Generate integers from `from` to `to−1` | — | `2`, `3`, `4` |
+| `range(from; to; step)` | 1/value | Generate with explicit step (float ok, negative ok) | — | `0`, `2`, `4` |
 
 `limit` emits a stream, not an array. Wrap in `[...]` if you need an array: `[limit(3; .[])]`. The body can be a comma-separated generator: `limit(1; a, b)`.
+
+`range` is a **Tier 2** operation: 1 alloc per generated value (the output byte slice), proportional to what you asked to generate. Compose with `limit` for lazy evaluation: `limit(3; range(1000))` produces only 3 values and 3 allocs.
+
 `any(generator; cond)` two-arg form is supported.
 
 ### Boolean Reduction
@@ -516,7 +522,7 @@ The governing principle rejects operations where allocation scales with the *sha
 
 | Syntax | Why rejected |
 |--------|-------------|
-| `range(n)` / `range(from; to; step)` | **Synthesises data.** `range` generates values from scratch rather than transforming input. Every integer emitted requires a buffer passed through the `func([]byte) error` interface — Go's escape analysis conservatively heap-allocates it, giving 1 alloc per value regardless of what the caller does with them. |
+| *(range is now implemented as Tier 2)* | `range(n)`, `range(from;to)`, `range(from;to;step)` are supported. See Stream Control section above. |
 | `recurse` / `..` | **Allocs scale with input depth.** The recursive descent creates an `objectIter`/`arrayIter` closure at every JSON nesting level (~3–4 heap allocs per level). A 10-deep object costs ~40 allocs per call. The caller cannot bound this. Fixing it would require a full stack-based executor redesign incompatible with the callback architecture. |
 
 ### Not yet implemented (feasible, zero-alloc)
@@ -554,4 +560,5 @@ The governing principle rejects operations where allocation scales with the *sha
 - **Tier 0 (zero-alloc):** field access, filtering, comparison, arithmetic, construction, `map(.field)`, math, `test(re)` — the full hot path for log processing.
 - **Tier 1 (alloc ∝ output):** `@base64`, `@uri`, `match`, `capture`, `scan`, `gsub`, `map(f)` with construction — allocate proportional to the data they produce, never to the input size.
 - **Tier 2 (alloc ∝ collection, planned):** `sort`, `group_by`, `unique` — O(n) index bounded by the array the user explicitly collected.
-- **Rejected:** `recurse`/`..` (allocs scale with input depth) and `range` (synthesises data from scratch).
+- **Tier 2 (alloc ∝ output count):** `range(n)` (1 alloc/value, implemented). `sort`, `group_by`, `unique` planned.
+- **Tier 3 (deferred — executor redesign needed):** `recurse`/`..` — closures heap-allocate per nesting level, proportional to input structure not output.

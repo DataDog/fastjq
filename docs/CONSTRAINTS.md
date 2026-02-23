@@ -15,8 +15,8 @@ fastjq distinguishes four tiers of allocation behaviour:
 |------|------|---------|
 | **Tier 0** | 0 allocs — core processing hot path | access, filter, compare, arithmetic, construction, math |
 | **Tier 1** | Allocs ∝ output size — unavoidable API constraints | `@base64`, `@uri`, `match`, `capture`, `scan`, `gsub` |
-| **Tier 2** | Allocs ∝ collection size — O(n) index, bounded, acceptable | `sort`, `group_by`, `unique` *(planned)* |
-| **Tier 3** | Rejected — allocs ∝ input structure, caller cannot bound | `recurse`/`..`, `range(n)` |
+| **Tier 2** | Allocs ∝ output count — bounded by what was requested | `range(n)` (1 alloc/value); `sort`, `group_by`, `unique` *(planned)* |
+| **Tier 3** | Deferred — requires executor redesign, not a policy decision | `recurse`/`..` |
 
 When deciding whether to implement a new operation, the question is always: *does the allocation scale with the result, or with the input?* If the caller can control the allocation by choosing what to request, it is acceptable. If the allocation scales with the shape of the data being processed regardless of the query, it is rejected.
 
@@ -47,24 +47,27 @@ Some operations must allocate to produce their result. The allocation is proport
 
 **Exception — array construction aliasing:** `[.[] | f]` where `f` constructs new data (object construction, arithmetic, string concatenation) allocates ~1 buffer per element. This is a structural limitation: `execArrayConstruct` must pass `nil` scratch to `execMulti` to prevent aliasing when an element's iterator emits multiple results across callback invocations. Elements that return input sub-slices (field access, identity, comparisons) remain 0 allocs.
 
-### Tier 2 — Alloc ∝ collection size (O(n), bounded, acceptable)
+### Tier 2 — Alloc ∝ output count (bounded, acceptable)
 
-Operations that must reorder or deduplicate an entire collection need an auxiliary index structure. The allocation is O(n) in the *size of the collection the user explicitly passed*, not in the size of the document being scanned. This is acceptable because:
-1. The user controls the allocation by deciding what to collect
-2. The allocation disappears when the operation completes
-3. Even with the O(n) index, these ops are dramatically cheaper than gojq's full unmarshal
+Operations where allocation is proportional to *what the caller asked to produce*, not what was scanned. The caller controls the allocation by deciding what to request.
 
-**Status: reserved for implementation.** `sort`, `sort_by`, `group_by`, `unique`, `unique_by` belong here. Each benchmark must document the `allocs` column and the Big-O bound.
+| Operation | Allocs | Reason |
+|-----------|--------|--------|
+| `range(n)` | 1 per value | Each generated integer is a fresh byte slice. For `range(10)`: 10 allocs. |
+| `range(from;to;step)` | 1 per value | Same model with explicit bounds and step. |
+| `sort`, `sort_by(f)` *(planned)* | O(n) index | Collect element offsets, sort, re-emit. |
+| `group_by(f)` *(planned)* | O(n) index | Sort-based grouping. |
+| `unique`, `unique_by(f)` *(planned)* | O(n) index | Sort-based deduplication. |
 
-Rule: Tier 2 operations must clearly document their allocation model in both CHANGELOG and SYNTAX.md. They may not be added to `RunWithBuffer`/`RunFunc` hot-path benchmarks that assert 0 allocs.
+Rule: Tier 2 operations must document their alloc model in CHANGELOG and SYNTAX.md. They must not appear in hot-path benchmarks that assert 0 allocs.
 
-### Tier 3 — Rejected (alloc ∝ input structure)
+### Tier 3 — Deferred (requires executor redesign)
 
-Operations where allocation scales with the *structure of the input being processed*, independent of what the caller asks for. These are permanently rejected because the caller cannot predict or bound the allocation.
+These operations are not rejected on principle — they're deferred because implementing them correctly requires a different execution architecture, not just documented allocations.
 
-| Operation | Reason |
-|-----------|--------|
-| `recurse` / `..` | ~3–4 heap closures per JSON nesting level. A deeply nested input causes unbounded allocation regardless of query complexity. Fixing this requires a full stack-based executor redesign — incompatible with the callback architecture. |
+| Operation | Why deferred |
+|-----------|-------------|
+| `recurse` / `..` | The callback-based executor (`fn func([]byte) error`) forces Go's escape analysis to heap-allocate a closure at every JSON nesting level (~3–4 allocs/level). On a 10-deep record that's ~40 allocs regardless of query complexity, and the caller cannot bound it. Fixing this requires replacing the callback architecture with an explicit stack — a significant redesign. |
 | `range(n)` / `range(from;to;step)` | Synthesises new data not present in the input. Formatting each integer requires a buffer passed through the function interface — Go's escape analysis heap-allocates it, giving 1 alloc/value. This is the one case where the allocation comes from the operation itself, not its input or output. |
 
 ## Scope Constraints
