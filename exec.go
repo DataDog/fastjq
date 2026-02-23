@@ -243,17 +243,41 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opAlternative:
 		return execAlternative(node, input, buf, fn)
 	case opMinus, opMul, opDiv, opMod:
-		// Use execMulti for BOTH sides: supports generators as either operand.
-		// a * range(3) and range(3) * a both produce one result per range value.
-		// For scalar * scalar the Cartesian product is a single result — no change.
-		return execMulti(node.left, input, nil, func(leftVal []byte) error {
-			return execMulti(node.right, input, nil, func(rightVal []byte) error {
+		// Supports generators as either operand (e.g. range(3) * 2 or 1 * range(3)).
+		// Single-output right side: use execSingle to avoid fn being captured in a
+		// nested execMulti call (which would create an escape analysis cycle).
+		// Multi-output right side: collect values first without fn, then compute.
+		if !hasMultiOutput(node.right) {
+			return execMulti(node.left, input, nil, func(leftVal []byte) error {
+				rightVal, err := execSingle(node.right, input, nil)
+				if err != nil {
+					return err
+				}
 				result, err := execArithValues(node.typ, leftVal, rightVal, buf)
 				if err != nil {
 					return err
 				}
 				return fn(result)
 			})
+		}
+		var rightVals [][]byte
+		if err := execMulti(node.right, input, nil, func(rightVal []byte) error {
+			rightVals = append(rightVals, rightVal)
+			return nil
+		}); err != nil {
+			return err
+		}
+		return execMulti(node.left, input, nil, func(leftVal []byte) error {
+			for _, rv := range rightVals {
+				result, err := execArithValues(node.typ, leftVal, rv, buf)
+				if err != nil {
+					return err
+				}
+				if err := fn(result); err != nil {
+					return err
+				}
+			}
+			return nil
 		})
 	case opMin:
 		result, err := execMinMax(input, buf, node, false)
@@ -669,8 +693,6 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execAnyAllSingle(node, input, buf, false)
 	case opAll:
 		return execAnyAllSingle(node, input, buf, true)
-	case opAdd:
-		return execFirstResult(node, input, buf)
 	case opIndex1:
 		return execFindIndex(node, input, buf, false, false), nil
 	case opRIndex1:
@@ -752,12 +774,243 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opGSub:
 		return execGSub(node, input, buf)
 	// opScan is intentionally absent — it is multi-output only; falls through to exec()
+
+	// --- Tier 0 ops added here to bypass execFirstResult/execMulti entirely ---
+	// execMulti's fn parameter has been marked as "escapes to heap" by Go's escape
+	// analysis due to d44ce30's changes (execCompare using nested execMulti closures,
+	// constructPairsInto capturing fn recursively). Any op routed through
+	// execFirstResult→execMulti incurs 3 allocs/op even for simple operations.
+	// Adding these ops directly to execSingle with no-closure implementations
+	// restores 0 allocs/op for all Tier 0 operations.
+
+	case opDelete:
+		return execDelete(node, input, buf)
+
+	case opConstruct:
+		if node.multiValuePairs {
+			return execFirstResult(node, input, buf) // Tier 2 — Cartesian product
+		}
+		return execConstruct(node, input, buf)
+
+	case opPipe:
+		// Fast path when left is single-output: chain execSingle calls directly.
+		// When left is multi-output (e.g. .[] | select(...)), fall through to
+		// execFirstResult so the full pipeline is evaluated and only the first
+		// passing result is returned (correct for first(.[] | select(...)) etc.).
+		if isSingleOutputOp(node.left) {
+			intermediate, err := execSingle(node.left, input, nil)
+			if err != nil {
+				return nil, err
+			}
+			return execSingle(node.right, intermediate, buf)
+		}
+		return execFirstResult(node, input, buf)
+
+	case opSelect:
+		// Pass buf as scratch so condition expressions (e.g. ascii_downcase, construct)
+		// don't need to allocate their own buffer. condVal may be written into buf,
+		// but we only test truthiness and then reset buf for the actual output.
+		condVal, err := execSingle(node.child, input, buf)
+		if err != nil {
+			return nil, err
+		}
+		if isFalsy(condVal) {
+			return nil, nil // condition false — no output
+		}
+		if buf == nil {
+			return input[:len(input):len(input)], nil
+		}
+		// Reset buf (discard condition scratch) and write the output (the input value).
+		return append(buf[:0], input...), nil
+
+	case opHas:
+		s := scanner{data: input}
+		s.skipWhitespace()
+		if len(node.literal) > 0 && node.literal[0] == 'a' {
+			// has(n) on array
+			if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+				return boolResult(buf, false), nil
+			}
+			length := s.arrayLen()
+			return boolResult(buf, node.index >= 0 && node.index < length), nil
+		}
+		// has("key") on object
+		if s.pos >= len(s.data) || s.data[s.pos] != '{' {
+			return boolResult(buf, false), nil
+		}
+		vs, _ := s.findFieldStr(node.field)
+		return boolResult(buf, vs != -1), nil
+
+	case opIf:
+		// Pass buf as scratch for condition evaluation; reset for branch output.
+		condVal, err := execSingle(node.left, input, buf)
+		if err != nil {
+			return nil, err
+		}
+		if !isFalsy(condVal) {
+			return execSingle(node.right, input, buf[:0])
+		}
+		if node.child != nil {
+			return execSingle(node.child, input, buf[:0])
+		}
+		return execIdentity(input, buf[:0])
+
+	case opAdd:
+		// Call execAdd directly (not through execMulti) so execAdd's internal
+		// arrayIter closures don't inherit execMulti's fn escape contamination.
+		var addResult []byte
+		if err := execAdd(input, buf, func(r []byte) error { addResult = r; return nil }); err != nil {
+			return nil, err
+		}
+		if addResult == nil {
+			return append(buf, "null"...), nil
+		}
+		return addResult, nil
+
 	case opAlternative:
-		// Fall through to execMulti — alternative needs multi-output left side support
-		return execFirstResult(node, input, buf)
+		// Single-result path: if left is truthy return it, else evaluate right.
+		leftVal, err := execSingle(node.left, input, nil)
+		if err == nil && !isFalsy(leftVal) {
+			if buf == nil {
+				return leftVal, nil
+			}
+			return append(buf, leftVal...), nil
+		}
+		return execSingle(node.right, input, buf)
+
 	case opTry:
-		// Fall through to execMulti for try (handles errBreak propagation correctly)
-		return execFirstResult(node, input, buf)
+		result, err := execSingle(node.left, input, buf)
+		if err == nil {
+			return result, nil
+		}
+		if err == errBreak {
+			return nil, err // propagate break signal
+		}
+		// Error: suppress or run catch handler.
+		if node.right == nil {
+			return nil, nil // no catch — produce no output
+		}
+		var catchInput []byte
+		if je, ok := err.(*jsonError); ok {
+			catchInput = je.payload
+		} else {
+			msg := make([]byte, 0, 64)
+			msg = append(msg, '"')
+			for _, b := range []byte(err.Error()) {
+				if b == '"' {
+					msg = append(msg, '\\', '"')
+				} else if b == '\\' {
+					msg = append(msg, '\\', '\\')
+				} else {
+					msg = append(msg, b)
+				}
+			}
+			catchInput = append(msg, '"')
+		}
+		return execSingle(node.right, catchInput, buf)
+
+	case opStringInterp:
+		// String interpolation — inline exactly as in execMulti but return directly.
+		buf = append(buf, '"')
+		for i, expr := range node.elems {
+			buf = append(buf, node.segs[i]...)
+			result, err := execSingle(expr, input, nil)
+			if err != nil {
+				return nil, err
+			}
+			result = trimWhitespace(result)
+			if len(result) > 0 && result[0] == '"' {
+				sc := scanner{data: result}
+				buf = append(buf, sc.readString()...)
+			} else {
+				for _, b := range result {
+					if b == '"' {
+						buf = append(buf, '\\', '"')
+					} else if b == '\\' {
+						buf = append(buf, '\\', '\\')
+					} else {
+						buf = append(buf, b)
+					}
+				}
+			}
+		}
+		buf = append(buf, node.segs[len(node.elems)]...)
+		return append(buf, '"'), nil
+
+	case opContains:
+		argVal, err := execSingle(node.child, input, nil)
+		if err != nil {
+			return boolResult(buf, false), nil
+		}
+		var contains bool
+		if node.optional {
+			contains = jsonContains(argVal, input)
+		} else {
+			contains = jsonContains(input, argVal)
+		}
+		return boolResult(buf, contains), nil
+
+	case opHTMLEncode:
+		return execHTMLEncode(input, buf)
+	case opCSVEncode:
+		return execCSVEncode(input, buf)
+	case opTSVEncode:
+		return execTSVEncode(input, buf)
+	case opShEncode:
+		return execShEncode(input, buf)
+	case opURIDecode:
+		return execURIDecode(input, buf)
+
+	case opFloor:
+		return execRoundMode(input, buf, roundFloor), nil
+	case opCeil:
+		return execRoundMode(input, buf, roundCeil), nil
+	case opRound:
+		return execRoundMode(input, buf, roundNearest), nil
+
+	case opMathSqrt:
+		return execMathFunc(input, buf, mathSqrt), nil
+	case opMathFabs:
+		return execMathFunc(input, buf, mathFabs), nil
+	case opMathAtan:
+		return execMathFunc(input, buf, mathAtan), nil
+	case opMathLog:
+		return execMathFunc(input, buf, mathLog), nil
+	case opMathLog2:
+		return execMathFunc(input, buf, mathLog2), nil
+	case opMathLog10:
+		return execMathFunc(input, buf, mathLog10), nil
+	case opMathExp:
+		return execMathFunc(input, buf, mathExp), nil
+	case opMathExp2:
+		return execMathFunc(input, buf, mathExp2), nil
+	case opMathExp10:
+		return execMathFunc(input, buf, mathExp10), nil
+	case opMathCbrt:
+		return execMathFunc(input, buf, mathCbrt), nil
+	case opMathLogb:
+		return execMathFunc(input, buf, mathLogb), nil
+	case opMathNearbyint:
+		return execMathFunc(input, buf, mathNearbyint), nil
+	case opMathJ0:
+		return execMathFunc(input, buf, mathJ0), nil
+	case opMathJ1:
+		return execMathFunc(input, buf, mathJ1), nil
+	case opMathSin:
+		return execMathFunc(input, buf, mathSin), nil
+	case opMathCos:
+		return execMathFunc(input, buf, mathCos), nil
+	case opMathTan:
+		return execMathFunc(input, buf, mathTan), nil
+	case opMathAsin:
+		return execMathFunc(input, buf, mathAsin), nil
+	case opMathAcos:
+		return execMathFunc(input, buf, mathAcos), nil
+	case opMathTgamma:
+		return execMathFunc(input, buf, mathTgamma), nil
+	case opMathLgamma:
+		return execMathFunc(input, buf, mathLgamma), nil
+
 	case opToJSON:
 		return execToJSON(input, buf), nil
 	case opFromJSON:
@@ -1243,15 +1496,35 @@ func execConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 //
 // Allocation model: each output combination requires its own prefix copy —
 // allocations are proportional to output count (Tier 2).
+//
+// Design note: fn is intentionally NOT passed into the recursive collectPairCombos
+// helper. The old constructPairsInto approach captured fn in a closure passed to
+// execMulti, which created a recursive escape analysis cycle causing Go's escape
+// analysis to mark execMulti's fn parameter as always escaping to the heap. This
+// cascaded to all callers of execMulti (execFirstResult, execIterator, etc.),
+// introducing 3 allocs/op for every Tier 0 operation. By collecting combinations
+// first and then calling fn, fn stays out of the recursive machinery entirely.
 func execConstructMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	return constructPairsInto(node.pairs, 0, input, append(buf[:0], '{'), fn)
+	var combos [][]byte
+	if err := collectPairCombos(node.pairs, 0, input, append(buf[:0], '{'), &combos); err != nil {
+		return err
+	}
+	for _, combo := range combos {
+		if err := fn(combo); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// constructPairsInto recursively builds Cartesian product of pair values.
-// prefix is the partial object built so far, always starting with '{'.
-func constructPairsInto(pairs []pair, idx int, input []byte, prefix []byte, fn func([]byte) error) error {
+// collectPairCombos recursively collects all Cartesian product combinations of pair
+// values into out. It does NOT take fn so that fn from execConstructMulti stays out
+// of any closure captured by execMulti, preventing the escape analysis contamination
+// described in execConstructMulti's comment.
+func collectPairCombos(pairs []pair, idx int, input []byte, prefix []byte, out *[][]byte) error {
 	if idx == len(pairs) {
-		return fn(append(prefix, '}'))
+		*out = append(*out, append(prefix, '}'))
+		return nil
 	}
 
 	p := pairs[idx]
@@ -1268,7 +1541,7 @@ func constructPairsInto(pairs []pair, idx int, input []byte, prefix []byte, fn f
 		obj = append(obj, p.key...)
 		obj = append(obj, '"', ':')
 		obj = append(obj, normalizeNaNInf(val)...)
-		return constructPairsInto(pairs, idx+1, input, obj, fn)
+		return collectPairCombos(pairs, idx+1, input, obj, out)
 	})
 }
 
@@ -1387,20 +1660,40 @@ func execType(input []byte, buf []byte, fn func([]byte) error) error {
 }
 
 // execCompare evaluates a comparison between two expressions.
-// Both operands are evaluated via execMulti to support multi-output left/right sides
-// (e.g. ".[] == 1" produces one boolean per element). For single-output operands
-// the fast path is execCompareSingle via execSingle.
-// Allocation model: nil scratch is passed to both operand evals so they don't
-// corrupt each other; input sub-slices (field access, literals baked into op)
-// produce zero allocs, while constructed values allocate their own buffers.
+// The left operand is evaluated via execMulti to support multi-output left sides
+// (e.g. ".[] == 1" produces one boolean per element). For single-output right sides
+// (the common case), execSingle is used directly to avoid fn being captured inside
+// a nested execMulti call, which would create an escape cycle. For multi-output right
+// sides (e.g. range(2) == range(2)), right values are collected first without fn,
+// then fn is called from the left-side closure without any sub-execMulti nesting.
+// For single-output operands the fast path is execCompareSingle via execSingle.
 func execCompare(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	return execMulti(node.left, input, nil, func(leftVal []byte) error {
-		return execMulti(node.right, input, nil, func(rightVal []byte) error {
-			if evalCmpOp(node.cmpOp, leftVal, rightVal) {
-				return fn(append(buf[:0], "true"...))
+	if !hasMultiOutput(node.right) {
+		// Single-output right side: evaluate once per left value with execSingle.
+		return execMulti(node.left, input, nil, func(leftVal []byte) error {
+			rightVal, err := execSingle(node.right, input, nil)
+			if err != nil {
+				return err
 			}
-			return fn(append(buf[:0], "false"...))
+			return fn(boolResult(buf, evalCmpOp(node.cmpOp, leftVal, rightVal)))
 		})
+	}
+	// Multi-output right side: collect right values first (fn not captured here),
+	// then iterate left, calling fn directly without any nested execMulti call.
+	var rightVals [][]byte
+	if err := execMulti(node.right, input, nil, func(rightVal []byte) error {
+		rightVals = append(rightVals, rightVal)
+		return nil
+	}); err != nil {
+		return err
+	}
+	return execMulti(node.left, input, nil, func(leftVal []byte) error {
+		for _, rightVal := range rightVals {
+			if err := fn(boolResult(buf, evalCmpOp(node.cmpOp, leftVal, rightVal))); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

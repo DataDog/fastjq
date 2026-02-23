@@ -40,7 +40,18 @@
       "Bash(/tmp/rangedebug.go:*)",
       "Bash(git fetch:*)",
       "Bash(git rebase:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(git checkout:*)",
+      "Bash(/tmp/diag.go:*)",
+      "Bash(/Users/brian.floersch/dev/fastjq/debug_ast_test.go:*)",
+      "Bash(__NEW_LINE_d3a17a1e48492ce1__ echo \"\")",
+      "Bash(__NEW_LINE_79ecccb87a7b73f5__ echo \"\")",
+      "Bash(__NEW_LINE_b27217fb664a8e97__ echo \"=== RECURSE ===\")",
+      "Bash(__NEW_LINE_b27217fb664a8e97__ echo \"\")",
+      "Bash(__NEW_LINE_9b53833dacdcaa15__ echo \"\")",
+      "Bash(awk:*)",
+      "Bash(git remote get-url:*)",
+      "Bash(sort -t'/' -k1)"
     ]
   }
 }
