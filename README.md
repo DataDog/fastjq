@@ -50,25 +50,38 @@ The core tier covers the full hot path for log processing. For operations that d
 
 The speedup is largest on small inputs where gojq's marshal/unmarshal overhead dominates. On large inputs fastjq is 18–75x faster thanks to SIMD-accelerated string scanning. The exception is small primitive integer arrays, where gojq's in-memory representation wins.
 
-### vs jq CLI (JSONL throughput, 100K lines, ~11MB, Apple M4 Max, jq 1.8.1)
+### vs jq CLI (JSONL throughput, Apple M4 Max, jq 1.8.1)
 
 Both tools validate JSON. fastjq calls `json.Valid()` before processing each record.
 
+- **small**: 100K lines × ~100B each (~11MB total, 5 fields per object)
+- **large**: 100 lines × ~167KB each (~16MB total, 200 fields per object)
+
 | Operation | Input | jq (s) | fastjq (s) | Speedup |
 |-----------|-------|--------|------------|---------|
-| `.` (identity) | small | 0.356 | 0.052 | **6.8x** |
-| `.field` | small | 0.152 | 0.051 | **3x** |
-| `.field` | large (~16MB, 100 lines) | 0.091 | 0.043 | **2.1x** |
-| `del(.field)` | small | 0.383 | 0.061 | **6.3x** |
-| `{field_0, field_2}` (construct) | small | 0.252 | 0.060 | **4.2x** |
-| `select(.f == "x")` (all match) | small | 0.408 | 0.049 | **8.3x** |
-| `select(.f == "x")` (none match) | small | 0.143 | 0.050 | **2.9x** |
-| `.field // "default"` | small | 0.164 | 0.050 | **3.3x** |
-| `select(.f \| ascii_downcase == "x")` | small | 0.655 | 0.065 | **10x** |
-| `select(.f \| startswith("x"))` | small | 0.377 | 0.059 | **6.4x** |
-| `select(has("field"))` | small | 0.359 | 0.051 | **7x** |
-| `to_entries` | small | 0.746 | 0.066 | **11x** |
-| `keys_unsorted` | small | 0.244 | 0.057 | **4.3x** |
+| `.` (identity) | small | 0.338 | 0.047 | **7.2x** |
+| `.field` | small | 0.148 | 0.043 | **3.4x** |
+| `.field` | large | 0.088 | 0.042 | **2.1x** |
+| `del(.field)` | small | 0.358 | 0.063 | **5.7x** |
+| `del(.field)` | large | 0.389 | 0.054 | **7.2x** |
+| `{f0, f2}` (construct) | small | 0.246 | 0.061 | **4.0x** |
+| `{f0, f50}` (construct) | large | 0.100 | 0.048 | **2.1x** |
+| `select(.f == "x")` (all match) | small | 0.364 | 0.049 | **7.4x** |
+| `select(.f == "x")` (all match) | large | 0.388 | 0.044 | **8.8x** |
+| `select(.f == "x")` (none match) | small | 0.142 | 0.052 | **2.7x** |
+| `select(.f == "x")` (none match) | large | 0.093 | 0.040 | **2.3x** |
+| `.field // "default"` | small | 0.165 | 0.048 | **3.4x** |
+| `.missing // "default"` | large | 0.097 | 0.046 | **2.1x** |
+| `select(.f \| ascii_downcase == "x")` | small | 0.645 | 0.063 | **10x** |
+| `select(.f \| ascii_downcase == "x")` | large | 0.397 | 0.047 | **8.4x** |
+| `select(.f \| startswith("x"))` | small | 0.351 | 0.056 | **6.3x** |
+| `select(.f \| startswith("x"))` | large | 0.390 | 0.046 | **8.5x** |
+| `select(has("field"))` | small | 0.360 | 0.051 | **7.1x** |
+| `select(has("field"))` | large | 0.396 | 0.047 | **8.4x** |
+| `to_entries` | small | 0.729 | 0.074 | **9.9x** |
+| `to_entries` | large | 0.432 | 0.057 | **7.6x** |
+| `keys_unsorted` | small | 0.239 | 0.059 | **4.1x** |
+| `keys_unsorted` | large | 0.104 | 0.048 | **2.2x** |
 
 **Without validation** (using `RunWithBuffer`/`RunFunc` directly on known-valid inputs), the Go library benchmarks show **13–75x** speedups — see the table at the top of this section and [BENCHMARKS.md](docs/BENCHMARKS.md) for the full comparison.
 
