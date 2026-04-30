@@ -249,6 +249,29 @@ func TestPathsBuiltinFilter(t *testing.T) {
 	}
 }
 
+func TestPathBuiltin(t *testing.T) {
+	assertQuery(t, `path(.)`, `42`, `[]`)
+	assertQueryAll(t, `path(.foo[0,1])`, `null`, `["foo",0]`, `["foo",1]`)
+	assertQuery(t, `path(.a[0].b)`, `null`, `["a",0,"b"]`)
+	assertQueryAll(t, `path(.[] | select(.>3))`, `[1,5,3]`, `[1]`)
+	assertQuery(t, `path(.a[path(.b)[0]])`, `{"a":{"b":0}}`, `["a","b"]`)
+}
+
+func TestDynamicIndexScope(t *testing.T) {
+	assertQuery(t, `.foo[.baz]`, `{"foo":{"bar":4},"baz":"bar"}`, `4`)
+	assertQuery(t, `.foo[.baz][.qux]`, `{"foo":{"bar":{"x":1}},"baz":"bar","qux":"x"}`, `1`)
+	assertQuery(t, `.[1][.[0].i]`, `[{"i":0},[10,11],[20,21]]`, `10`)
+	assertQuery(t, `[range(3)] | .[nan]`, `null`, `null`)
+	assertQuery(t, `try ("foobar" | .[1.5]) catch .`, `null`, `"Cannot index string with number"`)
+}
+
+func TestPathBuiltinErrors(t *testing.T) {
+	assertQuery(t, `try path(.a | map(select(.b == 0))) catch .`, `{"a":[{"b":0}]}`, `"Invalid path expression with result [{\"b\":0}]"`)
+	assertQuery(t, `try path(.a | map(select(.b == 0)) | .[0]) catch .`, `{"a":[{"b":0}]}`, `"Invalid path expression near attempt to access element 0 of [{\"b\":0}]"`)
+	assertQuery(t, `try path(.a | map(select(.b == 0)) | .c) catch .`, `{"a":[{"b":0}]}`, `"Invalid path expression near attempt to access element \"c\" of [{\"b\":0}]"`)
+	assertQuery(t, `try path(.a | map(select(.b == 0)) | .[]) catch .`, `{"a":[{"b":0}]}`, `"Invalid path expression near attempt to iterate through [{\"b\":0}]"`)
+}
+
 func TestSkipBuiltin(t *testing.T) {
 	p, err := Compile(`skip(0,2,3,4; .[])`)
 	if err != nil {

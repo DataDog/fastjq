@@ -23,7 +23,7 @@ var (
 )
 
 const (
-	jsonParseDepthLimit        = 10000
+	jsonParseDepthLimit         = 10000
 	jsonStringifySkipDepthLimit = jsonParseDepthLimit + 1
 )
 
@@ -57,8 +57,10 @@ var bFalse = []byte("false")
 var bNull = []byte("null")
 
 var (
-	tryScopeMu    sync.Mutex
-	tryScopeByGID = make(map[uint64]int)
+	tryScopeMu      sync.Mutex
+	tryScopeByGID   = make(map[uint64]int)
+	indexScopeMu    sync.Mutex
+	indexScopeByGID = make(map[uint64][][]byte)
 )
 
 // execMulti executes an op against input, calling fn for each result.
@@ -104,6 +106,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(append(buf, value...))
 	case opIndex:
 		return execIndexMulti(node, input, buf, fn)
+	case opIndexExpr:
+		return execIndexExprMulti(node, input, buf, fn)
 	case opIterator:
 		return execIterator(node, input, buf, fn)
 	case opConstruct:
@@ -177,6 +181,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execSkip(node, input, buf, fn)
 	case opReduce:
 		return execReduce(node, input, buf, fn)
+	case opPath:
+		return execPath(node, input, buf, fn)
 	case opKeys:
 		result, err := execKeys(input, buf)
 		if err != nil {
@@ -245,7 +251,9 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return nil
 		}
 		if node.child != nil {
-			return execMulti(node.child, result, buf, fn)
+			return withIndexScope(chainedIndexScope(input), func() error {
+				return execMulti(node.child, result, buf, fn)
+			})
 		}
 		return fn(result)
 	case opPlus:
@@ -716,6 +724,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execField(node, input, buf)
 	case opIndex:
 		return execIndex(node, input, buf)
+	case opIndexExpr:
+		return execIndexExpr(node, input, buf)
 	case opVar:
 		ctx := currentExecContext()
 		value, ok := ctx.lookupVar(node.name)
@@ -813,6 +823,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execFirstResult(node, input, buf)
 	case opReduce:
 		return execFirstResult(node, input, buf)
+	case opPath:
+		return execFirstResult(node, input, buf)
 	case opKeys:
 		return execKeys(input, buf)
 	case opPaths:
@@ -867,7 +879,13 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			return append(buf, "null"...), nil
 		}
 		if node.child != nil {
-			return execSingle(node.child, result, buf)
+			var out []byte
+			err := withIndexScope(chainedIndexScope(input), func() error {
+				var execErr error
+				out, execErr = execSingle(node.child, result, buf)
+				return execErr
+			})
+			return out, err
 		}
 		return result, nil
 	case opPlus:
@@ -1242,7 +1260,9 @@ func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	value := input[vs:ve]
 
 	if node.child != nil {
-		return execMulti(node.child, value, buf, fn)
+		return withIndexScope(chainedIndexScope(input), func() error {
+			return execMulti(node.child, value, buf, fn)
+		})
 	}
 	if buf == nil {
 		return fn(value[:len(value):len(value)])
@@ -1279,7 +1299,13 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 	value := input[vs:ve]
 
 	if node.child != nil {
-		return exec(node.child, value, buf)
+		var result []byte
+		err := withIndexScope(chainedIndexScope(input), func() error {
+			var execErr error
+			result, execErr = exec(node.child, value, buf)
+			return execErr
+		})
+		return result, err
 	}
 	if buf == nil {
 		return value[:len(value):len(value)], nil
@@ -1322,7 +1348,9 @@ func execIndexMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	}
 
 	if node.child != nil {
-		return execMulti(node.child, result, buf, fn)
+		return withIndexScope(chainedIndexScope(input), func() error {
+			return execMulti(node.child, result, buf, fn)
+		})
 	}
 	if buf == nil {
 		return fn(result[:len(result):len(result)])
@@ -1365,12 +1393,146 @@ func execIndex(node *op, input []byte, buf []byte) ([]byte, error) {
 	}
 
 	if node.child != nil {
-		return exec(node.child, result, buf)
+		var out []byte
+		err := withIndexScope(chainedIndexScope(input), func() error {
+			var execErr error
+			out, execErr = exec(node.child, result, buf)
+			return execErr
+		})
+		return out, err
 	}
 	if buf == nil {
 		return result[:len(result):len(result)], nil
 	}
 	return append(buf, result...), nil
+}
+
+func execIndexExprMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	scopeInput := currentIndexScope()
+	if scopeInput == nil {
+		scopeInput = input
+	}
+	return execMulti(node.left, scopeInput, nil, func(key []byte) error {
+		result, err := execIndexExprAccess(input, key, buf)
+		if err != nil {
+			return err
+		}
+		if node.child != nil {
+			return withIndexScope(chainedIndexScope(input), func() error {
+				return execMulti(node.child, result, buf, fn)
+			})
+		}
+		return fn(result)
+	})
+}
+
+func execIndexExpr(node *op, input []byte, buf []byte) ([]byte, error) {
+	scopeInput := currentIndexScope()
+	if scopeInput == nil {
+		scopeInput = input
+	}
+	key, err := execSingle(node.left, scopeInput, nil)
+	if err != nil {
+		return nil, err
+	}
+	result, err := execIndexExprAccess(input, key, buf)
+	if err != nil {
+		return nil, err
+	}
+	if node.child != nil {
+		var out []byte
+		err := withIndexScope(chainedIndexScope(input), func() error {
+			var execErr error
+			out, execErr = exec(node.child, result, buf)
+			return execErr
+		})
+		return out, err
+	}
+	return result, nil
+}
+
+func execIndexExprAccess(input, key, buf []byte) ([]byte, error) {
+	key = trimWhitespace(key)
+	if len(key) == 0 {
+		return nil, fmt.Errorf("Cannot index %s with invalid", jsonTypeName(input))
+	}
+	ks := scanner{data: key}
+	ks.skipWhitespace()
+	if ks.pos < len(ks.data) && ks.data[ks.pos] == '"' {
+		field := ks.readString()
+		return execFieldValue(input, field, buf)
+	}
+	if f, ok := parseJSONFloat(key); ok {
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			s := scanner{data: input}
+			s.skipWhitespace()
+			if s.pos < len(s.data) && (s.data[s.pos] == '[' || s.data[s.pos] == 'n') {
+				if buf == nil {
+					return bNull, nil
+				}
+				return append(buf, "null"...), nil
+			}
+			return nil, dynamicIndexNumberAccessError(input)
+		}
+		return execIndexValue(input, int(f), buf)
+	}
+	return nil, fmt.Errorf("Cannot index %s with %s", jsonTypeName(input), jsonTypeName(key))
+}
+
+func execFieldValue(input, field, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
+		if s.pos < len(s.data) && s.data[s.pos] == 'n' {
+			if buf == nil {
+				return bNull, nil
+			}
+			return append(buf, "null"...), nil
+		}
+		return nil, fieldAccessError(input, string(field))
+	}
+	vs, ve := s.findField(field)
+	if vs == -1 {
+		if buf == nil {
+			return bNull, nil
+		}
+		return append(buf, "null"...), nil
+	}
+	return normalizeOutputValue(input[vs:ve], buf), nil
+}
+
+func execIndexValue(input []byte, index int, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return nil, dynamicIndexNumberAccessError(input)
+	}
+	idx := index
+	if idx < 0 {
+		length := s.arrayLen()
+		idx = length + idx
+		if idx < 0 {
+			if buf == nil {
+				return bNull, nil
+			}
+			return append(buf, "null"...), nil
+		}
+	}
+	var result []byte
+	s.arrayIter(func(i int, elemStart, elemEnd int) bool {
+		if i == idx {
+			result = input[elemStart:elemEnd]
+			return false
+		}
+		return true
+	})
+	if result == nil {
+		if buf == nil {
+			return bNull, nil
+		}
+		return append(buf, "null"...), nil
+	}
+	return normalizeOutputValue(result, buf), nil
 }
 
 // execIterator iterates all elements of an array or values of an object.
@@ -1388,7 +1550,16 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 	case '[':
 		var caught error
 		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
-			if err := fn(input[elemStart:elemEnd]); err != nil {
+			var err error
+			if node.child != nil {
+				scope := chainedIndexScope(input)
+				err = withIndexScope(scope, func() error {
+					return execMulti(node.child, input[elemStart:elemEnd], buf, fn)
+				})
+			} else {
+				err = fn(input[elemStart:elemEnd])
+			}
+			if err != nil {
 				// Propagate jsonError (from `error` builtin) and errBreak so
 				// try-catch and limit/first work correctly. Regular errors
 				// (e.g. field access on wrong type) are dropped, preserving
@@ -1409,7 +1580,16 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 	case '{':
 		var caught error
 		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
-			if err := fn(input[valueStart:valueEnd]); err != nil {
+			var err error
+			if node.child != nil {
+				scope := chainedIndexScope(input)
+				err = withIndexScope(scope, func() error {
+					return execMulti(node.child, input[valueStart:valueEnd], buf, fn)
+				})
+			} else {
+				err = fn(input[valueStart:valueEnd])
+			}
+			if err != nil {
 				if _, ok := err.(*jsonError); ok {
 					if !tryScopeActive() {
 						return false
@@ -2516,8 +2696,12 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 
 	// Resolve start bound
 	start := 0
+	scopeInput := currentIndexScope()
+	if scopeInput == nil {
+		scopeInput = input
+	}
 	if node.left != nil {
-		sv, err := execSingle(node.left, input, nil)
+		sv, err := execSingle(node.left, scopeInput, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -2531,7 +2715,7 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 	// Resolve end bound
 	end := length
 	if node.right != nil {
-		sv, err := execSingle(node.right, input, nil)
+		sv, err := execSingle(node.right, scopeInput, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -3284,6 +3468,186 @@ type pathFrame struct {
 	index  int
 }
 
+type pathTraceState struct {
+	value  []byte
+	frame  *pathFrame
+	opaque bool
+}
+
+func execPath(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	root := pathTraceState{value: trimWhitespace(input)}
+	return execPathExpr(node.child, root, buf, func(state pathTraceState) error {
+		if state.opaque {
+			return invalidPathResultError(state.value)
+		}
+		out := appendPathFrameJSON(buf[:0], state.frame)
+		return fn(out)
+	})
+}
+
+func execPathExpr(node *op, state pathTraceState, buf []byte, emit func(pathTraceState) error) error {
+	if node == nil {
+		return emit(state)
+	}
+
+	switch node.typ {
+	case opIdentity:
+		return emit(state)
+	case opField:
+		if state.opaque {
+			return invalidPathFieldError(state.value, node.field)
+		}
+		next := pathTraceState{
+			value: pathFieldTraceValue(state.value, node.field),
+			frame: &pathFrame{
+				parent: state.frame,
+				kind:   pathStepString,
+				rawKey: []byte(node.field),
+			},
+		}
+		if node.child != nil {
+			return withIndexScope(chainedIndexScope(state.value), func() error {
+				return execPathExpr(node.child, next, buf, emit)
+			})
+		}
+		return emit(next)
+	case opIndex:
+		if state.opaque {
+			return invalidPathIndexError(state.value, node.index)
+		}
+		next := pathTraceState{
+			value: pathIndexTraceValue(state.value, node.index),
+			frame: &pathFrame{
+				parent: state.frame,
+				kind:   pathStepNumber,
+				index:  node.index,
+			},
+		}
+		if node.child != nil {
+			return withIndexScope(chainedIndexScope(state.value), func() error {
+				return execPathExpr(node.child, next, buf, emit)
+			})
+		}
+		return emit(next)
+	case opIndexExpr:
+		scopeInput := currentIndexScope()
+		if scopeInput == nil {
+			scopeInput = state.value
+		}
+		keys, err := collectExecOutputs(node.left, scopeInput)
+		if err != nil {
+			return err
+		}
+		for _, key := range keys {
+			if state.opaque {
+				return invalidPathDynamicIndexError(state.value, key)
+			}
+			next, err := pathTraceDynamicIndex(state, key)
+			if err != nil {
+				return err
+			}
+			if node.child != nil {
+				if err := withIndexScope(chainedIndexScope(state.value), func() error {
+					return execPathExpr(node.child, next, buf, emit)
+				}); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := emit(next); err != nil {
+				return err
+			}
+		}
+		return nil
+	case opIterator:
+		if state.opaque {
+			return invalidPathIteratorError(state.value)
+		}
+		return withIndexScope(chainedIndexScope(state.value), func() error {
+			return execPathIterator(node, state, buf, emit)
+		})
+	case opPipe:
+		return execPathExpr(node.left, state, buf, func(next pathTraceState) error {
+			return execPathExpr(node.right, next, buf, emit)
+		})
+	case opSelect:
+		match, err := pathsFilterMatch(node.child, state.value)
+		if err != nil {
+			return err
+		}
+		if match {
+			return emit(state)
+		}
+		return nil
+	case opGenerator:
+		for _, elem := range node.elems {
+			if err := execPathExpr(elem, state, buf, emit); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return execMulti(node, state.value, nil, func(out []byte) error {
+			return emit(pathTraceState{
+				value:  cloneExecBytes(out),
+				frame:  state.frame,
+				opaque: true,
+			})
+		})
+	}
+}
+
+func execPathIterator(node *op, state pathTraceState, buf []byte, emit func(pathTraceState) error) error {
+	s := scanner{data: state.value}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return nil
+	}
+
+	switch s.data[s.pos] {
+	case '[':
+		var iterErr error
+		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
+			next := pathTraceState{
+				value: state.value[elemStart:elemEnd],
+				frame: &pathFrame{
+					parent: state.frame,
+					kind:   pathStepNumber,
+					index:  index,
+				},
+			}
+			if node.child != nil {
+				iterErr = execPathExpr(node.child, next, buf, emit)
+			} else {
+				iterErr = emit(next)
+			}
+			return iterErr == nil
+		})
+		return iterErr
+	case '{':
+		var iterErr error
+		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
+			next := pathTraceState{
+				value: state.value[valueStart:valueEnd],
+				frame: &pathFrame{
+					parent: state.frame,
+					kind:   pathStepString,
+					rawKey: key,
+				},
+			}
+			if node.child != nil {
+				iterErr = execPathExpr(node.child, next, buf, emit)
+			} else {
+				iterErr = emit(next)
+			}
+			return iterErr == nil
+		})
+		return iterErr
+	default:
+		return nil
+	}
+}
+
 func execPaths(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	return execPathsValue(node.child, trimWhitespace(input), nil, buf, fn)
 }
@@ -3500,6 +3864,103 @@ func execGetPathStep(current, step []byte) ([]byte, error) {
 	}
 
 	return nil, getpathAccessError(current, step)
+}
+
+func pathFieldTraceValue(current []byte, field string) []byte {
+	cs := scanner{data: current}
+	cs.skipWhitespace()
+	if cs.pos < len(cs.data) && cs.data[cs.pos] == '{' {
+		vs, ve := cs.findFieldStr(field)
+		if vs != -1 {
+			return current[vs:ve]
+		}
+	}
+	return bNull
+}
+
+func pathIndexTraceValue(current []byte, index int) []byte {
+	cs := scanner{data: current}
+	cs.skipWhitespace()
+	if cs.pos >= len(cs.data) || cs.data[cs.pos] != '[' {
+		return bNull
+	}
+	idx := index
+	if idx < 0 {
+		idx = cs.arrayLen() + idx
+		if idx < 0 {
+			return bNull
+		}
+	}
+	var result []byte
+	cs.arrayIter(func(i int, elemStart, elemEnd int) bool {
+		if i == idx {
+			result = current[elemStart:elemEnd]
+			return false
+		}
+		return true
+	})
+	if result == nil {
+		return bNull
+	}
+	return result
+}
+
+func pathTraceDynamicIndex(state pathTraceState, key []byte) (pathTraceState, error) {
+	key = trimWhitespace(key)
+	ks := scanner{data: key}
+	ks.skipWhitespace()
+	if ks.pos < len(ks.data) && ks.data[ks.pos] == '"' {
+		rawKey := ks.readString()
+		return pathTraceState{
+			value: pathFieldTraceValue(state.value, string(rawKey)),
+			frame: &pathFrame{
+				parent: state.frame,
+				kind:   pathStepString,
+				rawKey: rawKey,
+			},
+		}, nil
+	}
+	if f, ok := parseJSONFloat(key); ok {
+		idx := int(f)
+		return pathTraceState{
+			value: pathIndexTraceValue(state.value, idx),
+			frame: &pathFrame{
+				parent: state.frame,
+				kind:   pathStepNumber,
+				index:  idx,
+			},
+		}, nil
+	}
+	return pathTraceState{}, fmt.Errorf("Invalid path expression with result %s", string(trimWhitespace(key)))
+}
+
+func invalidPathResultError(value []byte) error {
+	return fmt.Errorf("Invalid path expression with result %s", string(trimWhitespace(value)))
+}
+
+func invalidPathFieldError(value []byte, field string) error {
+	return fmt.Errorf("Invalid path expression near attempt to access element %q of %s", field, string(trimWhitespace(value)))
+}
+
+func invalidPathIndexError(value []byte, index int) error {
+	return fmt.Errorf("Invalid path expression near attempt to access element %d of %s", index, string(trimWhitespace(value)))
+}
+
+func invalidPathDynamicIndexError(value, key []byte) error {
+	key = trimWhitespace(key)
+	ks := scanner{data: key}
+	ks.skipWhitespace()
+	if ks.pos < len(ks.data) && ks.data[ks.pos] == '"' {
+		return invalidPathFieldError(value, string(ks.readString()))
+	}
+	if f, ok := parseJSONFloat(key); ok {
+		return invalidPathIndexError(value, int(f))
+	}
+	return fmt.Errorf("Invalid path expression near attempt to access element %s of %s", string(trimWhitespace(key)), string(trimWhitespace(value)))
+}
+
+func invalidPathIteratorError(value []byte) error {
+	return fmt.Errorf("Invalid path expression near attempt to iterate through %s", string(trimWhitespace(value)))
 }
 
 func getpathAccessError(current, step []byte) error {
@@ -5865,6 +6326,43 @@ func tryScopeActive() bool {
 	return active
 }
 
+func currentIndexScope() []byte {
+	gid := currentGID()
+	indexScopeMu.Lock()
+	stack := indexScopeByGID[gid]
+	var scope []byte
+	if len(stack) > 0 {
+		scope = stack[len(stack)-1]
+	}
+	indexScopeMu.Unlock()
+	return scope
+}
+
+func chainedIndexScope(input []byte) []byte {
+	if scope := currentIndexScope(); scope != nil {
+		return scope
+	}
+	return input
+}
+
+func withIndexScope(scope []byte, fn func() error) error {
+	gid := currentGID()
+	indexScopeMu.Lock()
+	indexScopeByGID[gid] = append(indexScopeByGID[gid], scope)
+	indexScopeMu.Unlock()
+	defer func() {
+		indexScopeMu.Lock()
+		stack := indexScopeByGID[gid]
+		if len(stack) <= 1 {
+			delete(indexScopeByGID, gid)
+		} else {
+			indexScopeByGID[gid] = stack[:len(stack)-1]
+		}
+		indexScopeMu.Unlock()
+	}()
+	return fn()
+}
+
 func currentGID() uint64 {
 	var buf [64]byte
 	n := runtime.Stack(buf[:], false)
@@ -5910,6 +6408,10 @@ func fieldAccessError(input []byte, field string) error {
 
 func indexAccessError(input []byte, index int) error {
 	return fmt.Errorf("Cannot index %s with number %d", jsonTypeName(input), index)
+}
+
+func dynamicIndexNumberAccessError(input []byte) error {
+	return fmt.Errorf("Cannot index %s with number", jsonTypeName(input))
 }
 
 // appendJSONStringContent appends decoded bytes re-encoded as JSON string content

@@ -19,6 +19,7 @@ const (
 	opVar                          // $x
 	opReduce                       // reduce gen as $x (init; update)
 	opIndex                        // .[0], .[-1]
+	opIndexExpr                    // .[expr] dynamic index/key expression
 	opIterator                     // .[]
 	opConstruct                    // {name, a: .foo}
 	opArrayConstruct               // [.foo, .bar]
@@ -61,6 +62,7 @@ const (
 	opRtrim                        // rtrim
 	opLtrimStr                     // ltrimstr("s")
 	opRtrimStr                     // rtrimstr("s")
+	opPath                         // path(expr)
 	opKeys                         // keys
 	opKeysUnsorted                 // keys_unsorted
 	opPaths                        // paths / paths(filter)
@@ -667,6 +669,13 @@ func parseAtom(s string) (*op, string, error) {
 	}
 	if strings.HasPrefix(s, "keys_unsorted") && (len(s) == 13 || !isIdentChar(s[13])) {
 		return &op{typ: opKeysUnsorted}, s[13:], nil
+	}
+	if strings.HasPrefix(s, "path(") {
+		node, rest, err := parseUnaryExprBuiltin(s[5:], opPath)
+		if err != nil {
+			return nil, rest, err
+		}
+		return applyPostfixPipe(node, rest)
 	}
 	if strings.HasPrefix(s, "paths") && (len(s) == 5 || !isIdentChar(s[5])) {
 		rest := strings.TrimSpace(s[5:])
@@ -1410,7 +1419,7 @@ func parseDotExpr(s string) (*op, string, error) {
 	}
 
 	// Identity: just "." followed by end, whitespace, pipe, comma, paren, or @format
-	if s == "" || s[0] == ' ' || s[0] == '\t' || s[0] == '\n' || s[0] == '\r' || s[0] == '|' || s[0] == ',' || s[0] == ';' || s[0] == ')' || s[0] == '}' || s[0] == ']' || s[0] == '=' || s[0] == '!' || s[0] == '/' {
+	if s == "" || s[0] == ' ' || s[0] == '\t' || s[0] == '\n' || s[0] == '\r' || s[0] == '|' || s[0] == ',' || s[0] == ';' || s[0] == ')' || s[0] == '}' || s[0] == ']' || s[0] == '=' || s[0] == '!' || s[0] == '<' || s[0] == '>' || s[0] == '/' {
 		return &op{typ: opIdentity}, s, nil
 	}
 
@@ -1789,6 +1798,31 @@ func finalizeBracketNode(node *op, rest string) (*op, string, error) {
 	return node, remaining, nil
 }
 
+func applyPostfixPipe(node *op, rest string) (*op, string, error) {
+	for {
+		rest = strings.TrimSpace(rest)
+		if len(rest) > 0 && rest[0] == '[' {
+			suffix, remaining, err := parseBracketExpr(rest)
+			if err != nil {
+				return nil, remaining, err
+			}
+			node = &op{typ: opPipe, left: node, right: suffix}
+			rest = remaining
+			continue
+		}
+		if len(rest) > 1 && rest[0] == '.' && isIdentStart(rest[1]) {
+			suffix, remaining, err := parseFieldChain(rest[1:])
+			if err != nil {
+				return nil, remaining, err
+			}
+			node = &op{typ: opPipe, left: node, right: suffix}
+			rest = remaining
+			continue
+		}
+		return node, rest, nil
+	}
+}
+
 func finalizeBracketMulti(nodes []*op, rest string) (*op, string, error) {
 	optional, child, remaining, err := parseBracketSuffix(rest)
 	if err != nil {
@@ -1905,10 +1939,10 @@ func parseBracketExpr(s string) (*op, string, error) {
 	rest = rest[1:] // skip ']'
 
 	idx, ok := literalIntValue(startExpr)
-	if !ok {
-		return nil, rest, fmt.Errorf("expected integer array index")
+	if ok {
+		return finalizeBracketNode(&op{typ: opIndex, index: idx}, rest)
 	}
-	return finalizeBracketNode(&op{typ: opIndex, index: idx}, rest)
+	return finalizeBracketNode(&op{typ: opIndexExpr, left: startExpr}, rest)
 }
 
 // parseInt parses a non-negative integer from the start of s.
@@ -1935,7 +1969,7 @@ func hasMultiOutput(n *op) bool {
 		return false
 	}
 	switch n.typ {
-	case opIterator, opRange, opScan, opGenerator, opPaths, opReduce:
+	case opIterator, opRange, opScan, opGenerator, opPaths, opReduce, opPath:
 		return true
 
 	// Ops that cap or reduce to at most one output regardless of their children:

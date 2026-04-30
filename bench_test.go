@@ -206,12 +206,12 @@ func benchGojqIter(b *testing.B, query string, input []byte) {
 
 // --- fastjq benchmarks ---
 
-func BenchmarkFastjq_Small_Del(b *testing.B)    { benchFastjqObj(b, "del(.field_2)", smallJSON) }
-func BenchmarkFastjq_Medium_Del(b *testing.B)   { benchFastjqObj(b, "del(.field_5)", mediumJSON) }
-func BenchmarkFastjq_Large_Del(b *testing.B)    { benchFastjqObj(b, "del(.field_50)", largeJSON) }
-func BenchmarkFastjq_Small_Field(b *testing.B)  { benchFastjqObj(b, ".field_2", smallJSON) }
-func BenchmarkFastjq_Large_Field(b *testing.B)  { benchFastjqObj(b, ".field_50", largeJSON) }
-func BenchmarkFastjq_Small_Index(b *testing.B)  { benchFastjqObj(b, ".[2]", []byte(`[1,2,3,4,5]`)) }
+func BenchmarkFastjq_Small_Del(b *testing.B)   { benchFastjqObj(b, "del(.field_2)", smallJSON) }
+func BenchmarkFastjq_Medium_Del(b *testing.B)  { benchFastjqObj(b, "del(.field_5)", mediumJSON) }
+func BenchmarkFastjq_Large_Del(b *testing.B)   { benchFastjqObj(b, "del(.field_50)", largeJSON) }
+func BenchmarkFastjq_Small_Field(b *testing.B) { benchFastjqObj(b, ".field_2", smallJSON) }
+func BenchmarkFastjq_Large_Field(b *testing.B) { benchFastjqObj(b, ".field_50", largeJSON) }
+func BenchmarkFastjq_Small_Index(b *testing.B) { benchFastjqObj(b, ".[2]", []byte(`[1,2,3,4,5]`)) }
 func BenchmarkFastjq_Small_ArrayDel(b *testing.B) {
 	benchFastjqObj(b, "del(.[1], .[3])", []byte(`[1,2,3,4,5]`))
 }
@@ -281,6 +281,9 @@ func BenchmarkFastjq_Small_Keys(b *testing.B) {
 }
 func BenchmarkFastjq_Small_Paths(b *testing.B) {
 	benchFastjqFunc(b, `paths`, smallJSON)
+}
+func BenchmarkFastjq_Small_Path(b *testing.B) {
+	benchFastjqObj(b, `path(.field_0)`, smallJSON)
 }
 func BenchmarkFastjq_Small_GetPath(b *testing.B) {
 	benchFastjqObj(b, `getpath(["field_0"])`, smallJSON)
@@ -435,8 +438,8 @@ func BenchmarkGojq_Large_Del(b *testing.B)  { benchGojqLargeRot(b, "del(.field_5
 func BenchmarkGojq_Small_Field(b *testing.B) {
 	benchGojqObj(b, ".field_2", smallJSON)
 }
-func BenchmarkGojq_Large_Field(b *testing.B)  { benchGojqLargeRot(b, ".field_50") }
-func BenchmarkGojq_Small_Index(b *testing.B)  { benchGojqObj(b, ".[2]", []byte(`[1,2,3,4,5]`)) }
+func BenchmarkGojq_Large_Field(b *testing.B) { benchGojqLargeRot(b, ".field_50") }
+func BenchmarkGojq_Small_Index(b *testing.B) { benchGojqObj(b, ".[2]", []byte(`[1,2,3,4,5]`)) }
 func BenchmarkGojq_Small_ArrayDel(b *testing.B) {
 	benchGojqObj(b, "del(.[1], .[3])", []byte(`[1,2,3,4,5]`))
 }
@@ -477,18 +480,18 @@ func BenchmarkGojq_Small_SelectOr(b *testing.B) {
 func BenchmarkGojq_Small_Has(b *testing.B) {
 	benchGojqObj(b, `select(has("field_2"))`, smallJSON)
 }
-func BenchmarkGojq_Large_Has(b *testing.B)  { benchGojqLargeRot(b, `select(has("field_199"))`) }
+func BenchmarkGojq_Large_Has(b *testing.B) { benchGojqLargeRot(b, `select(has("field_199"))`) }
 func BenchmarkGojq_Small_IfThenElse(b *testing.B) {
 	benchGojqObj(b, `if .field_0 == "xxxxxxxxxx" then .field_0 else "default" end`, smallJSON)
 }
 func BenchmarkGojq_Small_Length(b *testing.B) {
 	benchGojqObj(b, `.field_0 | length`, smallJSON)
 }
-func BenchmarkGojq_Large_Length(b *testing.B)       { benchGojqLargeRot(b, `length`) }
-func BenchmarkGojq_Small_Map(b *testing.B)          { benchGojqObj(b, `map(.name)`, smallArray) }
-func BenchmarkGojq_Large_Map(b *testing.B)          { benchGojqObj(b, `map(.name)`, largeArray) }
-func BenchmarkGojq_Small_ToEntries(b *testing.B)    { benchGojqObj(b, `to_entries`, smallJSON) }
-func BenchmarkGojq_Large_ToEntries(b *testing.B)    { benchGojqLargeRot(b, `to_entries`) }
+func BenchmarkGojq_Large_Length(b *testing.B)    { benchGojqLargeRot(b, `length`) }
+func BenchmarkGojq_Small_Map(b *testing.B)       { benchGojqObj(b, `map(.name)`, smallArray) }
+func BenchmarkGojq_Large_Map(b *testing.B)       { benchGojqObj(b, `map(.name)`, largeArray) }
+func BenchmarkGojq_Small_ToEntries(b *testing.B) { benchGojqObj(b, `to_entries`, smallJSON) }
+func BenchmarkGojq_Large_ToEntries(b *testing.B) { benchGojqLargeRot(b, `to_entries`) }
 func BenchmarkGojq_Small_KeysUnsorted(b *testing.B) {
 	benchGojqObj(b, `keys`, smallJSON) // gojq: keys_unsorted not supported
 }
@@ -497,6 +500,9 @@ func BenchmarkGojq_Small_Keys(b *testing.B) {
 }
 func BenchmarkGojq_Small_Paths(b *testing.B) {
 	benchGojqIter(b, `paths`, smallJSON)
+}
+func BenchmarkGojq_Small_Path(b *testing.B) {
+	benchGojqObj(b, `path(.field_0)`, smallJSON)
 }
 func BenchmarkGojq_Small_GetPath(b *testing.B) {
 	benchGojqObj(b, `getpath(["field_0"])`, smallJSON)

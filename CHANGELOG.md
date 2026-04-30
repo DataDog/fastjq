@@ -13,15 +13,16 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 - Added jq-style multi-index array access and deletion forms such as `.[4,2]` and `del(.[1,2])`.
 - Added jq-compatible builtins `abs`, `trim`, `ltrim`, `rtrim`, `toboolean`, `keys`, and `skip`.
 - Added jq-compatible `paths` and `paths(filter)` for non-root structural path enumeration.
+- Added jq-compatible `path(expr)` for symbolic path extraction across direct field, index, dynamic-index, iterator, `select`, and pipe compositions.
 - Added jq-compatible `getpath(path)` with variadic path-output support and `$var` path arguments.
 - Added jq-compatible `setpath(path; value)` and `delpaths(paths)` for direct path-array updates.
-- Added benchmark coverage for the new public surface: variable binding, `abs`, `toboolean`, `trim`, `ltrim`, `rtrim`, `keys`, `skip`, `paths`, `getpath`, `setpath`, and `delpaths`.
+- Added benchmark coverage for the new public surface: variable binding, `abs`, `toboolean`, `trim`, `ltrim`, `rtrim`, `keys`, `skip`, `paths`, `path`, `getpath`, `setpath`, and `delpaths`.
 - Added jq-style unary negation (`-expr`) for non-literal expressions such as `-$x`.
 - Added numeric-expression slice bounds and chained slice parsing, including forms like `.[1.2:3.5]`, `.[:rindex("x")]`, and `.[3:3][1:]`.
 
 ### Fixed
 
-- Moved the official jq-suite branch coverage from `356/751` passing to `433/751` passing while keeping `0` active jq-suite failures.
+- Moved the official jq-suite branch coverage from `356/751` passing to `448/751` passing while keeping `0` active jq-suite failures.
 - Removed the blanket jq-suite skip for variable binding syntax so implemented `as $x` cases now run instead of being hidden behind harness filters.
 - Fixed variable-binding parsing inside array-construction generator contexts such as `1 as $x | [$x,$x,$x as $x | $x]`.
 - Fixed jq-suite structural comparison for JSON outputs that differ only by numerically equivalent number spellings inside arrays or objects (for example `0.1` vs `1e-1`).
@@ -29,7 +30,10 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 - Fixed generator stream skipping for `skip(n; expr)`, including multi-count forms such as `skip(0,2,3,4; .[])` and jq-style negative-count errors.
 - Fixed optional slice behavior so `.[1:3]?` suppresses type errors without dropping jq's special `null` result case.
 - Fixed string slicing and unary-negation error previews to match jq with UTF-8-aware truncation and codepoint-based slice offsets.
+- Fixed direct bracket-expression scope so jq-style queries like `.foo[.baz]` and `.foo[.baz][.qux]` evaluate the bracket expression against the original postfix-chain input instead of the intermediate selected value.
+- Fixed dynamic numeric index edge cases to match jq: `.[nan]` now returns `null` for arrays/null input and dynamic-number errors now use jq's generic `Cannot index <type> with number` text.
 - Fixed jq-suite skip filtering so unsupported `path(...)` no longer accidentally suppresses implemented `getpath(...)` tests.
+- Fixed symbolic `path(...)` execution and unskipped the official jq path cases it now supports.
 - Fixed path-update error propagation so `try`/`catch` sees jq-style raw messages even when `setpath(...)` appears inside array/object construction.
 - Fixed `tojson | fromjson` depth-limit parity so 10,001-deep structures now reach jq's `"Exceeds depth limit for parsing"` error before stringify truncation kicks in.
 - Fixed `del(...)` argument flattening so jq-style grouped bracket selectors like `del(.[1,2])` delete multiple array indices instead of failing validation.
@@ -40,6 +44,7 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 - Bound values are copied into runtime environment frames so later pipeline stages can safely reference constructed values as well as input sub-slices.
 - `reduce` currently targets the high-yield jq form `reduce gen as $x (init; update)` and reuses the existing lexical binding frames rather than introducing a broader mutable-control runtime yet.
 - `paths` prioritizes jq-suite parity over the usual hot-path allocation target on this branch. The current structural walker allocates on its call path (`17 allocs/op` on the small benchmark) but still stays far below gojq for the same query.
+- `path(expr)` follows the same parity-first posture as the other path-family work on this branch: correctness against the official suite takes precedence over the usual hot-path allocation target.
 
 ### Benchmark results
 
