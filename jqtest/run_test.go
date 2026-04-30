@@ -42,16 +42,16 @@ const manTestLocalCache = "testdata/man.test"
 //
 // Official-suite baseline for this branch:
 //   - Total: 751
-//   - Skipped: 395
-//   - Attempted: 356
-//   - Passed: 356
+//   - Skipped: 346
+//   - Attempted: 405
+//   - Passed: 405
 //   - Failed: 0
 //
 // Skip families currently driving the branch:
 //   - reduce / foreach / label / break
 //   - path / paths / getpath / setpath / delpaths / leaf_paths
 //   - def
-//   - parser breadth gaps that fall through as compile-time skips
+//   - assignment/update syntax and remaining parser breadth gaps
 //
 // unsupportedOps lists functions/syntax that fastjq does not implement.
 // A test whose program contains any of these tokens is skipped — NOT counted

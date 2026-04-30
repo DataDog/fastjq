@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -124,6 +125,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return fn(append(buf, "true"...))
 		}
 		return fn(append(buf, "false"...))
+	case opNeg:
+		return execNeg(node, input, buf, fn)
 	case opLength:
 		return execLength(input, buf, fn)
 	case opAbs:
@@ -208,6 +211,12 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		result, err := execSlice(node, input, buf)
 		if err != nil {
 			return err
+		}
+		if result == nil {
+			return nil
+		}
+		if node.child != nil {
+			return execMulti(node.child, result, buf, fn)
 		}
 		return fn(result)
 	case opPlus:
@@ -756,6 +765,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			return bFalse, nil
 		}
 		return append(buf, "false"...), nil
+	case opNeg:
+		return execNegSingle(node, input, buf)
 	case opLength:
 		return execLengthSingle(input, buf)
 	case opAbs:
@@ -806,7 +817,20 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opIn:
 		return execIn(node, input, buf), nil
 	case opSlice:
-		return execSlice(node, input, buf)
+		result, err := execSlice(node, input, buf)
+		if err != nil {
+			return nil, err
+		}
+		if result == nil {
+			if buf == nil {
+				return bNull, nil
+			}
+			return append(buf, "null"...), nil
+		}
+		if node.child != nil {
+			return execSingle(node.child, result, buf)
+		}
+		return result, nil
 	case opPlus:
 		return execPlusSingle(node, input, buf)
 	case opFlatten:
@@ -1507,16 +1531,7 @@ func resolveDelSliceBounds(node *op, input []byte, length int) (start, end int, 
 		if !ok {
 			return 0, 0, fmt.Errorf("slice index must be a number")
 		}
-		start = int(f)
-		if start < 0 {
-			start += length
-		}
-		if start < 0 {
-			start = 0
-		}
-		if start > length {
-			start = length
-		}
+		start = resolveSliceBound(f, length, false)
 	}
 	if node.right != nil {
 		sv, e := execSingle(node.right, input, nil)
@@ -1527,16 +1542,7 @@ func resolveDelSliceBounds(node *op, input []byte, length int) (start, end int, 
 		if !ok {
 			return 0, 0, fmt.Errorf("slice index must be a number")
 		}
-		end = int(f)
-		if end < 0 {
-			end += length
-		}
-		if end < 0 {
-			end = 0
-		}
-		if end > length {
-			end = length
-		}
+		end = resolveSliceBound(f, length, true)
 	}
 	if start > end {
 		start = end
@@ -2446,11 +2452,18 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 			} else if s.data[p] == '\\' {
 				p += 2
 			} else {
-				p++
+				_, size := utf8.DecodeRune(s.data[p:])
+				if size < 1 {
+					size = 1
+				}
+				p += size
 			}
 			length++
 		}
 	default:
+		if node.optional && s.data[s.pos] != 'n' {
+			return nil, nil
+		}
 		return append(buf, "null"...), nil
 	}
 
@@ -2465,16 +2478,7 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("slice index must be a number")
 		}
-		start = int(f)
-		if start < 0 {
-			start += length
-		}
-		if start < 0 {
-			start = 0
-		}
-		if start > length {
-			start = length
-		}
+		start = resolveSliceBound(f, length, false)
 	}
 
 	// Resolve end bound
@@ -2488,16 +2492,7 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("slice index must be a number")
 		}
-		end = int(f)
-		if end < 0 {
-			end += length
-		}
-		if end < 0 {
-			end = 0
-		}
-		if end > length {
-			end = length
-		}
+		end = resolveSliceBound(f, length, true)
 	}
 	if start > end {
 		start = end
@@ -2531,7 +2526,11 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 			} else if s.data[s.pos] == '\\' {
 				s.pos += 2
 			} else {
-				s.pos++
+				_, size := utf8.DecodeRune(s.data[s.pos:])
+				if size < 1 {
+					size = 1
+				}
+				s.pos += size
 			}
 			if i >= start && i < end {
 				buf = append(buf, input[charStart:s.pos]...)
@@ -2541,6 +2540,69 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 		buf = append(buf, '"')
 	}
 	return buf, nil
+}
+
+func resolveSliceBound(f float64, length int, isEnd bool) int {
+	if math.IsNaN(f) {
+		if isEnd {
+			return length
+		}
+		return 0
+	}
+	if isEnd {
+		f = math.Ceil(f)
+	} else {
+		f = math.Floor(f)
+	}
+	idx := int(f)
+	if idx < 0 {
+		idx += length
+	}
+	if idx < 0 {
+		return 0
+	}
+	if idx > length {
+		return length
+	}
+	return idx
+}
+
+func execNeg(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	return execMulti(node.child, input, nil, func(value []byte) error {
+		result, err := negateJSONValue(value, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	})
+}
+
+func execNegSingle(node *op, input []byte, buf []byte) ([]byte, error) {
+	value, err := execSingle(node.child, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	return negateJSONValue(value, buf)
+}
+
+func negateJSONValue(value []byte, buf []byte) ([]byte, error) {
+	if f, ok := parseJSONFloat(value); ok {
+		return appendNumber(buf, -f), nil
+	}
+	raw := previewJSONValue(value)
+	return nil, fmt.Errorf("%s (%s) cannot be negated", jsonTypeName(value), raw)
+}
+
+func previewJSONValue(value []byte) string {
+	raw := string(trimWhitespace(value))
+	if len(raw) > 11 {
+		raw = raw[:11]
+		for len(raw) > 0 && !utf8.ValidString(raw) {
+			raw = raw[:len(raw)-1]
+		}
+		raw += "..."
+	}
+	return raw
 }
 
 // execPlus implements expr + expr: null identity, string concat, array concat, numeric add.

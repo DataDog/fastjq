@@ -29,6 +29,7 @@ const (
 	opAnd                          // expr and expr
 	opOr                           // expr or expr
 	opNot                          // not
+	opNeg                          // -expr
 	opEmpty                        // empty — produce zero outputs
 	opHas                          // has("key")
 	opIf                           // if cond then expr else expr end
@@ -422,10 +423,32 @@ func parseAddExpr(s string) (*op, string, error) {
 	return left, rest, nil
 }
 
-// parseMulExpr parses multiplicative expressions: expr * expr, expr / expr, expr % expr (left-associative).
+// parseUnaryExpr parses prefix unary operators such as -expr.
 // Delegates down to parseAtom.
+func parseUnaryExpr(s string) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) > 0 && s[0] == '-' {
+		if strings.HasPrefix(s, "-nan") && (len(s) == 4 || !isIdentChar(s[4])) {
+			return parseAtom(s)
+		}
+		if strings.HasPrefix(s, "-infinite") && (len(s) == 9 || !isIdentChar(s[9])) {
+			return parseAtom(s)
+		}
+		if len(s) == 1 || !isDigit(s[1]) {
+			right, rest, err := parseUnaryExpr(s[1:])
+			if err != nil {
+				return nil, rest, err
+			}
+			return &op{typ: opNeg, child: right}, rest, nil
+		}
+	}
+	return parseAtom(s)
+}
+
+// parseMulExpr parses multiplicative expressions: expr * expr, expr / expr, expr % expr (left-associative).
+// Delegates down to parseUnaryExpr.
 func parseMulExpr(s string) (*op, string, error) {
-	left, rest, err := parseAtom(s)
+	left, rest, err := parseUnaryExpr(s)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -442,7 +465,7 @@ func parseMulExpr(s string) (*op, string, error) {
 			break
 		}
 		rest = strings.TrimSpace(rest[1:])
-		right, remainder, err := parseAtom(rest)
+		right, remainder, err := parseUnaryExpr(rest)
 		if err != nil {
 			return nil, remainder, err
 		}
@@ -1604,36 +1627,79 @@ func parseSelect(s string) (*op, string, error) {
 	return &op{typ: opSelect, child: cond}, rest, nil
 }
 
-// parseOptionalIntLit parses an optional signed integer literal from s,
-// returning (expr, rest) where expr is nil if no integer was found.
-// Used by parseBracketExpr for slice bounds.
-func parseOptionalIntLit(s string) (*op, string) {
-	neg := false
-	t := s
-	if len(t) > 0 && t[0] == '-' {
-		neg = true
-		t = t[1:]
+// parseOptionalSliceBound parses an optional slice bound expression from s,
+// returning (expr, rest) where expr is nil if the bound is omitted.
+func parseOptionalSliceBound(s string) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 || s[0] == ']' {
+		return nil, s, nil
 	}
-	if len(t) == 0 || !isDigit(t[0]) {
-		return nil, s // no integer
+	return parseExpr(s)
+}
+
+func finalizeBracketNode(node *op, rest string) (*op, string, error) {
+	if len(rest) > 0 && rest[0] == '?' {
+		node.optional = true
+		rest = rest[1:]
 	}
-	idx, rest, _ := parseInt(t)
-	if neg {
-		idx = -idx
+	if len(rest) > 0 && rest[0] == '.' {
+		if len(rest) > 1 && isIdentStart(rest[1]) {
+			child, remaining, err := parseFieldChain(rest[1:])
+			if err != nil {
+				return nil, rest, err
+			}
+			node.child = child
+			rest = remaining
+		} else if len(rest) > 1 && rest[1] == '[' {
+			child, remaining, err := parseBracketExpr(rest[1:])
+			if err != nil {
+				return nil, rest, err
+			}
+			node.child = child
+			rest = remaining
+		}
+	} else if len(rest) > 0 && rest[0] == '[' {
+		child, remaining, err := parseBracketExpr(rest)
+		if err != nil {
+			return nil, rest, err
+		}
+		node.child = child
+		rest = remaining
 	}
-	return &op{typ: opLiteral, literal: []byte(strconv.Itoa(idx))}, rest
+	return node, rest, nil
+}
+
+func literalIntValue(node *op) (int, bool) {
+	if node == nil || node.typ != opLiteral {
+		return 0, false
+	}
+	s := string(node.literal)
+	if s == "" {
+		return 0, false
+	}
+	if strings.ContainsAny(s, ".eE") {
+		return 0, false
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // parseSliceEnd parses the optional end bound and closing ']' of a slice.
 // s starts after the ':'. Returns the opSlice node.
 func parseSliceEnd(s string, startExpr *op) (*op, string, error) {
 	s = strings.TrimSpace(s)
-	endExpr, rest := parseOptionalIntLit(s)
+	endExpr, rest, err := parseOptionalSliceBound(s)
+	if err != nil {
+		return nil, rest, err
+	}
 	rest = strings.TrimSpace(rest)
 	if len(rest) == 0 || rest[0] != ']' {
 		return nil, rest, fmt.Errorf("expected ']' after slice")
 	}
-	return &op{typ: opSlice, left: startExpr, right: endExpr}, rest[1:], nil
+	return finalizeBracketNode(&op{typ: opSlice, left: startExpr, right: endExpr}, rest[1:])
 }
 
 // parseBracketExpr parses [N] (index), [] (iterator), or [N:M] (slice).
@@ -1659,24 +1725,15 @@ func parseBracketExpr(s string) (*op, string, error) {
 		return parseSliceEnd(s[1:], nil)
 	}
 
-	// .[N] or .[-N] or .[N:M] — index or slice with start
-	neg := false
-	if len(s) > 0 && s[0] == '-' {
-		neg = true
-		s = s[1:]
-	}
-	idx, rest, err := parseInt(s)
+	// .[expr] or .[expr:M] or .[expr:] — index or slice with start
+	startExpr, rest, err := parseExpr(s)
 	if err != nil {
-		return nil, s, fmt.Errorf("expected number in array index: %w", err)
-	}
-	if neg {
-		idx = -idx
+		return nil, s, err
 	}
 	rest = strings.TrimSpace(rest)
 
-	// .[N:M] or .[N:] — slice
+	// .[expr:M] or .[expr:] — slice
 	if len(rest) > 0 && rest[0] == ':' {
-		startExpr := &op{typ: opLiteral, literal: []byte(strconv.Itoa(idx))}
 		return parseSliceEnd(rest[1:], startExpr)
 	}
 
@@ -1685,41 +1742,11 @@ func parseBracketExpr(s string) (*op, string, error) {
 	}
 	rest = rest[1:] // skip ']'
 
-	node := &op{typ: opIndex, index: idx}
-
-	// Check for optional marker
-	if len(rest) > 0 && rest[0] == '?' {
-		node.optional = true
-		rest = rest[1:]
+	idx, ok := literalIntValue(startExpr)
+	if !ok {
+		return nil, rest, fmt.Errorf("expected integer array index")
 	}
-
-	// Check for further chaining: .[0].name or .[0][1]
-	if len(rest) > 0 && rest[0] == '.' {
-		if len(rest) > 1 && isIdentStart(rest[1]) {
-			child, remaining, err := parseFieldChain(rest[1:])
-			if err != nil {
-				return nil, rest, err
-			}
-			node.child = child
-			rest = remaining
-		} else if len(rest) > 1 && rest[1] == '[' {
-			child, remaining, err := parseBracketExpr(rest[1:])
-			if err != nil {
-				return nil, rest, err
-			}
-			node.child = child
-			rest = remaining
-		}
-	} else if len(rest) > 0 && rest[0] == '[' {
-		child, remaining, err := parseBracketExpr(rest)
-		if err != nil {
-			return nil, rest, err
-		}
-		node.child = child
-		rest = remaining
-	}
-
-	return node, rest, nil
+	return finalizeBracketNode(&op{typ: opIndex, index: idx}, rest)
 }
 
 // parseInt parses a non-negative integer from the start of s.

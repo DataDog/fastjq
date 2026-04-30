@@ -148,11 +148,11 @@ fastjq is validated against two official jq test files (`go test ./jqtest/`).
 
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
-| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 274 | 247 | **247 (100.0%)** | 0 |
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 258 | 263 | **263 (100.0%)** | 0 |
 | [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 88 | 142 | **142 (100.0%)** | 0 |
-| **Combined** | **751** | **362** | **389** | **389 (100.0%)** | **0** |
+| **Combined** | **751** | **346** | **405** | **405 (100.0%)** | **0** |
 
-All currently attempted official jq tests pass on this branch, and the branch now clears a majority of the full official suite. The remaining skipped tests are concentrated in still-unimplemented families such as recursive descent (`..`), path operations, `reduce`/`foreach`, user-defined functions (`def`), assignment/update syntax, date functions, `env`, and other items listed in the [Limitations](#limitations) section.
+All currently attempted official jq tests pass on this branch, and the branch now clears a majority of the full official suite. Recent parser-breadth work also removed a chunk of compile skips around unary minus and dynamic slice bounds. The remaining skipped tests are concentrated in still-unimplemented families such as recursive descent (`..`), path operations, `reduce`/`foreach`, user-defined functions (`def`), assignment/update syntax, date functions, `env`, and other items listed in the [Limitations](#limitations) section.
 
 ## Limitations
 

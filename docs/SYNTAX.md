@@ -345,17 +345,18 @@ For strings, positions are Unicode codepoint offsets (not byte offsets), matchin
 
 | Syntax | Description | Example Input | Example Output |
 |--------|-------------|---------------|----------------|
-| `.[n:m]` | Array/string slice from index n to m (exclusive) | `[0,1,2,3,4]` with `.[1:4]` | `[1,2,3]` |
-| `.[:m]` | Slice from start to m | `"hello world"` with `.[:5]` | `"hello"` |
+| `.[n:m]` | Array/string slice from index n to m (exclusive); bounds may be numeric expressions | `[0,1,2,3,4]` with `.[1.2:3.5]` | `[1,2,3]` |
+| `.[:m]` | Slice from start to m | `"hello world"` with `.[:rindex(" ")]` | `"hello"` |
 | `.[n:]` | Slice from n to end | `[0,1,2,3,4]` with `.[2:]` | `[2,3,4]` |
 | `.[:]` | Full slice (identity for arrays/strings) | `[1,2,3]` | `[1,2,3]` |
 | `.[-n:]` | Last n elements | `[0,1,2,3,4]` with `.[-2:]` | `[3,4]` |
+| `.[n:m]?` | Optional slice: suppress type errors for non-sliceable values while preserving jq's `null` result case | `[1,null]` with `[.[] | .[1:3]?]` | `[null]` |
 | `"a" + "b"` | String concatenation | any | `"ab"` |
 | `[1] + [2,3]` | Array concatenation | any | `[1,2,3]` |
 | `.a + .b` | Field concatenation | `{"a":"foo","b":"bar"}` | `"foobar"` |
 | `null + x` / `x + null` | null is identity for `+` | any | `x` |
 
-Slicing uses **logical characters** for strings: each escape sequence (`\n`, `\uXXXX`, etc.) counts as one character. Negative indices count from the end. Indices are clamped to valid range.
+Slicing uses **logical characters** for strings: each escape sequence (`\n`, `\uXXXX`, etc.) and each UTF-8 codepoint counts as one character. Float bounds follow jq's rules (start floors, end ceils, `nan` becomes start `0` / end `length`). Negative indices count from the end. Indices are clamped to valid range.
 
 `+` supports: strings (concat), arrays (concat), numbers (sum), objects (merge). Null is the identity element. For object merge, right-hand keys win on conflict: `{"a":1} + {"a":2}` = `{"a":2}`.
 

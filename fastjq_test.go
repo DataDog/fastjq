@@ -2109,6 +2109,15 @@ func TestSliceArrayNegFrom(t *testing.T) { assertQuery(t, ".[-2:]", `[0,1,2,3,4]
 func TestSliceArrayNegTo(t *testing.T)   { assertQuery(t, ".[:-1]", `[0,1,2,3,4]`, `[0,1,2,3]`) }
 func TestSliceArrayBothNeg(t *testing.T) { assertQuery(t, ".[-3:-1]", `[0,1,2,3,4]`, `[2,3]`) }
 func TestSliceArrayEmpty(t *testing.T)   { assertQuery(t, ".[3:3]", `[0,1,2,3,4]`, `[]`) }
+func TestSliceArrayFloatBounds(t *testing.T) {
+	assertQuery(t, ".[1.7:3.5]", `[0,1,2,3,4]`, `[1,2,3]`)
+}
+func TestSliceOptional(t *testing.T) {
+	assertNoOutput(t, ".[1:3]?", `123`)
+}
+func TestSliceChained(t *testing.T) {
+	assertQuery(t, ".[3:3][1:]", `[0,1,2,3,4]`, `[]`)
+}
 func TestSliceString(t *testing.T)       { assertQuery(t, ".[0:5]", `"hello world"`, `"hello"`) }
 func TestSliceStringFrom(t *testing.T)   { assertQuery(t, ".[6:]", `"hello world"`, `"world"`) }
 func TestSliceStringNeg(t *testing.T)    { assertQuery(t, ".[-5:]", `"hello world"`, `"world"`) }
@@ -2138,6 +2147,10 @@ func TestPlusInPipe(t *testing.T) {
 func TestPlusPrecedence(t *testing.T) {
 	// + binds tighter than ==: (.a + .b) == 3
 	assertQuery(t, `.a + .b == 3`, `{"a":1,"b":2}`, `true`)
+}
+
+func TestUnaryMinusVar(t *testing.T) {
+	assertQuery(t, `1 + 2 as $x | -$x`, `null`, `-3`)
 }
 
 // --- add ---
