@@ -17,6 +17,7 @@ const (
 	opPipe                         // expr | expr
 	opBind                         // expr as $x | body
 	opVar                          // $x
+	opReduce                       // reduce gen as $x (init; update)
 	opIndex                        // .[0], .[-1]
 	opIterator                     // .[]
 	opConstruct                    // {name, a: .foo}
@@ -248,17 +249,18 @@ func parseBindExpr(s string) (*op, string, error) {
 	if !(strings.HasPrefix(rest, "as") && (len(rest) == 2 || !isIdentChar(rest[2]))) {
 		return left, rest, nil
 	}
+	asRest := rest
 	rest = strings.TrimSpace(rest[2:])
 	if len(rest) == 0 || rest[0] != '$' {
-		return nil, rest, fmt.Errorf("expected $name after as")
+		return left, asRest, nil
 	}
 	name, remaining := readIdentifier(rest[1:])
 	if name == "" {
-		return nil, rest, fmt.Errorf("expected variable name after as $")
+		return left, asRest, nil
 	}
 	remaining = strings.TrimSpace(remaining)
 	if len(remaining) == 0 || remaining[0] != '|' {
-		return nil, remaining, fmt.Errorf("expected '|' after as $%s", name)
+		return left, asRest, nil
 	}
 	body, rest, err := parsePipeExpr(remaining[1:])
 	if err != nil {
@@ -697,6 +699,9 @@ func parseAtom(s string) (*op, string, error) {
 	}
 	if strings.HasPrefix(s, "delpaths(") {
 		return parseUnaryExprBuiltin(s[9:], opDelPaths)
+	}
+	if strings.HasPrefix(s, "reduce") && (len(s) == 6 || !isIdentChar(s[6])) {
+		return parseReduce(s[6:])
 	}
 
 	// any / all — with optional (expr) argument
@@ -1279,6 +1284,16 @@ func validateVars(node *op, scope map[string]bool) error {
 		next := cloneVarScope(scope)
 		next[node.name] = true
 		return validateVars(node.right, next)
+	case opReduce:
+		if err := validateVars(node.left, scope); err != nil {
+			return err
+		}
+		if err := validateVars(node.right, scope); err != nil {
+			return err
+		}
+		next := cloneVarScope(scope)
+		next[node.name] = true
+		return validateVars(node.child, next)
 	case opPipe, opCompare, opAlternative, opAnd, opOr, opPlus, opMinus, opMul, opDiv, opMod, opPow:
 		if err := validateVars(node.left, scope); err != nil {
 			return err
@@ -1343,6 +1358,47 @@ func cloneVarScope(scope map[string]bool) map[string]bool {
 	return out
 }
 
+func parseReduce(s string) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	gen, rest, err := parseGeneratorExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if !(strings.HasPrefix(rest, "as") && (len(rest) == 2 || !isIdentChar(rest[2]))) {
+		return nil, rest, fmt.Errorf("expected 'as $name' in reduce")
+	}
+	rest = strings.TrimSpace(rest[2:])
+	if len(rest) == 0 || rest[0] != '$' {
+		return nil, rest, fmt.Errorf("expected $name after as in reduce")
+	}
+	name, rest := readIdentifier(rest[1:])
+	if name == "" {
+		return nil, rest, fmt.Errorf("expected variable name after as $ in reduce")
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != '(' {
+		return nil, rest, fmt.Errorf("expected '(' after reduce as $%s", name)
+	}
+	initExpr, rest, err := parseGeneratorExpr(rest[1:])
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ';' {
+		return nil, rest, fmt.Errorf("expected ';' in reduce")
+	}
+	updateExpr, rest, err := parseGeneratorExpr(strings.TrimSpace(rest[1:]))
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after reduce")
+	}
+	return &op{typ: opReduce, name: name, left: gen, right: initExpr, child: updateExpr}, rest[1:], nil
+}
+
 // parseDotExpr parses identity (.) or field access (.foo, .foo.bar),
 // array index (.[0], .[-1]), or iterator (.[]).
 func parseDotExpr(s string) (*op, string, error) {
@@ -1354,7 +1410,7 @@ func parseDotExpr(s string) (*op, string, error) {
 	}
 
 	// Identity: just "." followed by end, whitespace, pipe, comma, paren, or @format
-	if s == "" || s[0] == ' ' || s[0] == '\t' || s[0] == '\n' || s[0] == '\r' || s[0] == '|' || s[0] == ',' || s[0] == ')' || s[0] == '}' || s[0] == ']' || s[0] == '=' || s[0] == '!' || s[0] == '/' {
+	if s == "" || s[0] == ' ' || s[0] == '\t' || s[0] == '\n' || s[0] == '\r' || s[0] == '|' || s[0] == ',' || s[0] == ';' || s[0] == ')' || s[0] == '}' || s[0] == ']' || s[0] == '=' || s[0] == '!' || s[0] == '/' {
 		return &op{typ: opIdentity}, s, nil
 	}
 
@@ -1632,7 +1688,11 @@ func parseDel(s string) (*op, string, error) {
 		if err != nil {
 			return nil, rest, fmt.Errorf("in del(): %w", err)
 		}
-		fields = append(fields, *expr)
+		if expr.typ == opGenerator {
+			fields = append(fields, flattenDeleteFields(expr.elems)...)
+		} else {
+			fields = append(fields, *expr)
+		}
 		s = rest
 	}
 
@@ -1643,6 +1703,21 @@ func parseDel(s string) (*op, string, error) {
 	}
 
 	return &op{typ: opDelete, fields: fields}, s, nil
+}
+
+func flattenDeleteFields(nodes []*op) []op {
+	fields := make([]op, 0, len(nodes))
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		if node.typ == opGenerator {
+			fields = append(fields, flattenDeleteFields(node.elems)...)
+			continue
+		}
+		fields = append(fields, *node)
+	}
+	return fields
 }
 
 // parseSelect parses select(cond).
@@ -1673,36 +1748,62 @@ func parseOptionalSliceBound(s string) (*op, string, error) {
 	return parseExpr(s)
 }
 
-func finalizeBracketNode(node *op, rest string) (*op, string, error) {
+func parseBracketSuffix(rest string) (optional bool, child *op, remaining string, err error) {
 	if len(rest) > 0 && rest[0] == '?' {
-		node.optional = true
+		optional = true
 		rest = rest[1:]
 	}
 	if len(rest) > 0 && rest[0] == '.' {
 		if len(rest) > 1 && isIdentStart(rest[1]) {
-			child, remaining, err := parseFieldChain(rest[1:])
+			child, remaining, err = parseFieldChain(rest[1:])
 			if err != nil {
-				return nil, rest, err
+				return false, nil, rest, err
 			}
-			node.child = child
 			rest = remaining
 		} else if len(rest) > 1 && rest[1] == '[' {
-			child, remaining, err := parseBracketExpr(rest[1:])
+			child, remaining, err = parseBracketExpr(rest[1:])
 			if err != nil {
-				return nil, rest, err
+				return false, nil, rest, err
 			}
-			node.child = child
 			rest = remaining
 		}
 	} else if len(rest) > 0 && rest[0] == '[' {
-		child, remaining, err := parseBracketExpr(rest)
+		child, remaining, err = parseBracketExpr(rest)
 		if err != nil {
-			return nil, rest, err
+			return false, nil, rest, err
 		}
-		node.child = child
 		rest = remaining
 	}
-	return node, rest, nil
+	return optional, child, rest, nil
+}
+
+func finalizeBracketNode(node *op, rest string) (*op, string, error) {
+	optional, child, remaining, err := parseBracketSuffix(rest)
+	if err != nil {
+		return nil, remaining, err
+	}
+	if optional {
+		node.optional = true
+	}
+	node.child = child
+	return node, remaining, nil
+}
+
+func finalizeBracketMulti(nodes []*op, rest string) (*op, string, error) {
+	optional, child, remaining, err := parseBracketSuffix(rest)
+	if err != nil {
+		return nil, remaining, err
+	}
+	for _, node := range nodes {
+		if optional {
+			node.optional = true
+		}
+	}
+	gen := &op{typ: opGenerator, elems: nodes}
+	if child == nil {
+		return gen, remaining, nil
+	}
+	return &op{typ: opPipe, left: gen, right: child}, remaining, nil
 }
 
 func literalIntValue(node *op) (int, bool) {
@@ -1773,6 +1874,31 @@ func parseBracketExpr(s string) (*op, string, error) {
 		return parseSliceEnd(rest[1:], startExpr)
 	}
 
+	if len(rest) > 0 && rest[0] == ',' {
+		nodes := make([]*op, 0, 2)
+		idx, ok := literalIntValue(startExpr)
+		if !ok {
+			return nil, rest, fmt.Errorf("expected integer array index")
+		}
+		nodes = append(nodes, &op{typ: opIndex, index: idx})
+		for len(rest) > 0 && rest[0] == ',' {
+			nextExpr, nextRest, err := parseExpr(strings.TrimSpace(rest[1:]))
+			if err != nil {
+				return nil, nextRest, err
+			}
+			nextIdx, ok := literalIntValue(nextExpr)
+			if !ok {
+				return nil, nextRest, fmt.Errorf("expected integer array index")
+			}
+			nodes = append(nodes, &op{typ: opIndex, index: nextIdx})
+			rest = strings.TrimSpace(nextRest)
+		}
+		if len(rest) == 0 || rest[0] != ']' {
+			return nil, rest, fmt.Errorf("expected ']' after array index")
+		}
+		return finalizeBracketMulti(nodes, rest[1:])
+	}
+
 	if len(rest) == 0 || rest[0] != ']' {
 		return nil, rest, fmt.Errorf("expected ']' after array index")
 	}
@@ -1809,7 +1935,7 @@ func hasMultiOutput(n *op) bool {
 		return false
 	}
 	switch n.typ {
-	case opIterator, opRange, opScan, opGenerator, opPaths:
+	case opIterator, opRange, opScan, opGenerator, opPaths, opReduce:
 		return true
 
 	// Ops that cap or reduce to at most one output regardless of their children:

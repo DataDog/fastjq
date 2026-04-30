@@ -22,6 +22,11 @@ var (
 	errBreak               = errors.New("stop iteration") // sentinel for first/limit
 )
 
+const (
+	jsonParseDepthLimit        = 10000
+	jsonStringifySkipDepthLimit = jsonParseDepthLimit + 1
+)
+
 // jsonError carries a JSON value thrown by the `error` builtin.
 // jq's catch handler receives the actual JSON value, not a string representation.
 // This is only allocated on exceptional (error-throwing) code paths.
@@ -170,6 +175,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execLimit(node, input, buf, fn)
 	case opSkip:
 		return execSkip(node, input, buf, fn)
+	case opReduce:
+		return execReduce(node, input, buf, fn)
 	case opKeys:
 		result, err := execKeys(input, buf)
 		if err != nil {
@@ -803,6 +810,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opLast:
 		return execLastSingle(node, input, buf)
 	case opSkip:
+		return execFirstResult(node, input, buf)
+	case opReduce:
 		return execFirstResult(node, input, buf)
 	case opKeys:
 		return execKeys(input, buf)
@@ -3279,6 +3288,56 @@ func execPaths(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	return execPathsValue(node.child, trimWhitespace(input), nil, buf, fn)
 }
 
+func execReduce(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	states, err := collectExecOutputs(node.right, input)
+	if err != nil {
+		return err
+	}
+	if len(states) == 0 {
+		return nil
+	}
+
+	err = execMulti(node.left, input, nil, func(item []byte) error {
+		nextStates := make([][]byte, 0, len(states))
+		baseCtx := currentExecContext()
+		for _, state := range states {
+			err := withExecContext(baseCtx.bindVar(node.name, item), func() error {
+				return execMulti(node.child, state, nil, func(out []byte) error {
+					nextStates = append(nextStates, cloneExecBytes(out))
+					return nil
+				})
+			})
+			if err != nil {
+				return err
+			}
+		}
+		states = nextStates
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, state := range states {
+		if err := fn(append(buf[:0], state...)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func collectExecOutputs(node *op, input []byte) ([][]byte, error) {
+	var out [][]byte
+	err := execMulti(node, input, nil, func(val []byte) error {
+		out = append(out, cloneExecBytes(val))
+		return nil
+	})
+	return out, err
+}
+
+func cloneExecBytes(src []byte) []byte {
+	return append([]byte(nil), src...)
+}
+
 func execPathsValue(filter *op, value []byte, frame *pathFrame, buf []byte, fn func([]byte) error) error {
 	if frame != nil {
 		match, err := pathsFilterMatch(filter, value)
@@ -5235,8 +5294,23 @@ func execToJSON(input []byte, buf []byte) []byte {
 	s.skipValue()
 	value := input[start:s.pos]
 	buf = append(buf, '"')
-	for i := 0; i < len(value); {
+	depth := 0
+	truncated := false
+	for i := 0; i < len(value) && !truncated; {
 		b := value[i]
+		switch b {
+		case '{', '[':
+			depth++
+			if depth > jsonStringifySkipDepthLimit {
+				buf = append(buf, "<skipped: too deep>"...)
+				truncated = true
+				continue
+			}
+		case '}', ']':
+			if depth > 0 {
+				depth--
+			}
+		}
 		// Replace nan token with null
 		if b == 'n' && i+3 <= len(value) && value[i+1] == 'a' && value[i+2] == 'n' {
 			buf = append(buf, "null"...)
@@ -5311,10 +5385,45 @@ func execFromJSON(input []byte, buf []byte) ([]byte, error) {
 		buf = buf[:startLen]
 		return append(buf, "-infinite"...), nil
 	}
+	if exceedsJSONDepthLimit(result, jsonParseDepthLimit) {
+		return nil, fmt.Errorf("Exceeds depth limit for parsing")
+	}
 	if !json.Valid(result) {
 		return nil, fromJSONError(result)
 	}
 	return buf, nil
+}
+
+func exceedsJSONDepthLimit(data []byte, limit int) bool {
+	depth := 0
+	inString := false
+	for i := 0; i < len(data); i++ {
+		ch := data[i]
+		if inString {
+			if ch == '\\' {
+				i++
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+			if depth > limit {
+				return true
+			}
+		case '}', ']':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return false
 }
 
 // fromJSONError generates a jq-compatible error message for invalid JSON.

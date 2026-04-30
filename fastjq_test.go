@@ -1,6 +1,7 @@
 package fastjq
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -156,6 +157,18 @@ func TestBindUndefinedVariableCompileError(t *testing.T) {
 	if err.Error() != "$bar is not defined" {
 		t.Fatalf("got %q, want %q", err.Error(), "$bar is not defined")
 	}
+}
+
+func TestReduceBuiltin(t *testing.T) {
+	assertQuery(t, `reduce .[] as $x (0; . + $x)`, `[1,2,4]`, `7`)
+	assertQuery(t, `reduce .[] / .[] as $i (0; . + $i)`, `[1,2]`, `4.5`)
+	assertQuery(t, `reduce . as $_ (.; .)`, `null`, `null`)
+	assertQuery(t, `reduce .[] as $then (4 as $else | $else; . as $elif | . + $then * $elif)`, `[1,2,3]`, `96`)
+}
+
+func TestReduceBuiltinCompositions(t *testing.T) {
+	assertQuery(t, `[-reduce -.[] as $x (0; . + $x)]`, `[1,2,3]`, `[6]`)
+	assertQuery(t, `reduce .[] as $x (0; . + $x) as $x | $x`, `[1,2,3]`, `6`)
 }
 
 func TestToBoolean(t *testing.T) {
@@ -583,6 +596,14 @@ func TestArrayIndexNegativeOutOfBounds(t *testing.T) {
 	}
 }
 
+func TestArrayIndexMulti(t *testing.T) {
+	assertQueryAll(t, `.[4,2]`, `["a","b","c","d","e"]`, `"e"`, `"c"`)
+}
+
+func TestArrayIndexMultiWithChain(t *testing.T) {
+	assertQueryAll(t, `.[1,0].name`, `[{"name":"first"},{"name":"second"}]`, `"second"`, `"first"`)
+}
+
 // --- Chained Array Access ---
 
 func TestChainedFieldIndex(t *testing.T) {
@@ -660,6 +681,10 @@ func TestArrayDeleteMultiple(t *testing.T) {
 	if string(got) != "[10,30,50]" {
 		t.Errorf("got %s, want [10,30,50]", got)
 	}
+}
+
+func TestArrayDeleteMultiIndex(t *testing.T) {
+	assertQuery(t, "del(.[1,2])", `["foo","bar","baz"]`, `["foo"]`)
 }
 
 func TestArrayDeleteLast(t *testing.T) {
@@ -3730,6 +3755,16 @@ func TestFromJSON(t *testing.T) {
 func TestToFromJSONRoundTrip(t *testing.T) {
 	assertQuery(t, `tojson | fromjson`, `{"a":1,"b":"hello"}`, `{"a":1,"b":"hello"}`)
 	assertQuery(t, `tojson | fromjson`, `[1,2,3]`, `[1,2,3]`)
+}
+
+func TestToJSONDepthSentinel(t *testing.T) {
+	deep := strings.Repeat("[", jsonStringifySkipDepthLimit+1) + "0" + strings.Repeat("]", jsonStringifySkipDepthLimit+1)
+	assertQuery(t, `tojson | contains("<skipped: too deep>")`, deep, `true`)
+}
+
+func TestFromJSONDepthLimit(t *testing.T) {
+	deep := strings.Repeat("[", jsonParseDepthLimit+1) + "0" + strings.Repeat("]", jsonParseDepthLimit+1)
+	assertQuery(t, `tojson | try fromjson catch . | contains("Exceeds depth limit for parsing")`, deep, `true`)
 }
 
 // --- tostring / tonumber ---

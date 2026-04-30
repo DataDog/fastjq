@@ -42,13 +42,13 @@ const manTestLocalCache = "testdata/man.test"
 //
 // Official-suite baseline for this branch:
 //   - Total: 751
-//   - Skipped: 331
-//   - Attempted: 420
-//   - Passed: 420
+//   - Skipped: 318
+//   - Attempted: 433
+//   - Passed: 433
 //   - Failed: 0
 //
 // Skip families currently driving the branch:
-//   - reduce / foreach / label / break
+//   - foreach / label / break
 //   - path / leaf_paths
 //   - def
 //   - assignment/update syntax and remaining parser breadth gaps
@@ -63,8 +63,8 @@ var unsupportedOps = []string{
 	"path(", "leaf_paths",
 	// User-defined functions
 	"def ",
-	// Reduce / foreach / label-break
-	"reduce", "foreach", "label", "break",
+	// Foreach / label-break
+	"foreach", "label", "break",
 	// nan/infinite/predicates: now implemented
 	// 2/3-arg math: hypot/fma REJECTED — 0 exclusive tests (all also blocked by as-$)
 	// pow(x;y) is now implemented

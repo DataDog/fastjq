@@ -19,6 +19,7 @@
 | `.[2]` | Nth element | `[10,20,30]` | `30` |
 | `.[-1]` | Last element (negative = from end) | `[10,20,30]` | `30` |
 | `.[-2]` | Second-to-last | `[10,20,30]` | `20` |
+| `.[4,2]` | Multi-index selection; emits one result per index | `["a","b","c","d","e"]` | `"e"`, `"c"` |
 | `.[99]` | Out-of-bounds returns null | `[10,20,30]` | `null` |
 
 ### Chained Access
@@ -38,6 +39,7 @@
 | `del(.foo.bar)` | Delete nested field | `{"foo":{"bar":1,"baz":2}}` | `{"foo":{"baz":2}}` |
 | `del(.[0])` | Delete array element | `[10,20,30]` | `[20,30]` |
 | `del(.[1], .[3])` | Delete multiple elements | `[10,20,30,40,50]` | `[10,30,50]` |
+| `del(.[1,2])` | Delete multiple indices from one bracket expression | `["foo","bar","baz"]` | `["foo"]` |
 | `del(.[-1])` | Delete last element | `[10,20,30]` | `[10,20]` |
 | `del(.[2:4])` | Delete slice range | `[0,1,2,3,4,5]` | `[0,1,4,5]` |
 | `del(.[-2:])` | Delete last two elements | `[0,1,2,3,4]` | `[0,1,2]` |
@@ -419,11 +421,14 @@ Numbers compared by value; strings lexicographically. Empty array → `null`. `s
 | `last(expr)` | 0 | Last output of expr | `[1,2,3,4,5]` (with `last(.[] \| select(. > 2))`) | `5` |
 | `limit(n; expr)` | 0 | First N outputs of expr as a stream | `[1,2,3,4,5]` (with `limit(3; .[])`) | `1`, `2`, `3` |
 | `skip(n; expr)` | 0 | Drop the first N outputs of expr, emit the rest | `[1,2,3,4,5]` (with `skip(2; .[])`) | `3`, `4`, `5` |
+| `reduce gen as $x (init; update)` | output-shaped | Fold generator outputs into one or more accumulator states | `[1,2,4]` (with `reduce .[] as $x (0; . + $x)`) | `7` |
 | `range(n)` | 1/value | Generate integers 0, 1, …, n−1 | — | `0`, `1`, `2` |
 | `range(from; to)` | 1/value | Generate integers from `from` to `to−1` | — | `2`, `3`, `4` |
 | `range(from; to; step)` | 1/value | Generate with explicit step (float ok, negative ok) | — | `0`, `2`, `4` |
 
 `limit` emits a stream, not an array. Wrap in `[...]` if you need an array: `[limit(3; .[])]`. The body can be a comma-separated generator: `limit(1; a, b)`.
+
+`reduce` evaluates `init` once, then runs `update` against the accumulator for every value produced by `gen` while binding `$x` to the current item. This branch supports the simple jq form `reduce gen as $x (init; update)`.
 
 `range` is a **Tier 2** operation: 1 alloc per generated value (the output byte slice), proportional to what you asked to generate. Compose with `limit` for lazy evaluation: `limit(3; range(1000))` produces only 3 values and 3 allocs.
 
@@ -522,7 +527,6 @@ These operations are implementable at zero allocation but involve more complexit
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
 | `def f: body; expr` | Function definitions | AST-level feature, compile-time only. But closures and recursion add parser/AST complexity. |
-| `reduce .[] as $x (init; update)` | Fold/accumulate | Needs mutable accumulator. If accumulator lives in the output buffer, works, but each step reads previous output. May require double-buffering (ping-pong between two buffer slices). |
 | `label-break` | Control flow | `label $out \| foreach ...` — requires unwinding callback stack. Achievable with a sentinel error value. |
 | `foreach` | Stateful iteration | `foreach .[] as $x (init; update; extract)`. Requires mutable state across iterations. Double-buffering approach keeps it zero-alloc. |
 | `@format "template"` combined syntax | Apply format to each interpolated value | `@html "<b>\(.)</b>"` — applies `@html` to each `\(...)` value. Not yet supported; plain `"\(expr)"` string interpolation IS supported. |
@@ -565,7 +569,6 @@ The governing principle rejects operations where allocation scales with the *sha
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
 | `path(expr)` | Output path as array | Track current path during descent — needs a path accumulator. |
-| `reduce .[] as $x (init; update)` | Fold/accumulate | Needs mutable accumulator; double-buffering keeps it near-zero-alloc. |
 | `foreach` | Stateful iteration | Same accumulator challenge as `reduce`. |
 | `label-break` | Control flow | Achievable with a sentinel error value for stack unwinding. |
 | `@format "template"` combined syntax | `@html "<b>\(.)</b>"` | Applies format to each interpolated value; requires parser + executor extension. |

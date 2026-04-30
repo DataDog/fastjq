@@ -90,6 +90,7 @@ var tableRows = []row{
 	{"`.[1:4]` slice", "6-elem array", "Small_Slice", "Small_Slice"},
 	{"`values`", "9-elem array", "Small_Values", "Small_Values"},
 	{"`skip(2; .[])`", "5-elem array", "Small_Skip", "Small_Skip"},
+	{"`reduce .[] as $x (0; . + $x)`", "5-elem array", "Small_Reduce", "Small_Reduce"},
 	{"`paths`", "Small (~100B)", "Small_Paths", "Small_Paths"},
 	// Object transforms
 	{"`to_entries`", "Small (~100B)", "Small_ToEntries", "Small_ToEntries"},

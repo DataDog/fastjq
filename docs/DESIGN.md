@@ -21,7 +21,9 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `.foo`, `.foo.bar` (field access, including nested)
 - `del(.foo)`, `del(.foo, .bar)`, `del(.foo.bar)` (field deletion, including nested)
 - `.[0]`, `.[-1]` (array indexing, negative = from end)
+- `.[4,2]` (multi-index array access; emits one output per index)
 - `del(.[0])`, `del(.[1], .[3])` (array element deletion)
+- `del(.[1,2])` (delete multiple array indices from one bracket expression)
 - `del(.[n:m])`, `del(.[-n:])` (array slice deletion)
 - Dynamic numeric slice bounds and chained slices (`.[1.2:3.5]`, `.[3:3][1:]`)
 - `paths` and `paths(filter)` for structural path enumeration
@@ -76,6 +78,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `all`, `all(expr)`, `all(gen; cond)` (all truthy)
 - `first`, `last` (first/last element; one-arg forms take an expr)
 - `limit(n; expr)`, `skip(n; expr)` (stream control over generator outputs)
+- `reduce gen as $x (init; update)` (stateful accumulation over generator outputs)
 - `values` (filter nulls from stream)
 - `numbers`, `strings`, `arrays`, `objects`, `booleans`, `nulls`, `iterables`, `scalars` (type filters)
 - `index(s)`, `rindex(s)`, `indices(s)` (first/last/all occurrences; overlapping; Unicode codepoint positions; array subsequence search)
@@ -253,6 +256,14 @@ characters and normalized escapes.
 Errors from downstream pipeline stages propagate normally instead of being
 captured by the inner `try`.
 
+### 22. Reduce Reuses Lexical Binding Frames
+
+`reduce gen as $x (init; update)` evaluates `init` once, then runs `update`
+against each accumulator state while binding `$x` to the current generator
+value in the existing runtime environment chain. This keeps `reduce`
+compatible with later pipeline stages and nested lexical bindings without
+changing the public API.
+
 ## File Structure
 
 ```
@@ -260,16 +271,16 @@ fastjq.go           — Public API: Compile, Run, RunWithBuffer, RunAll, RunFunc
 scanner.go          — Zero-alloc JSON scanner: skipValue, readString, objectIter, arrayIter,
                       jsonEqual (key-order independent for objects), jsonContains, isFalsy,
                       byteOffsetToCodepointOffset, compareJSONOrder
-query.go            — Query parser + AST (~55 op types); parseGeneratorExpr for comma bodies
+query.go            — Query parser + AST (~56 op types); parseGeneratorExpr for comma bodies
 exec.go             — Executor: all op implementations; jsonError type; execPlusValues;
                       execArrayConstruct; execDeleteArray (slices); execFindIndex (overlapping,
-                      Unicode codepoints, array subsequences); format string decoders
+                      Unicode codepoints, array subsequences); execReduce; format string decoders
 float.go            — Zero-alloc float parsing via unsafe.String
-fastjq_test.go      — Unit tests (~430 tests)
+fastjq_test.go      — Unit tests (~435 tests)
 correctness_test.go — Edge case, no-panic, and Unicode tests
 complex_test.go     — Complex multi-step query tests
 fuzz_test.go        — Fuzz tests (FuzzCompile, FuzzRunFixed, FuzzBoth)
-bench_test.go       — Benchmarks: fastjq vs gojq (159 benchmarks)
+bench_test.go       — Benchmarks: fastjq vs gojq (255 benchmark cases)
 jqtest/run_test.go  — Official jq test harness (jq.test + man.test, 751 total)
 cmd/fastjq/main.go  — JSONL processor CLI
 bench_vs_jq.sh      — CLI throughput benchmark script

@@ -9,6 +9,8 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 ### Added
 
 - Added lexical variable binding for simple jq forms: `expr as $x | body` and `$x` references across later pipeline stages.
+- Added jq-compatible `reduce gen as $x (init; update)` for simple accumulator folds over generator outputs.
+- Added jq-style multi-index array access and deletion forms such as `.[4,2]` and `del(.[1,2])`.
 - Added jq-compatible builtins `abs`, `trim`, `ltrim`, `rtrim`, `toboolean`, `keys`, and `skip`.
 - Added jq-compatible `paths` and `paths(filter)` for non-root structural path enumeration.
 - Added jq-compatible `getpath(path)` with variadic path-output support and `$var` path arguments.
@@ -19,7 +21,7 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ### Fixed
 
-- Moved the official jq-suite branch coverage from `356/751` passing to `420/751` passing while keeping `0` active jq-suite failures.
+- Moved the official jq-suite branch coverage from `356/751` passing to `433/751` passing while keeping `0` active jq-suite failures.
 - Removed the blanket jq-suite skip for variable binding syntax so implemented `as $x` cases now run instead of being hidden behind harness filters.
 - Fixed variable-binding parsing inside array-construction generator contexts such as `1 as $x | [$x,$x,$x as $x | $x]`.
 - Fixed jq-suite structural comparison for JSON outputs that differ only by numerically equivalent number spellings inside arrays or objects (for example `0.1` vs `1e-1`).
@@ -29,16 +31,19 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 - Fixed string slicing and unary-negation error previews to match jq with UTF-8-aware truncation and codepoint-based slice offsets.
 - Fixed jq-suite skip filtering so unsupported `path(...)` no longer accidentally suppresses implemented `getpath(...)` tests.
 - Fixed path-update error propagation so `try`/`catch` sees jq-style raw messages even when `setpath(...)` appears inside array/object construction.
+- Fixed `tojson | fromjson` depth-limit parity so 10,001-deep structures now reach jq's `"Exceeds depth limit for parsing"` error before stringify truncation kicks in.
+- Fixed `del(...)` argument flattening so jq-style grouped bracket selectors like `del(.[1,2])` delete multiple array indices instead of failing validation.
 
 ### Tradeoffs
 
 - This branch slice still only implements simple `$name` bindings. Destructuring binds (`. as [$a, $b]` / object-pattern binds) remain deferred with the larger control-flow work.
 - Bound values are copied into runtime environment frames so later pipeline stages can safely reference constructed values as well as input sub-slices.
+- `reduce` currently targets the high-yield jq form `reduce gen as $x (init; update)` and reuses the existing lexical binding frames rather than introducing a broader mutable-control runtime yet.
 - `paths` prioritizes jq-suite parity over the usual hot-path allocation target on this branch. The current structural walker allocates on its call path (`17 allocs/op` on the small benchmark) but still stays far below gojq for the same query.
 
 ### Benchmark results
 
-- Regenerated `docs/BENCHMARKS.md` and kept the benchmark table current while parity work expanded parser coverage and path update support.
+- Regenerated `docs/BENCHMARKS.md` and kept the benchmark table current while parity work expanded parser coverage, path update support, `reduce`, and grouped array-index coverage.
 
 ## [Unreleased] — codex/jq-parity suite tracking
 
