@@ -42,14 +42,14 @@ const manTestLocalCache = "testdata/man.test"
 //
 // Official-suite baseline for this branch:
 //   - Total: 751
-//   - Skipped: 346
-//   - Attempted: 405
-//   - Passed: 405
+//   - Skipped: 344
+//   - Attempted: 407
+//   - Passed: 407
 //   - Failed: 0
 //
 // Skip families currently driving the branch:
 //   - reduce / foreach / label / break
-//   - path / paths / getpath / setpath / delpaths / leaf_paths
+//   - path / paths / setpath / delpaths / leaf_paths
 //   - def
 //   - assignment/update syntax and remaining parser breadth gaps
 //
@@ -60,7 +60,7 @@ var unsupportedOps = []string{
 	// Recursive descent — permanently rejected (allocs scale with input depth, not output)
 	"..", "recurse",
 	// Path operations
-	"path(", "paths", "getpath", "setpath", "delpaths", "leaf_paths",
+	"path(", "paths", "setpath", "delpaths", "leaf_paths",
 	// User-defined functions
 	"def ",
 	// Reduce / foreach / label-break
@@ -223,11 +223,36 @@ func isBlankOrComment(s string) bool {
 // they were data, so matching without a leading quote is safe.
 func isUnsupported(program string) string {
 	for _, op := range unsupportedOps {
-		if strings.Contains(program, op) {
+		if containsUnsupportedOp(program, op) {
 			return op
 		}
 	}
 	return ""
+}
+
+func containsUnsupportedOp(program, op string) bool {
+	searchFrom := 0
+	for {
+		idx := strings.Index(program[searchFrom:], op)
+		if idx < 0 {
+			return false
+		}
+		idx += searchFrom
+		beforeOK := idx == 0 || !isIdentRune(rune(program[idx-1]))
+		afterPos := idx + len(op)
+		afterOK := true
+		if len(op) > 0 && op[len(op)-1] != '(' && afterPos < len(program) {
+			afterOK = !isIdentRune(rune(program[afterPos]))
+		}
+		if beforeOK && afterOK {
+			return true
+		}
+		searchFrom = idx + 1
+	}
+}
+
+func isIdentRune(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // inputContainsUnsupported returns true if the test input contains a jq-specific

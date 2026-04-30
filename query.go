@@ -62,6 +62,7 @@ const (
 	opRtrimStr                     // rtrimstr("s")
 	opKeys                         // keys
 	opKeysUnsorted                 // keys_unsorted
+	opGetPath                      // getpath(path)
 	opAny                          // any / any(expr)
 	opAll                          // all / all(expr)
 	opFirst                        // first(expr)
@@ -661,6 +662,9 @@ func parseAtom(s string) (*op, string, error) {
 	}
 	if strings.HasPrefix(s, "keys_unsorted") && (len(s) == 13 || !isIdentChar(s[13])) {
 		return &op{typ: opKeysUnsorted}, s[13:], nil
+	}
+	if strings.HasPrefix(s, "getpath(") {
+		return parseUnaryGenBuiltin(s[8:], opGetPath)
 	}
 
 	// any / all — with optional (expr) argument

@@ -279,6 +279,9 @@ func BenchmarkFastjq_Small_KeysUnsorted(b *testing.B) {
 func BenchmarkFastjq_Small_Keys(b *testing.B) {
 	benchFastjqObj(b, `keys`, smallJSON)
 }
+func BenchmarkFastjq_Small_GetPath(b *testing.B) {
+	benchFastjqObj(b, `getpath(["field_0"])`, smallJSON)
+}
 func BenchmarkFastjq_Large_KeysUnsorted(b *testing.B) {
 	benchFastjqObj(b, `keys_unsorted`, largeJSON)
 }
@@ -479,6 +482,9 @@ func BenchmarkGojq_Small_KeysUnsorted(b *testing.B) {
 }
 func BenchmarkGojq_Small_Keys(b *testing.B) {
 	benchGojqObj(b, `keys`, smallJSON)
+}
+func BenchmarkGojq_Small_GetPath(b *testing.B) {
+	benchGojqObj(b, `getpath(["field_0"])`, smallJSON)
 }
 func BenchmarkGojq_Large_KeysUnsorted(b *testing.B) {
 	benchGojqLargeRot(b, `keys`) // gojq: keys_unsorted not supported

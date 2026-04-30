@@ -170,6 +170,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opGetPath:
+		return execGetPath(node, input, buf, fn)
 	case opKeysUnsorted:
 		result, err := execKeysUnsorted(input, buf)
 		if err != nil {
@@ -784,6 +786,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execFirstResult(node, input, buf)
 	case opKeys:
 		return execKeys(input, buf)
+	case opGetPath:
+		return execFirstResult(node, input, buf)
 	case opKeysUnsorted:
 		return execKeysUnsorted(input, buf)
 	case opAny:
@@ -3218,6 +3222,102 @@ func execKeys(input []byte, buf []byte) ([]byte, error) {
 	}
 	buf = append(buf, ']')
 	return buf, nil
+}
+
+func execGetPath(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	return execMulti(node.child, input, nil, func(pathVal []byte) error {
+		result, err := execGetPathOne(input, pathVal, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	})
+}
+
+func execGetPathOne(input, pathVal, buf []byte) ([]byte, error) {
+	ps := scanner{data: pathVal}
+	ps.skipWhitespace()
+	if ps.pos >= len(ps.data) || ps.data[ps.pos] != '[' {
+		return nil, fmt.Errorf("Path must be specified as an array")
+	}
+
+	current := input
+	var iterErr error
+	ps.arrayIter(func(_ int, elemStart, elemEnd int) bool {
+		if isNull(current) {
+			return true
+		}
+		next, err := execGetPathStep(current, pathVal[elemStart:elemEnd])
+		if err != nil {
+			iterErr = err
+			return false
+		}
+		current = next
+		return true
+	})
+	if iterErr != nil {
+		return nil, iterErr
+	}
+	return normalizeOutputValue(current, buf), nil
+}
+
+func execGetPathStep(current, step []byte) ([]byte, error) {
+	ss := scanner{data: step}
+	ss.skipWhitespace()
+	if ss.pos >= len(ss.data) {
+		return bNull, nil
+	}
+	if ss.data[ss.pos] == '"' {
+		key := ss.readString()
+		cs := scanner{data: current}
+		cs.skipWhitespace()
+		if cs.pos >= len(cs.data) || cs.data[cs.pos] != '{' {
+			return nil, getpathAccessError(current, step)
+		}
+		vs, ve := cs.findField(key)
+		if vs == -1 {
+			return bNull, nil
+		}
+		return current[vs:ve], nil
+	}
+
+	if f, ok := parseJSONFloat(step); ok {
+		idx := int(f)
+		cs := scanner{data: current}
+		cs.skipWhitespace()
+		if cs.pos >= len(cs.data) || cs.data[cs.pos] != '[' {
+			return nil, getpathAccessError(current, step)
+		}
+		if idx < 0 {
+			idx = cs.arrayLen() + idx
+			if idx < 0 {
+				return bNull, nil
+			}
+		}
+		var result []byte
+		cs.arrayIter(func(i int, elemStart, elemEnd int) bool {
+			if i == idx {
+				result = current[elemStart:elemEnd]
+				return false
+			}
+			return true
+		})
+		if result == nil {
+			return bNull, nil
+		}
+		return result, nil
+	}
+
+	return nil, getpathAccessError(current, step)
+}
+
+func getpathAccessError(current, step []byte) error {
+	ss := scanner{data: step}
+	ss.skipWhitespace()
+	if ss.pos < len(ss.data) && ss.data[ss.pos] == '"' {
+		return fmt.Errorf("Cannot index %s with string %q", jsonTypeName(current), ss.readString())
+	}
+	return fmt.Errorf("Cannot index %s with %s", jsonTypeName(current), jsonTypeName(step))
 }
 
 // execAnyAll implements any/all with optional expr argument.

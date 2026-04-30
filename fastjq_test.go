@@ -220,6 +220,26 @@ func TestSkipBuiltinNegativeCount(t *testing.T) {
 	assertQuery(t, `try skip(-1; error) catch .`, `null`, `"skip doesn't support negative count"`)
 }
 
+func TestGetPathBuiltin(t *testing.T) {
+	assertQuery(t, `getpath(["a","b"])`, `null`, `null`)
+	assertQuery(t, `["foo",1] as $p | getpath($p)`, `{"bar":42,"foo":["a","b","c","d"]}`, `"b"`)
+	assertQuery(t, `["foo",1] as $p | getpath($p)`, `{"bar":false}`, `null`)
+}
+
+func TestGetPathBuiltinVariadic(t *testing.T) {
+	assertQuery(t, `[getpath(["a","b"], ["a","c"])]`, `{"a":{"b":0,"c":1}}`, `[0,1]`)
+}
+
+func TestGetPathBuiltinArrayIndexing(t *testing.T) {
+	assertQuery(t, `map(getpath([2]))`, `[[0],[0,1],[0,1,2]]`, `[null,null,2]`)
+	assertQuery(t, `getpath([-1])`, `[1,2]`, `2`)
+}
+
+func TestGetPathBuiltinErrors(t *testing.T) {
+	assertQuery(t, `try getpath(0) catch .`, `null`, `"Path must be specified as an array"`)
+	assertQuery(t, `try getpath(["a"]) catch .`, `[1,2]`, `"Cannot index array with string \"a\""`)
+}
+
 func TestRunWithBuffer(t *testing.T) {
 	p, err := Compile("del(.age)")
 	if err != nil {

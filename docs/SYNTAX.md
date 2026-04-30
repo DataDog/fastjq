@@ -340,6 +340,7 @@ For strings, positions are Unicode codepoint offsets (not byte offsets), matchin
 | `abs` | Numbers become positive; strings pass through unchanged | `-3.5` | `3.5` |
 | `keys` | Object keys sorted lexicographically; array → indices | `{"b":1,"a":2}` | `["a","b"]` |
 | `keys_unsorted` | Object keys in insertion order; array → indices | `{"b":1,"a":2}` | `["b","a"]` |
+| `getpath(path)` | Follow a path array of strings/numbers; variadic args emit multiple outputs | `{"a":{"b":0,"c":1}}` with `[getpath(["a","b"], ["a","c"])]` | `[0,1]` |
 
 ### Slicing and Concatenation
 

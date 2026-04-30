@@ -135,11 +135,11 @@ fastjq supports a large targeted subset of jq. The complete reference with examp
 - **Arithmetic:** `+`, `-`, `*`, `/`, `%`, `add`, `floor`, `ceil`, `round`, `nearbyint`
 - **Math:** `abs`, `sqrt`, `log`, `exp`, `sin`, `cos`, `atan`, `tgamma`, `j0`, `pow(x;y)`, and 15 more — all zero-alloc
 - **Special values:** `nan`, `infinite`, `-nan`, `-infinite`; `isnan`, `isinfinite`, `isfinite`, `isnormal`; `nan`/`infinite` output as `null` (JSON-safe)
-- **Arrays:** `map`, `flatten`, `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `min/max`, `min_by/max_by`, `any/all`, `first/last`, `limit`, `skip`, `nth`, `isempty`, `values`, type filters, `index/indices`
+- **Arrays:** `map`, `flatten`, `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `min/max`, `min_by/max_by`, `any/all`, `first/last`, `limit`, `skip`, `nth`, `isempty`, `values`, type filters, `index/indices`, `getpath`
 - **Strings:** `split/join`, `ascii_downcase/upcase`, `startswith/endswith`, `trim/ltrim/rtrim`, `ltrimstr/rtrimstr`, `"\(expr)"` interpolation, `explode`, `implode`
 - **Format strings:** `@base64/d`, `@uri/d`, `@html`, `@csv`, `@tsv`, `@sh`, `@text`, `@json`
 - **Regex (Go RE2):** `test(re)` *(0 allocs)*, `match(re)`, `capture(re)`, `scan(re)`, `sub(re; s)`, `gsub(re; s)`
-- **Objects:** `to_entries`, `from_entries`, `keys`, `keys_unsorted`, `length`, `has`, `in`, `contains`, `inside`
+- **Objects:** `to_entries`, `from_entries`, `keys`, `keys_unsorted`, `getpath`, `length`, `has`, `in`, `contains`, `inside`
 - **Type:** `type`, `tojson/fromjson`, `tostring/tonumber/toboolean`, `debug`, `error`
 
 ## Official jq test suite coverage
@@ -149,10 +149,10 @@ fastjq is validated against two official jq test files (`go test ./jqtest/`).
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
 | [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 258 | 263 | **263 (100.0%)** | 0 |
-| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 88 | 142 | **142 (100.0%)** | 0 |
-| **Combined** | **751** | **346** | **405** | **405 (100.0%)** | **0** |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 86 | 144 | **144 (100.0%)** | 0 |
+| **Combined** | **751** | **344** | **407** | **407 (100.0%)** | **0** |
 
-All currently attempted official jq tests pass on this branch, and the branch now clears a majority of the full official suite. Recent parser-breadth work also removed a chunk of compile skips around unary minus and dynamic slice bounds. The remaining skipped tests are concentrated in still-unimplemented families such as recursive descent (`..`), path operations, `reduce`/`foreach`, user-defined functions (`def`), assignment/update syntax, date functions, `env`, and other items listed in the [Limitations](#limitations) section.
+All currently attempted official jq tests pass on this branch, and the branch now clears a majority of the full official suite. Recent parity work also removed compile skips around unary minus, dynamic slice bounds, and standalone `getpath(...)`. The remaining skipped tests are concentrated in still-unimplemented families such as recursive descent (`..`), `setpath`/`delpaths`/symbolic `path(...)`, `reduce`/`foreach`, user-defined functions (`def`), assignment/update syntax, date functions, `env`, and other items listed in the [Limitations](#limitations) section.
 
 ## Limitations
 
