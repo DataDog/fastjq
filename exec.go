@@ -84,6 +84,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(result)
 	case opPipe:
 		return execPipeMulti(node, input, buf, fn)
+	case opApply:
+		return execApplyMulti(node, input, buf, fn)
 	case opBind:
 		baseCtx := currentExecContext()
 		return execMulti(node.left, input, nil, func(bound []byte) error {
@@ -181,6 +183,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execSkip(node, input, buf, fn)
 	case opReduce:
 		return execReduce(node, input, buf, fn)
+	case opForeach:
+		return execForeach(node, input, buf, fn)
 	case opPath:
 		return execPath(node, input, buf, fn)
 	case opKeys:
@@ -375,16 +379,16 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 				return fn(result)
 			})
 		}
-		var rightVals [][]byte
-		if err := execMulti(node.right, input, nil, func(rightVal []byte) error {
-			rightVals = append(rightVals, rightVal)
+		var leftVals [][]byte
+		if err := execMulti(node.left, input, nil, func(leftVal []byte) error {
+			leftVals = append(leftVals, leftVal)
 			return nil
 		}); err != nil {
 			return err
 		}
-		return execMulti(node.left, input, nil, func(leftVal []byte) error {
-			for _, rv := range rightVals {
-				result, err := execArithValues(node.typ, leftVal, rv, buf)
+		return execMulti(node.right, input, nil, func(rightVal []byte) error {
+			for _, lv := range leftVals {
+				result, err := execArithValues(node.typ, lv, rightVal, buf)
 				if err != nil {
 					return err
 				}
@@ -650,7 +654,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		nInt := int(nf)
 		if nInt < 0 {
-			return nil
+			return fmt.Errorf("nth doesn't support negative indices")
 		}
 		count := 0
 		var found []byte
@@ -815,13 +819,14 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opFromEntries:
 		return execFromEntries(input, buf)
 	case opFirst:
-		// exec already returns the first result via execMulti
-		return exec(node.child, input, buf)
+		return execFirstResult(node, input, buf)
 	case opLast:
 		return execLastSingle(node, input, buf)
 	case opSkip:
 		return execFirstResult(node, input, buf)
 	case opReduce:
+		return execFirstResult(node, input, buf)
+	case opForeach:
 		return execFirstResult(node, input, buf)
 	case opPath:
 		return execFirstResult(node, input, buf)
@@ -976,6 +981,21 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 				return nil, err
 			}
 			return execSingle(node.right, intermediate, buf)
+		}
+		return execFirstResult(node, input, buf)
+	case opApply:
+		if isSingleOutputOp(node.left) {
+			intermediate, err := execSingle(node.left, input, nil)
+			if err != nil {
+				return nil, err
+			}
+			var result []byte
+			err = withIndexScope(chainedIndexScope(input), func() error {
+				var execErr error
+				result, execErr = execSingle(node.right, intermediate, buf)
+				return execErr
+			})
+			return result, err
 		}
 		return execFirstResult(node, input, buf)
 
@@ -1776,6 +1796,15 @@ func execPipeMulti(node *op, input []byte, buf []byte, fn func([]byte) error) er
 	})
 }
 
+func execApplyMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	scope := chainedIndexScope(input)
+	return execMulti(node.left, input, nil, func(intermediate []byte) error {
+		return withIndexScope(scope, func() error {
+			return execMulti(node.right, intermediate, buf, fn)
+		})
+	})
+}
+
 // execConstruct builds a JSON object from key-expression pairs (single-output per pair).
 // Used by the execSingle fast path via execFirstResult for common cases.
 func execConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
@@ -2015,6 +2044,44 @@ func execCompare(node *op, input []byte, buf []byte, fn func([]byte) error) erro
 // execAnd evaluates left and right; returns true only if both are truthy.
 // Short-circuits: right is not evaluated if left is falsy.
 func execAnd(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	if hasMultiOutput(node.left) || hasMultiOutput(node.right) {
+		if !hasMultiOutput(node.right) {
+			return execMulti(node.left, input, nil, func(leftVal []byte) error {
+				if isFalsy(leftVal) {
+					return fn(append(buf[:0], "false"...))
+				}
+				rightVal, err := execSingle(node.right, input, nil)
+				if err != nil {
+					return err
+				}
+				if isFalsy(rightVal) {
+					return fn(append(buf[:0], "false"...))
+				}
+				return fn(append(buf[:0], "true"...))
+			})
+		}
+		var rightVals [][]byte
+		if err := execMulti(node.right, input, nil, func(rightVal []byte) error {
+			rightVals = append(rightVals, rightVal)
+			return nil
+		}); err != nil {
+			return err
+		}
+		return execMulti(node.left, input, nil, func(leftVal []byte) error {
+			for _, rightVal := range rightVals {
+				if isFalsy(leftVal) || isFalsy(rightVal) {
+					if err := fn(append(buf[:0], "false"...)); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := fn(append(buf[:0], "true"...)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
 	leftVal, err := execSingle(node.left, input, buf)
 	if err != nil {
 		return err
@@ -2035,6 +2102,44 @@ func execAnd(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 // execOr evaluates left or right; returns true if either is truthy.
 // Short-circuits: right is not evaluated if left is truthy.
 func execOr(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	if hasMultiOutput(node.left) || hasMultiOutput(node.right) {
+		if !hasMultiOutput(node.right) {
+			return execMulti(node.left, input, nil, func(leftVal []byte) error {
+				if !isFalsy(leftVal) {
+					return fn(append(buf[:0], "true"...))
+				}
+				rightVal, err := execSingle(node.right, input, nil)
+				if err != nil {
+					return err
+				}
+				if !isFalsy(rightVal) {
+					return fn(append(buf[:0], "true"...))
+				}
+				return fn(append(buf[:0], "false"...))
+			})
+		}
+		var rightVals [][]byte
+		if err := execMulti(node.right, input, nil, func(rightVal []byte) error {
+			rightVals = append(rightVals, rightVal)
+			return nil
+		}); err != nil {
+			return err
+		}
+		return execMulti(node.left, input, nil, func(leftVal []byte) error {
+			for _, rightVal := range rightVals {
+				if !isFalsy(leftVal) || !isFalsy(rightVal) {
+					if err := fn(append(buf[:0], "true"...)); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := fn(append(buf[:0], "false"...)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
 	leftVal, err := execSingle(node.left, input, buf)
 	if err != nil {
 		return err
@@ -3661,28 +3766,85 @@ func execReduce(node *op, input []byte, buf []byte, fn func([]byte) error) error
 		return nil
 	}
 
-	err = execMulti(node.left, input, nil, func(item []byte) error {
-		nextStates := make([][]byte, 0, len(states))
-		baseCtx := currentExecContext()
-		for _, state := range states {
-			err := withExecContext(baseCtx.bindVar(node.name, item), func() error {
-				return execMulti(node.child, state, nil, func(out []byte) error {
-					nextStates = append(nextStates, cloneExecBytes(out))
+	finalStates := make([][]byte, 0, len(states))
+	baseCtx := currentExecContext()
+	for _, initState := range states {
+		currentStates := [][]byte{initState}
+		err = execMulti(node.left, input, nil, func(item []byte) error {
+			nextStates := make([][]byte, 0, len(currentStates))
+			for _, state := range currentStates {
+				err := withExecContext(baseCtx.bindVar(node.name, item), func() error {
+					var last []byte
+					if err := execMulti(node.child, state, nil, func(out []byte) error {
+						last = cloneExecBytes(out)
+						return nil
+					}); err != nil {
+						return err
+					}
+					if last != nil {
+						nextStates = append(nextStates, last)
+					}
 					return nil
 				})
-			})
-			if err != nil {
-				return err
+				if err != nil {
+					return err
+				}
 			}
+			currentStates = nextStates
+			return nil
+		})
+		if err != nil {
+			return err
 		}
-		states = nextStates
-		return nil
-	})
+		finalStates = append(finalStates, currentStates...)
+	}
+	for _, state := range finalStates {
+		if err := fn(append(buf[:0], state...)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func execForeach(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	states, err := collectExecOutputs(node.right, input)
 	if err != nil {
 		return err
 	}
-	for _, state := range states {
-		if err := fn(append(buf[:0], state...)); err != nil {
+	if len(states) == 0 {
+		return nil
+	}
+
+	baseCtx := currentExecContext()
+	for _, initState := range states {
+		currentStates := [][]byte{initState}
+		err = execMulti(node.left, input, nil, func(item []byte) error {
+			nextStates := make([][]byte, 0, len(currentStates))
+			for _, state := range currentStates {
+				var last []byte
+				err := withExecContext(baseCtx.bindVar(node.name, item), func() error {
+					return execMulti(node.child, state, nil, func(updated []byte) error {
+						updatedState := cloneExecBytes(updated)
+						last = updatedState
+						if err := execMulti(node.extra, updatedState, nil, func(out []byte) error {
+							return fn(append(buf[:0], out...))
+						}); err != nil {
+							return err
+						}
+						return nil
+					})
+				})
+				if err != nil {
+					return err
+				}
+				if last != nil {
+					nextStates = append(nextStates, last)
+				}
+			}
+			currentStates = nextStates
+			return nil
+		})
+		if err != nil {
 			return err
 		}
 	}
@@ -4950,7 +5112,7 @@ func execArithValues(typ opType, leftVal, rightVal, buf []byte) ([]byte, error) 
 			rs.pos < len(rs.data) && rs.data[rs.pos] == '[' {
 			return execArrayDiff(leftVal, rightVal, buf), nil
 		}
-		return nil, fmt.Errorf("cannot subtract %q from %q", rightVal, leftVal)
+		return nil, fmt.Errorf("%s and %s cannot be subtracted", jqTypeValueForError(leftVal), jqTypeValueForError(rightVal))
 
 	case opMul:
 		if lok && rok {
@@ -5015,6 +5177,17 @@ func execArithValues(typ opType, leftVal, rightVal, buf []byte) ([]byte, error) 
 			if rf == 0 {
 				return nil, fmt.Errorf("number (%s) and number (%s) cannot be divided (remainder) because the divisor is zero",
 					string(leftVal), string(rightVal))
+			}
+			if math.IsInf(lf, 0) {
+				if math.IsInf(rf, 1) {
+					if math.IsInf(lf, -1) {
+						return appendInt(buf, -1), nil
+					}
+					return appendInt(buf, 0), nil
+				}
+				if !math.IsInf(rf, 0) && !math.IsNaN(rf) {
+					return appendInt(buf, 0), nil
+				}
 			}
 			// integer modulo when both operands are integral
 			li, ri := int64(lf), int64(rf)
@@ -5551,15 +5724,21 @@ func compareJSONOrder(a, b []byte) int {
 	case 't': // true == true
 		return 0
 	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9': // number
-		af, _ := parseJSONFloat(a)
-		bf, _ := parseJSONFloat(b)
-		if af < bf {
-			return -1
+		if cmp, ok := compareJSONNumberLiterals(a, b); ok {
+			return cmp
 		}
-		if af > bf {
-			return 1
+		af, aOk := parseJSONFloat(a)
+		bf, bOk := parseJSONFloat(b)
+		if aOk && bOk {
+			if af < bf {
+				return -1
+			}
+			if af > bf {
+				return 1
+			}
+			return 0
 		}
-		return 0
+		return bytesCompare(trimWhitespace(a), trimWhitespace(b))
 	case '"': // string: lexicographic byte comparison of content
 		ac := as.readString()
 		bc := bs.readString()
@@ -6281,6 +6460,31 @@ func normalizeOutputValue(value, buf []byte) []byte {
 	out = append(out, '"')
 	out = appendCanonicalRawJSONStringContent(out, raw)
 	return append(out, '"')
+}
+
+func jqTypeValueForError(value []byte) string {
+	s := scanner{data: value}
+	s.skipWhitespace()
+	typeName := "number"
+	if s.pos < len(s.data) {
+		switch s.data[s.pos] {
+		case '"':
+			typeName = "string"
+		case 'n':
+			typeName = "null"
+		case 't', 'f':
+			typeName = "boolean"
+		case '[':
+			typeName = "array"
+		case '{':
+			typeName = "object"
+		}
+	}
+	raw := string(trimWhitespace(value))
+	if len(raw) > 14 {
+		raw = raw[:11] + "..."
+	}
+	return fmt.Sprintf("%s (%s)", typeName, raw)
 }
 
 func catchInputFromError(err error) []byte {

@@ -42,16 +42,16 @@ const manTestLocalCache = "testdata/man.test"
 //
 // Official-suite snapshot for this branch:
 //   - Total: 751
-//   - Skipped: 303
-//   - Attempted: 448
-//   - Passed: 448
+//   - Skipped: 245
+//   - Attempted: 506
+//   - Passed: 506
 //   - Failed: 0
 //
 // Skip families currently driving the branch:
-//   - foreach / label / break
+//   - label / break
 //   - leaf_paths
 //   - def
-//   - assignment/update syntax and remaining parser breadth gaps
+//   - assignment/update syntax, @format templates, and remaining parser breadth gaps
 //
 // unsupportedOps lists functions/syntax that fastjq does not implement.
 // A test whose program contains any of these tokens is skipped — NOT counted
@@ -63,8 +63,8 @@ var unsupportedOps = []string{
 	"leaf_paths",
 	// User-defined functions
 	"def ",
-	// Foreach / label-break
-	"foreach", "label", "break",
+	// label-break
+	"label", "break",
 	// nan/infinite/predicates: now implemented
 	// 2/3-arg math: hypot/fma REJECTED — 0 exclusive tests (all also blocked by as-$)
 	// pow(x;y) is now implemented
@@ -222,6 +222,9 @@ func isBlankOrComment(s string) bool {
 // that appear as bare values — these would be inside quoted strings if
 // they were data, so matching without a leading quote is safe.
 func isUnsupported(program string) string {
+	if strings.Contains(program, "del((") {
+		return "dynamic del() path"
+	}
 	for _, op := range unsupportedOps {
 		if containsUnsupportedOp(program, op) {
 			return op
@@ -484,6 +487,9 @@ func jsonNormalized(s string) string {
 }
 
 func numericEquiv(a, b string) bool {
+	if cmp, ok := compareJSONNumberStrings(a, b); ok {
+		return cmp == 0
+	}
 	var fa, fb float64
 	if _, err := fmt.Sscanf(a, "%g", &fa); err != nil {
 		return false
@@ -560,10 +566,160 @@ func jsonNumbersEqual(a, b json.Number) bool {
 	if a == b {
 		return true
 	}
+	if cmp, ok := compareJSONNumberStrings(string(a), string(b)); ok {
+		return cmp == 0
+	}
 	ar, aok := new(big.Rat).SetString(string(a))
 	br, bok := new(big.Rat).SetString(string(b))
 	if aok && bok {
 		return ar.Cmp(br) == 0
 	}
 	return numericEquiv(string(a), string(b))
+}
+
+type decimalNumber struct {
+	neg    bool
+	digits string
+	exp10  int64
+}
+
+func compareJSONNumberStrings(a, b string) (int, bool) {
+	da, aok := parseDecimalNumber(a)
+	db, bok := parseDecimalNumber(b)
+	if !aok || !bok {
+		return 0, false
+	}
+	return compareDecimalNumbers(da, db), true
+}
+
+func parseDecimalNumber(s string) (decimalNumber, bool) {
+	if s == "" {
+		return decimalNumber{}, false
+	}
+	i := 0
+	neg := false
+	if s[i] == '-' {
+		neg = true
+		i++
+		if i >= len(s) {
+			return decimalNumber{}, false
+		}
+	}
+
+	digits := make([]byte, 0, len(s))
+	sawDigit := false
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		digits = append(digits, s[i])
+		sawDigit = true
+		i++
+	}
+
+	fracDigits := int64(0)
+	if i < len(s) && s[i] == '.' {
+		i++
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			digits = append(digits, s[i])
+			fracDigits++
+			sawDigit = true
+			i++
+		}
+	}
+	if !sawDigit {
+		return decimalNumber{}, false
+	}
+
+	exp10 := int64(0)
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i >= len(s) {
+			return decimalNumber{}, false
+		}
+		expNeg := false
+		if s[i] == '+' || s[i] == '-' {
+			expNeg = s[i] == '-'
+			i++
+		}
+		if i >= len(s) || s[i] < '0' || s[i] > '9' {
+			return decimalNumber{}, false
+		}
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			exp10 = exp10*10 + int64(s[i]-'0')
+			i++
+		}
+		if expNeg {
+			exp10 = -exp10
+		}
+	}
+	if i != len(s) {
+		return decimalNumber{}, false
+	}
+
+	leading := 0
+	for leading < len(digits) && digits[leading] == '0' {
+		leading++
+	}
+	digits = digits[leading:]
+	if len(digits) == 0 {
+		return decimalNumber{digits: "0"}, true
+	}
+
+	exp10 -= fracDigits
+	for len(digits) > 1 && digits[len(digits)-1] == '0' {
+		digits = digits[:len(digits)-1]
+		exp10++
+	}
+	return decimalNumber{neg: neg, digits: string(digits), exp10: exp10}, true
+}
+
+func compareDecimalNumbers(a, b decimalNumber) int {
+	aZero := a.digits == "0"
+	bZero := b.digits == "0"
+	if aZero && bZero {
+		return 0
+	}
+	if a.neg != b.neg {
+		if a.neg {
+			return -1
+		}
+		return 1
+	}
+
+	magCmp := compareDecimalNumberMagnitudes(a, b)
+	if a.neg {
+		return -magCmp
+	}
+	return magCmp
+}
+
+func compareDecimalNumberMagnitudes(a, b decimalNumber) int {
+	aAdj := int64(len(a.digits)) + a.exp10
+	bAdj := int64(len(b.digits)) + b.exp10
+	if aAdj < bAdj {
+		return -1
+	}
+	if aAdj > bAdj {
+		return 1
+	}
+
+	maxLen := len(a.digits)
+	if len(b.digits) > maxLen {
+		maxLen = len(b.digits)
+	}
+	for i := 0; i < maxLen; i++ {
+		da := byte('0')
+		db := byte('0')
+		if i < len(a.digits) {
+			da = a.digits[i]
+		}
+		if i < len(b.digits) {
+			db = b.digits[i]
+		}
+		if da < db {
+			return -1
+		}
+		if da > db {
+			return 1
+		}
+	}
+	return 0
 }

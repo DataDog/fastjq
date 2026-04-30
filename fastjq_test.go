@@ -169,6 +169,14 @@ func TestReduceBuiltin(t *testing.T) {
 func TestReduceBuiltinCompositions(t *testing.T) {
 	assertQuery(t, `[-reduce -.[] as $x (0; . + $x)]`, `[1,2,3]`, `[6]`)
 	assertQuery(t, `reduce .[] as $x (0; . + $x) as $x | $x`, `[1,2,3]`, `6`)
+	assertQuery(t, `reduce .[] as $x (0; ., . + $x)`, `[1,2]`, `3`)
+}
+
+func TestForeachBuiltin(t *testing.T) {
+	assertQueryAll(t, `foreach .[] as $x (0; . + $x)`, `[1,2,4]`, `1`, `3`, `7`)
+	assertQueryAll(t, `foreach .[] as $x (0; . + $x; [., $x])`, `[1,2,4]`, `[1,1]`, `[3,2]`, `[7,4]`)
+	assertQueryAll(t, `10 as $y | foreach .[] as $x (0; . + $x + $y; [., $x, $y])`, `[1,2]`, `[11,1,10]`, `[23,2,10]`)
+	assertQueryAll(t, `foreach .[] as $x (0; ., . + $x; .)`, `[1,2]`, `0`, `1`, `1`, `3`)
 }
 
 func TestToBoolean(t *testing.T) {
@@ -265,6 +273,24 @@ func TestDynamicIndexScope(t *testing.T) {
 	assertQuery(t, `try ("foobar" | .[1.5]) catch .`, `null`, `"Cannot index string with number"`)
 }
 
+func TestParserBreadthGeneratorsAndPostfix(t *testing.T) {
+	assertQueryAll(t, `1,1`, `null`, `1`, `1`)
+	assertQueryAll(t, `[1,2,3][]`, `null`, `1`, `2`, `3`)
+	assertQueryAll(t, `([5,5][])`, `null`, `5`, `5`)
+	assertQueryAll(t, `join(",","/")`, `["a","b"]`, `"a,b"`, `"a/b"`)
+	assertQuery(t, `first(1,error("foo"))`, `null`, `1`)
+	assertQuery(t, `[range(3,5)]`, `null`, `[0,1,2,0,1,2,3,4]`)
+	assertQuery(t, `[limit(2,4; range(5))]`, `null`, `[0,1,0,1,2,3]`)
+	assertQuery(t, `[nth(0,2; range(5))]`, `null`, `[0,2]`)
+	assertQueryAll(t, `{x:(1,2)} | .x`, `null`, `1`, `2`)
+	assertQuery(t, `[][.]`, `1000000000000000000`, `null`)
+	assertQuery(t, `map([1,2][0:.])`, `[-1,1,2,3,1000000000000000000]`, `[[1],[1],[1,2],[1,2],[1,2]]`)
+}
+
+func TestHugeExponentComparison(t *testing.T) {
+	assertQueryAll(t, `5E500000000 > 5E-5000000000, 10000E500000000 > 10000E-5000000000`, `null`, `true`, `true`)
+}
+
 func TestPathBuiltinErrors(t *testing.T) {
 	assertQuery(t, `try path(.a | map(select(.b == 0))) catch .`, `{"a":[{"b":0}]}`, `"Invalid path expression with result [{\"b\":0}]"`)
 	assertQuery(t, `try path(.a | map(select(.b == 0)) | .[0]) catch .`, `{"a":[{"b":0}]}`, `"Invalid path expression near attempt to access element 0 of [{\"b\":0}]"`)
@@ -309,6 +335,10 @@ func TestGetPathBuiltinVariadic(t *testing.T) {
 func TestGetPathBuiltinArrayIndexing(t *testing.T) {
 	assertQuery(t, `map(getpath([2]))`, `[[0],[0,1],[0,1,2]]`, `[null,null,2]`)
 	assertQuery(t, `getpath([-1])`, `[1,2]`, `2`)
+}
+
+func TestMinusTypeErrorFormatting(t *testing.T) {
+	assertQuery(t, `try (.-.) catch .`, `"very-long-string"`, `"string (\"very-long-...) and string (\"very-long-...) cannot be subtracted"`)
 }
 
 func TestGetPathBuiltinErrors(t *testing.T) {

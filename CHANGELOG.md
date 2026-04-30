@@ -10,13 +10,14 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 - Added lexical variable binding for simple jq forms: `expr as $x | body` and `$x` references across later pipeline stages.
 - Added jq-compatible `reduce gen as $x (init; update)` for simple accumulator folds over generator outputs.
+- Added jq-compatible `foreach gen as $x (init; update; extract?)`, including omitted-extract identity behavior and jq-style last-update carry-forward semantics.
 - Added jq-style multi-index array access and deletion forms such as `.[4,2]` and `del(.[1,2])`.
 - Added jq-compatible builtins `abs`, `trim`, `ltrim`, `rtrim`, `toboolean`, `keys`, and `skip`.
 - Added jq-compatible `paths` and `paths(filter)` for non-root structural path enumeration.
 - Added jq-compatible `path(expr)` for symbolic path extraction across direct field, index, dynamic-index, iterator, `select`, and pipe compositions.
 - Added jq-compatible `getpath(path)` with variadic path-output support and `$var` path arguments.
 - Added jq-compatible `setpath(path; value)` and `delpaths(paths)` for direct path-array updates.
-- Added benchmark coverage for the new public surface: variable binding, `abs`, `toboolean`, `trim`, `ltrim`, `rtrim`, `keys`, `skip`, `paths`, `path`, `getpath`, `setpath`, and `delpaths`.
+- Added benchmark coverage for the new public surface: variable binding, `abs`, `toboolean`, `trim`, `ltrim`, `rtrim`, `keys`, `skip`, `reduce`, `foreach`, `paths`, `path`, `getpath`, `setpath`, and `delpaths`.
 - Added jq-style unary negation (`-expr`) for non-literal expressions such as `-$x`.
 - Added numeric-expression slice bounds and chained slice parsing, including forms like `.[1.2:3.5]`, `.[:rindex("x")]`, and `.[3:3][1:]`.
 
@@ -37,6 +38,9 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 - Fixed path-update error propagation so `try`/`catch` sees jq-style raw messages even when `setpath(...)` appears inside array/object construction.
 - Fixed `tojson | fromjson` depth-limit parity so 10,001-deep structures now reach jq's `"Exceeds depth limit for parsing"` error before stringify truncation kicks in.
 - Fixed `del(...)` argument flattening so jq-style grouped bracket selectors like `del(.[1,2])` delete multiple array indices instead of failing validation.
+- Fixed multi-output arithmetic ordering to match jq when both operands are generators, which unblocks `foreach` cases like `.[] / .[]`.
+- Fixed giant-exponent numeric comparison handling and jq-suite numeric-equivalence checks so numbers like `5E500000000` and `5E-5000000000` compare correctly.
+- Fixed jq-style subtraction diagnostics for non-numeric values, including typed/truncated messages like `string ("very-long-...) and string ("very-long-...) cannot be subtracted`.
 
 ### Tradeoffs
 

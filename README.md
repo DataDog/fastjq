@@ -131,7 +131,7 @@ fastjq supports a large targeted subset of jq. The complete reference with examp
 
 - **Access:** `.`, `.foo`, `.[0]`, `.[i,j]`, `.[]`, `.[n:m]`, `.foo?`, `paths`, `path(expr)`, chained access
 - **Modification:** `del(.foo)`, `del(.[i,j])`, `del(.[n:m])`, `setpath(path; value)`, `delpaths(paths)`, `{name, a: .b}`, `[.a, .b]`
-- **Control flow:** `\|`, `select`, `if-elif-else`, `try-catch`, `//`, `empty`, `expr as $x | body`, `reduce`, `"\(expr)"`
+- **Control flow:** `\|`, `select`, `if-elif-else`, `try-catch`, `//`, `empty`, `expr as $x | body`, `reduce`, `foreach`, `"\(expr)"`
 - **Arithmetic:** `+`, `-`, `*`, `/`, `%`, `add`, `floor`, `ceil`, `round`, `nearbyint`
 - **Math:** `abs`, `sqrt`, `log`, `exp`, `sin`, `cos`, `atan`, `tgamma`, `j0`, `pow(x;y)`, and 15 more — all zero-alloc
 - **Special values:** `nan`, `infinite`, `-nan`, `-infinite`; `isnan`, `isinfinite`, `isfinite`, `isnormal`; `nan`/`infinite` output as `null` (JSON-safe)
@@ -148,11 +148,11 @@ fastjq is validated against two official jq test files (`go test ./jqtest/`).
 
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
-| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 229 | 292 | **292 (100.0%)** | 0 |
-| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 74 | 156 | **156 (100.0%)** | 0 |
-| **Combined** | **751** | **303** | **448** | **448 (100.0%)** | **0** |
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 185 | 336 | **336 (100.0%)** | 0 |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 60 | 170 | **170 (100.0%)** | 0 |
+| **Combined** | **751** | **245** | **506** | **506 (100.0%)** | **0** |
 
-All currently attempted official jq tests pass on this branch, and the branch now clears a majority of the full official suite. Recent parity work also removed compile skips around unary minus, dynamic slice bounds, `paths`, `path(...)`, `getpath(...)`, `setpath(...)`, `delpaths(...)`, `reduce`, and jq-style multi-index array access/deletion (`.[4,2]`, `del(.[1,2])`). The remaining skipped tests are concentrated in still-unimplemented families such as recursive descent (`..`), `foreach`, user-defined functions (`def`), assignment/update syntax, date functions, `env`, and other items listed in the [Limitations](#limitations) section.
+All currently attempted official jq tests pass on this branch, and the branch now clears a wider majority of the full official suite. Recent parity work also removed compile skips around unary minus, dynamic slice bounds, `paths`, `path(...)`, `getpath(...)`, `setpath(...)`, `delpaths(...)`, `reduce`, `foreach`, jq-style multi-index array access/deletion (`.[4,2]`, `del(.[1,2])`), and identity-before-operator forms like `.-.`. The remaining skipped tests are concentrated in still-unimplemented families such as recursive descent (`..`), user-defined functions (`def`), assignment/update syntax, date functions, `env`, and other items listed in the [Limitations](#limitations) section.
 
 ## Limitations
 
@@ -178,7 +178,7 @@ Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are 
 
 **`nan`/`infinite` are supported but serialize to `null` at output.** `nan | type` = `"number"`, `nan | isnan` = `true`, `infinite * -1 < 0` = `true`. `nan` and `infinite` values convert to JSON `null` at the API boundary. Values inside arrays/objects are also normalized to `null`.
 
-**Not yet implemented:** `leaf_paths`, `foreach`, `label-break`, user-defined functions (`def`), `hypot(x;y)`, `fma(x;y;z)`.
+**Not yet implemented:** `leaf_paths`, `label-break`, user-defined functions (`def`), `@format "template"`, assignment/update syntax, `hypot(x;y)`, `fma(x;y;z)`.
 
 **Output is always compact JSON.** fastjq never panics — malformed input may produce wrong results but the process is always safe.
 

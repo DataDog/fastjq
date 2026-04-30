@@ -91,6 +91,7 @@ var tableRows = []row{
 	{"`values`", "9-elem array", "Small_Values", "Small_Values"},
 	{"`skip(2; .[])`", "5-elem array", "Small_Skip", "Small_Skip"},
 	{"`reduce .[] as $x (0; . + $x)`", "5-elem array", "Small_Reduce", "Small_Reduce"},
+	{"`foreach .[] as $x (0; . + $x)`", "5-elem array", "Small_Foreach", "Small_Foreach"},
 	{"`paths`", "Small (~100B)", "Small_Paths", "Small_Paths"},
 	{"`path(.field_0)`", "Small (~100B)", "Small_Path", "Small_Path"},
 	// Object transforms

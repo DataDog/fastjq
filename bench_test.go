@@ -426,6 +426,9 @@ func BenchmarkFastjq_Small_Skip(b *testing.B) {
 func BenchmarkFastjq_Small_Reduce(b *testing.B) {
 	benchFastjqObj(b, `reduce .[] as $x (0; . + $x)`, []byte(`[1,2,3,4,5]`))
 }
+func BenchmarkFastjq_Small_Foreach(b *testing.B) {
+	benchFastjqFunc(b, `foreach .[] as $x (0; . + $x)`, []byte(`[1,2,3,4,5]`))
+}
 func BenchmarkFastjq_Large_Limit(b *testing.B) {
 	benchFastjqFunc(b, `limit(10; .[])`, largeIntArr)
 }
@@ -603,6 +606,9 @@ func BenchmarkGojq_Small_Skip(b *testing.B) {
 }
 func BenchmarkGojq_Small_Reduce(b *testing.B) {
 	benchGojqObj(b, `reduce .[] as $x (0; . + $x)`, []byte(`[1,2,3,4,5]`))
+}
+func BenchmarkGojq_Small_Foreach(b *testing.B) {
+	benchGojqIter(b, `foreach .[] as $x (0; . + $x)`, []byte(`[1,2,3,4,5]`))
 }
 func BenchmarkGojq_Large_Limit(b *testing.B) {
 	benchGojqIter(b, `limit(10; .[])`, largeIntArr)

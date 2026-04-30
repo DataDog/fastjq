@@ -18,122 +18,123 @@ All times in µs. ¹Large Select uses the last field — fastjq scans the full d
 
 | Operation | Input | fastjq (µs) | gojq (µs) | Speedup | fastjq allocs | gojq allocs |
 |-----------|-------|------------|----------|---------|---------------|-------------|
-| `.field` | Small (~100B) | 0.081 | 0.915 | **11x** | 0 | 27 |
-| `.field` | Large (~100KB) | 7.23 | 547 | **76x** | 0 | 2835 |
-| `del(.f)` | Small (~100B) | 0.153 | 2.17 | **14x** | 0 | 58 |
-| `del(.f)` | Medium (~2KB) | 2.14 | 17.9 | **8.4x** | 0 | 323 |
-| `del(.f)` | Large (~100KB) | 34.0 | 757 | **22x** | 0 | 4666 |
-| `.[n]` | 5-elem array | 0.021 | 0.585 | **27x** | 0 | 20 |
-| `del(.[n], .[m])` | 5-elem array | 0.079 | 1.62 | **21x** | 0 | 53 |
-| `{f0, f2}` (construct) | Small (~100B) | 0.135 | 1.30 | **9.6x** | 0 | 37 |
-| `{f0, f50}` (construct) | Large (~100KB) | 7.70 | 557 | **72x** | 0 | 2867 |
-| `.[]` iterator | 5-elem array | 0.061 | 0.714 | **12x** | 2 | 26 |
-| `.[]` iterator | 200-elem array | 7.20 | 82.7 | **11x** | 2 | 1811 |
-| `select(.f == "x")` | Small (~100B) | 0.123 | 1.61 | **13x** | 0 | 45 |
-| `select(.f == "x")`¹ | Large (~100KB, last field) | 32.0 | 732 | **23x** | 0 | 4651 |
-| `select(.f and .g)` | Small (~100B) | 0.159 | 1.72 | **11x** | 0 | 46 |
-| `select(.f or .g)` | Small (~100B) | 0.071 | 1.69 | **24x** | 0 | 46 |
-| `has("key")` in select | Small (~100B) | 0.087 | 1.59 | **18x** | 0 | 45 |
-| `has("key")` in select | Large (~100KB) | 32.1 | 726 | **23x** | 0 | 4651 |
-| `if-then-else` | Small (~100B) | 0.095 | 1.01 | **11x** | 0 | 30 |
-| `.f // "default"` | Small (~100B) | 0.088 | 1.02 | **12x** | 0 | 31 |
-| `try .field` (no error) | Small (~100B) | 4.56 | 1.02 | 0.2x† | 1 | 30 |
-| `.a + .b` (strings) | Small (~100B) | 0.052 | 0.650 | **12x** | 0 | 21 |
-| `"prefix" + .name` | Small (~100B) | 0.080 | 0.690 | **8.6x** | 0 | 23 |
-| `.a - .b` (subtract) | Small (~100B) | 0.048 | 0.646 | **13x** | 0 | 20 |
-| `.a * .b` (multiply) | Small (~100B) | 0.063 | 0.661 | **10x** | 0 | 21 |
-| `.a / .b` (divide) | Small (~100B) | 0.094 | 0.682 | **7.3x** | 0 | 21 |
-| `.a - .b` (array diff) | 5-elem arrays | 0.211 | 1.25 | **5.9x** | 0 | 33 |
-| `length` | Small (~100B) | 0.042 | 0.912 | **22x** | 0 | 27 |
-| `length` | Large (~100KB) | 31.0 | 540 | **17x** | 0 | 2835 |
-| `add` (numbers) | 5-elem array | 0.057 | 0.683 | **12x** | 0 | 28 |
-| `add` (strings) | 5-elem array | 0.137 | 0.838 | **6.1x** | 0 | 35 |
-| `flatten` | 3-elem nested array | 0.091 | 1.23 | **13x** | 0 | 38 |
-| `min` | 200-int array | 1.79 | 1.12 | 0.6x† | 0 | 15 |
-| `min_by(.value)` | 100-elem object array | 8.23 | 51.8 | **6.3x** | 0 | 1347 |
-| `sort` | 200-int array | 4.16 | 1.15 | 0.3x† | 14 | 15 |
-| `sort_by(.value)` | 100-elem object array | 16.3 | 86.7 | **5.3x** | 422 | 2145 |
-| `unique` | 200-int array | 5.41 | 1.14 | 0.2x† | 14 | 15 |
-| `group_by(.active)` | 100-elem object array | 20.8 | 95.9 | **4.6x** | 422 | 2260 |
-| `map(.name)` | 20-elem array (~600B) | 1.50 | 9.45 | **6.3x** | 29 | 251 |
-| `map(.name)` | 200-elem array (~6KB) | 14.4 | 87.6 | **6.1x** | 209 | 2237 |
-| `any` | 5-elem array | 0.042 | 1.79 | **43x** | 0 | 39 |
-| `any(expr)` | 5-elem array | 0.361 | 1.97 | **5.5x** | 12 | 49 |
-| `any(expr)`² | 200-int array | 3.67 | 1.60 | 0.4x† | 0 | 29 |
-| `any(gen; cond)`² | 200-int array | 4.35 | 1.74 | 0.4x† | 3 | 27 |
-| `first(expr)` | 5-elem array | 0.231 | 1.43 | **6.2x** | 9 | 39 |
-| `first(expr)`² | 200-int array | 6.30 | 1.33 | 0.2x† | 107 | 23 |
-| `last(expr)` | 5-elem array | 0.295 | 1.80 | **6.1x** | 10 | 43 |
-| `last(expr)`² | 200-int array | 5.85 | 1.44 | 0.2x† | 107 | 24 |
-| `limit(3; expr)` | 5-elem array | 0.098 | 1.58 | **16x** | 5 | 42 |
-| `limit(10; expr)` | 200-int array | 0.642 | 1.49 | **2.3x** | 5 | 24 |
-| `.[1:4]` slice | 6-elem array | 4.49 | 0.779 | 0.2x† | 1 | 21 |
-| `values` | 9-elem array | 0.245 | 2.20 | **9x** | 13 | 51 |
-| `skip(2; .[])` | 5-elem array | 0.137 | 1.66 | **12x** | 7 | 43 |
-| `reduce .[] as $x (0; . + $x)` | 5-elem array | 133 | 1.34 | 0.0x† | 86 | 42 |
-| `paths` | Small (~100B) | 0.355 | 4.09 | **12x** | 17 | 119 |
-| `path(.field_0)` | Small (~100B) | 0.109 | 1.14 | **10x** | 6 | 36 |
-| `to_entries` | Small (~100B) | 0.162 | 3.87 | **24x** | 0 | 98 |
-| `to_entries` | Large (~100KB) | 33.6 | 800 | **24x** | 0 | 6465 |
-| `getpath(["field_0"])` | Small (~100B) | 0.233 | 0.964 | **4.1x** | 12 | 29 |
-| `setpath(["field_0"]; "y")` | Small (~100B) | 0.373 | 1.60 | **4.3x** | 12 | 43 |
-| `delpaths([["field_0"]])` | Small (~100B) | 0.670 | 1.62 | **2.4x** | 22 | 40 |
-| `keys` | Small (~100B) | 0.276 | 1.23 | **4.5x** | 7 | 35 |
-| `keys_unsorted` | Small (~100B) | 0.164 | 1.20 | **7.3x** | 0 | 35 |
-| `keys_unsorted` | Large (~100KB) | 31.0 | 561 | **18x** | 0 | 3039 |
-| `object merge .a + .b` | Small (~100B) | 0.163 | 1.49 | **9.1x** | 0 | 33 |
-| `tojson` | Small (~100B) | 0.481 | 4.25 | **8.8x** | 0 | 39 |
-| `fromjson` | JSON string | 0.185 | 1.35 | **7.3x** | 0 | 31 |
-| `tonumber` | `"42"` string | 0.013 | 0.433 | **33x** | 0 | 11 |
-| `toboolean` | `"true"` string | 0.0085 | 0.409 | **48x** | 0 | 11 |
-| `split(",")` | short string | 0.141 | 0.725 | **5.1x** | 0 | 21 |
-| `join(",")` | 5-elem array | 0.099 | 0.923 | **9.3x** | 0 | 37 |
-| `ascii_downcase` in select | Small (~100B) | 0.141 | 1.70 | **12x** | 0 | 46 |
-| `ascii_downcase` in select | Large (~100KB) | 33.6 | 772 | **23x** | 0 | 4652 |
-| `startswith("s")` | Small (~100B) | 0.132 | 1.62 | **12x** | 0 | 45 |
-| `startswith("s")` | Large (~100KB) | 33.5 | 747 | **22x** | 0 | 4651 |
-| `endswith("s")` | Small (~100B) | 0.132 | 1.62 | **12x** | 0 | 45 |
-| `trim` | short string | 0.050 | 0.348 | **6.9x** | 1 | 12 |
-| `ltrim` | short string | 0.045 | 0.351 | **7.8x** | 1 | 12 |
-| `rtrim` | short string | 0.049 | 0.356 | **7.2x** | 1 | 12 |
-| `ltrimstr("s")` | Small (~100B) | 0.124 | 0.987 | **8x** | 0 | 30 |
-| `rtrimstr("s")` | Small (~100B) | 0.120 | 1.18 | **9.8x** | 0 | 30 |
-| `select` + string ops + arith + construct | ~200B log event | 1.02 | 2.99 | **2.9x** | 0 | 69 |
-| `[.[] \| select + arith + construct]` | 20-elem array (~1.5KB) | 8.86 | 23.7 | **2.7x** | 106 | 525 |
-| `length + map + add + min_by + any` | 20-elem array (~1.5KB) | 12.5 | 22.1 | **1.8x** | 106 | 555 |
-| `map(try {…} catch …)` | 20-elem array (~1.5KB) | 268 | 28.0 | 0.1x† | 187 | 641 |
-| `map(if … elif … else …)` | 20-elem array (~1.5KB) | 9.18 | 26.0 | **2.8x** | 127 | 595 |
-| `[.[] \| str + tostring + str]` | 20-elem array (~1.5KB) | 11.0 | 25.0 | **2.3x** | 298 | 686 |
-| `to_entries \| map(select) \| from_entries` | ~200B log event | 3.41 | 14.2 | **4.2x** | 69 | 250 |
-| `@base64` | 34-char string | 0.131 | 0.476 | **3.6x** | 4 | 15 |
-| `@base64d` | 48-char encoded | 0.191 | 0.506 | **2.6x** | 0 | 15 |
-| `@uri` | 36-char URL string | 0.164 | 0.656 | **4x** | 4 | 14 |
-| `index(",")` | short string | 0.090 | 0.850 | **9.5x** | 1 | 31 |
-| `indices(",")` | short string | 0.194 | 2.04 | **11x** | 1 | 97 |
-| `sqrt` | float (e≈2.718) | 0.072 | 0.471 | **6.6x** | 0 | 12 |
-| `log` | float (e≈2.718) | 0.040 | 0.465 | **12x** | 0 | 12 |
-| `sin` | float (e≈2.718) | 0.081 | 0.504 | **6.2x** | 0 | 12 |
-| `atan` | integer 1 | 0.053 | 0.413 | **7.7x** | 0 | 11 |
-| `exp` | integer 1 | 0.063 | 0.468 | **7.4x** | 0 | 11 |
-| `tgamma` | integer 5 | 0.014 | 0.443 | **32x** | 0 | 11 |
-| `fabs` | float -3.14 | 0.058 | 0.483 | **8.3x** | 0 | 12 |
-| `abs` | float -3.14 | 0.010 | 0.465 | **46x** | 0 | 12 |
-| `expr as $x \| body` | Small (~20B object) | 30.0 | 0.844 | 0.0x† | 18 | 24 |
-| ``"\(.level): \(.svc)"`` | ~45B object | 0.116 | 1.08 | **9.3x** | 0 | 35 |
-| ``"user \(.name) …"`` | ~45B object | 0.089 | 1.26 | **14x** | 0 | 40 |
-| `isempty(empty)` | null | 0.073 | 0.609 | **8.3x** | 6 | 18 |
-| `isempty(.[])` | 5-elem array | 0.090 | 1.09 | **12x** | 6 | 33 |
-| `nth(2; .[])` | 5-elem array | 0.132 | 2.25 | **17x** | 7 | 49 |
-| `range(10)` (10 values) | null | 0.200 | 1.04 | **5.2x** | 12 | 18 |
-| `limit(3; range(1000))` | null — only 3 allocs | 0.139 | 1.56 | **11x** | 8 | 26 |
-| `test(re)` hit | short string | 0.111 | 1.32 | **12x** | 0 | 26 |
-| `test(re)` miss | short string | 0.099 | 1.28 | **13x** | 0 | 26 |
-| `match(re)` hit | short string | 0.223 | 2.98 | **13x** | 1 | 66 |
-| `match(re)` miss | short string | 0.628 | 1.67 | **2.7x** | 0 | 24 |
-| `capture(re)` hit | short string | 0.217 | — | — | 1 | — |
-| `scan(re)` no groups (4 matches) | short string | 0.567 | — | — | 17 | — |
-| `sub(re; s)` hit | short string | 0.127 | — | — | 1 | — |
-| `gsub(re; s)` hit (4 matches) | short string | 0.600 | — | — | 5 | — |
+| `.field` | Small (~100B) | 0.087 | 1.01 | **12x** | 0 | 27 |
+| `.field` | Large (~100KB) | 7.53 | 603 | **80x** | 0 | 2835 |
+| `del(.f)` | Small (~100B) | 0.156 | 2.31 | **15x** | 0 | 58 |
+| `del(.f)` | Medium (~2KB) | 2.27 | 19.6 | **8.7x** | 0 | 323 |
+| `del(.f)` | Large (~100KB) | 35.8 | 819 | **23x** | 0 | 4666 |
+| `.[n]` | 5-elem array | 0.022 | 0.644 | **29x** | 0 | 20 |
+| `del(.[n], .[m])` | 5-elem array | 0.079 | 1.68 | **21x** | 0 | 53 |
+| `{f0, f2}` (construct) | Small (~100B) | 0.130 | 1.40 | **11x** | 0 | 37 |
+| `{f0, f50}` (construct) | Large (~100KB) | 8.08 | 641 | **79x** | 0 | 2867 |
+| `.[]` iterator | 5-elem array | 0.065 | 0.855 | **13x** | 2 | 26 |
+| `.[]` iterator | 200-elem array | 7.90 | 92.4 | **12x** | 2 | 1811 |
+| `select(.f == "x")` | Small (~100B) | 0.124 | 1.82 | **15x** | 0 | 45 |
+| `select(.f == "x")`¹ | Large (~100KB, last field) | 33.1 | 815 | **25x** | 0 | 4652 |
+| `select(.f and .g)` | Small (~100B) | 0.166 | 1.94 | **12x** | 0 | 46 |
+| `select(.f or .g)` | Small (~100B) | 0.074 | 1.88 | **26x** | 0 | 46 |
+| `has("key")` in select | Small (~100B) | 0.088 | 1.76 | **20x** | 0 | 45 |
+| `has("key")` in select | Large (~100KB) | 32.6 | 794 | **24x** | 0 | 4651 |
+| `if-then-else` | Small (~100B) | 0.098 | 1.13 | **12x** | 0 | 30 |
+| `.f // "default"` | Small (~100B) | 0.096 | 1.14 | **12x** | 0 | 31 |
+| `try .field` (no error) | Small (~100B) | 4.75 | 1.07 | 0.2x† | 1 | 30 |
+| `.a + .b` (strings) | Small (~100B) | 0.053 | 0.700 | **13x** | 0 | 21 |
+| `"prefix" + .name` | Small (~100B) | 0.082 | 0.754 | **9.2x** | 0 | 23 |
+| `.a - .b` (subtract) | Small (~100B) | 0.050 | 0.725 | **15x** | 0 | 20 |
+| `.a * .b` (multiply) | Small (~100B) | 0.066 | 0.745 | **11x** | 0 | 21 |
+| `.a / .b` (divide) | Small (~100B) | 0.098 | 0.798 | **8.1x** | 0 | 21 |
+| `.a - .b` (array diff) | 5-elem arrays | 0.213 | 1.28 | **6x** | 0 | 33 |
+| `length` | Small (~100B) | 0.041 | 1.02 | **25x** | 0 | 27 |
+| `length` | Large (~100KB) | 32.8 | 594 | **18x** | 0 | 2835 |
+| `add` (numbers) | 5-elem array | 0.057 | 0.748 | **13x** | 0 | 28 |
+| `add` (strings) | 5-elem array | 0.135 | 0.913 | **6.8x** | 0 | 35 |
+| `flatten` | 3-elem nested array | 0.092 | 1.35 | **15x** | 0 | 38 |
+| `min` | 200-int array | 3.88 | 1.25 | 0.3x† | 300 | 15 |
+| `min_by(.value)` | 100-elem object array | 10.9 | 57.3 | **5.3x** | 297 | 1347 |
+| `sort` | 200-int array | 6.76 | 1.26 | 0.2x† | 265 | 15 |
+| `sort_by(.value)` | 100-elem object array | 20.2 | 93.8 | **4.7x** | 667 | 2145 |
+| `unique` | 200-int array | 9.75 | 1.27 | 0.1x† | 466 | 15 |
+| `group_by(.active)` | 100-elem object array | 22.6 | 101 | **4.5x** | 422 | 2260 |
+| `map(.name)` | 20-elem array (~600B) | 1.66 | 10.3 | **6.2x** | 29 | 251 |
+| `map(.name)` | 200-elem array (~6KB) | 15.8 | 94.4 | **6x** | 209 | 2237 |
+| `any` | 5-elem array | 0.041 | 1.91 | **47x** | 0 | 39 |
+| `any(expr)` | 5-elem array | 0.391 | 2.15 | **5.5x** | 12 | 49 |
+| `any(expr)`² | 200-int array | 5.72 | 1.76 | 0.3x† | 205 | 29 |
+| `any(gen; cond)`² | 200-int array | 6.26 | 1.66 | 0.3x† | 206 | 27 |
+| `first(expr)` | 5-elem array | 0.332 | 1.55 | **4.7x** | 15 | 39 |
+| `first(expr)`² | 200-int array | 8.62 | 1.45 | 0.2x† | 312 | 23 |
+| `last(expr)` | 5-elem array | 0.432 | 2.01 | **4.7x** | 20 | 43 |
+| `last(expr)`² | 200-int array | 8.42 | 1.59 | 0.2x† | 310 | 24 |
+| `limit(3; expr)` | 5-elem array | 0.105 | 1.79 | **17x** | 5 | 42 |
+| `limit(10; expr)` | 200-int array | 0.681 | 1.66 | **2.4x** | 5 | 24 |
+| `.[1:4]` slice | 6-elem array | 4.70 | 0.876 | 0.2x† | 1 | 21 |
+| `values` | 9-elem array | 0.266 | 2.44 | **9.2x** | 13 | 51 |
+| `skip(2; .[])` | 5-elem array | 0.147 | 1.82 | **12x** | 7 | 43 |
+| `reduce .[] as $x (0; . + $x)` | 5-elem array | 106 | 1.52 | 0.0x† | 83 | 42 |
+| `foreach .[] as $x (0; . + $x)` | 5-elem array | 88.9 | 1.39 | 0.0x† | 97 | 39 |
+| `paths` | Small (~100B) | 0.384 | 4.36 | **11x** | 17 | 119 |
+| `path(.field_0)` | Small (~100B) | 0.118 | 1.24 | **10x** | 6 | 36 |
+| `to_entries` | Small (~100B) | 0.171 | 4.16 | **24x** | 0 | 98 |
+| `to_entries` | Large (~100KB) | 35.4 | 880 | **25x** | 0 | 6465 |
+| `getpath(["field_0"])` | Small (~100B) | 0.254 | 1.05 | **4.2x** | 12 | 29 |
+| `setpath(["field_0"]; "y")` | Small (~100B) | 0.408 | 1.73 | **4.2x** | 12 | 43 |
+| `delpaths([["field_0"]])` | Small (~100B) | 0.717 | 1.76 | **2.4x** | 22 | 40 |
+| `keys` | Small (~100B) | 0.295 | 1.31 | **4.4x** | 7 | 35 |
+| `keys_unsorted` | Small (~100B) | 0.175 | 1.31 | **7.5x** | 0 | 35 |
+| `keys_unsorted` | Large (~100KB) | 32.6 | 616 | **19x** | 0 | 3039 |
+| `object merge .a + .b` | Small (~100B) | 0.163 | 1.54 | **9.4x** | 0 | 33 |
+| `tojson` | Small (~100B) | 0.416 | 1.62 | **3.9x** | 0 | 39 |
+| `fromjson` | JSON string | 0.197 | 1.34 | **6.8x** | 0 | 31 |
+| `tonumber` | `"42"` string | 0.013 | 0.369 | **28x** | 0 | 11 |
+| `toboolean` | `"true"` string | 0.0086 | 0.359 | **42x** | 0 | 11 |
+| `split(",")` | short string | 0.146 | 0.780 | **5.4x** | 0 | 21 |
+| `join(",")` | 5-elem array | 0.100 | 1.06 | **11x** | 0 | 37 |
+| `ascii_downcase` in select | Small (~100B) | 0.137 | 1.84 | **13x** | 0 | 46 |
+| `ascii_downcase` in select | Large (~100KB) | 33.9 | 798 | **24x** | 0 | 4652 |
+| `startswith("s")` | Small (~100B) | 0.122 | 1.75 | **14x** | 0 | 45 |
+| `startswith("s")` | Large (~100KB) | 33.3 | 801 | **24x** | 0 | 4651 |
+| `endswith("s")` | Small (~100B) | 0.127 | 1.80 | **14x** | 0 | 45 |
+| `trim` | short string | 0.052 | 0.390 | **7.5x** | 1 | 12 |
+| `ltrim` | short string | 0.047 | 0.391 | **8.4x** | 1 | 12 |
+| `rtrim` | short string | 0.051 | 0.393 | **7.7x** | 1 | 12 |
+| `ltrimstr("s")` | Small (~100B) | 0.125 | 1.09 | **8.7x** | 0 | 30 |
+| `rtrimstr("s")` | Small (~100B) | 0.123 | 1.07 | **8.7x** | 0 | 30 |
+| `select` + string ops + arith + construct | ~200B log event | 1.06 | 2.98 | **2.8x** | 2 | 69 |
+| `[.[] \| select + arith + construct]` | 20-elem array (~1.5KB) | 9.15 | 22.8 | **2.5x** | 132 | 525 |
+| `length + map + add + min_by + any` | 20-elem array (~1.5KB) | 12.8 | 21.9 | **1.7x** | 144 | 555 |
+| `map(try {…} catch …)` | 20-elem array (~1.5KB) | 268 | 28.1 | 0.1x† | 187 | 641 |
+| `map(if … elif … else …)` | 20-elem array (~1.5KB) | 9.62 | 25.7 | **2.7x** | 181 | 595 |
+| `[.[] \| str + tostring + str]` | 20-elem array (~1.5KB) | 11.5 | 24.5 | **2.1x** | 298 | 686 |
+| `to_entries \| map(select) \| from_entries` | ~200B log event | 3.42 | 14.0 | **4.1x** | 69 | 250 |
+| `@base64` | 34-char string | 0.148 | 0.538 | **3.6x** | 4 | 15 |
+| `@base64d` | 48-char encoded | 0.217 | 0.565 | **2.6x** | 0 | 15 |
+| `@uri` | 36-char URL string | 0.168 | 0.689 | **4.1x** | 4 | 14 |
+| `index(",")` | short string | 0.098 | 0.944 | **9.7x** | 1 | 31 |
+| `indices(",")` | short string | 0.205 | 2.31 | **11x** | 1 | 97 |
+| `sqrt` | float (e≈2.718) | 0.071 | 0.467 | **6.6x** | 0 | 12 |
+| `log` | float (e≈2.718) | 0.040 | 0.456 | **11x** | 0 | 12 |
+| `sin` | float (e≈2.718) | 0.080 | 0.465 | **5.8x** | 0 | 12 |
+| `atan` | integer 1 | 0.052 | 0.399 | **7.6x** | 0 | 11 |
+| `exp` | integer 1 | 0.063 | 0.410 | **6.5x** | 0 | 11 |
+| `tgamma` | integer 5 | 0.013 | 0.389 | **31x** | 0 | 11 |
+| `fabs` | float -3.14 | 0.055 | 0.421 | **7.7x** | 0 | 12 |
+| `abs` | float -3.14 | 0.0093 | 0.418 | **45x** | 0 | 12 |
+| `expr as $x \| body` | Small (~20B object) | 29.6 | 0.803 | 0.0x† | 18 | 24 |
+| ``"\(.level): \(.svc)"`` | ~45B object | 0.120 | 1.06 | **8.8x** | 0 | 35 |
+| ``"user \(.name) …"`` | ~45B object | 0.088 | 1.23 | **14x** | 0 | 40 |
+| `isempty(empty)` | null | 0.073 | 0.602 | **8.2x** | 6 | 18 |
+| `isempty(.[])` | 5-elem array | 0.091 | 1.07 | **12x** | 6 | 33 |
+| `nth(2; .[])` | 5-elem array | 0.132 | 2.17 | **16x** | 7 | 49 |
+| `range(10)` (10 values) | null | 0.202 | 1.03 | **5.1x** | 12 | 18 |
+| `limit(3; range(1000))` | null — only 3 allocs | 0.137 | 1.52 | **11x** | 8 | 26 |
+| `test(re)` hit | short string | 0.107 | 1.34 | **12x** | 0 | 26 |
+| `test(re)` miss | short string | 0.099 | 1.27 | **13x** | 0 | 26 |
+| `match(re)` hit | short string | 0.222 | 3.05 | **14x** | 1 | 66 |
+| `match(re)` miss | short string | 0.629 | 1.72 | **2.7x** | 0 | 24 |
+| `capture(re)` hit | short string | 0.211 | — | — | 1 | — |
+| `scan(re)` no groups (4 matches) | short string | 0.557 | — | — | 17 | — |
+| `sub(re; s)` hit | short string | 0.125 | — | — | 1 | — |
+| `gsub(re; s)` hit (4 matches) | short string | 0.585 | — | — | 5 | — |
 
 ## Key Takeaways
 
@@ -150,263 +151,265 @@ All times in µs. ¹Large Select uses the last field — fastjq scans the full d
 Apple M4 Max, go1.25.4, `go test -bench=. -benchmem`. Updated 2026-04-30. Note: some first-run entries show spurious allocs (e.g. `KeysUnsorted` 3 allocs, `First` 1 alloc) due to benchmark calibration warmup — confirmed 0 allocs on repeat runs.
 
 ```
-BenchmarkFastjq_Small_Del-16                  	 7229762	       152.6 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Medium_Del-16                 	  553275	      2137 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Del-16                  	   35916	     33999 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Field-16                	16756353	        80.98 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Field-16                	  166813	      7231 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Index-16                	56907098	        21.34 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_ArrayDel-16             	15455949	        79.03 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Construct-16            	 9388290	       135.2 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Construct-16            	  161127	      7696 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Iterator-16             	19662298	        60.76 ns/op	      40 B/op	       2 allocs/op
-BenchmarkFastjq_Large_Iterator-16             	  167962	      7196 ns/op	      40 B/op	       2 allocs/op
-BenchmarkFastjq_Small_Select-16               	 9541447	       123.0 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Select-16               	   37851	     31991 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Alternative-16          	12645577	        88.09 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_SelectAnd-16            	 7564580	       159.4 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_SelectOr-16             	17187585	        70.59 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Has-16                  	14042190	        86.53 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Has-16                  	   38049	     32085 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_IfThenElse-16           	12664434	        94.72 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Length-16               	29467978	        42.30 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Length-16               	   39242	     30989 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Map-16                  	  801246	      1501 ns/op	     689 B/op	      29 allocs/op
-BenchmarkFastjq_Medium_Map-16                 	  163648	      7159 ns/op	    2609 B/op	     109 allocs/op
-BenchmarkFastjq_Large_Map-16                  	   84002	     14413 ns/op	    5009 B/op	     209 allocs/op
-BenchmarkFastjq_Small_ToEntries-16            	 7793008	       161.6 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_ToEntries-16            	   36496	     33612 ns/op	       6 B/op	       0 allocs/op
-BenchmarkFastjq_Small_KeysUnsorted-16         	 7342368	       164.2 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Keys-16                 	 4327372	       275.6 ns/op	     456 B/op	       7 allocs/op
-BenchmarkFastjq_Small_Paths-16                	 3404054	       354.8 ns/op	     400 B/op	      17 allocs/op
-BenchmarkFastjq_Small_Path-16                 	11253682	       108.9 ns/op	     168 B/op	       6 allocs/op
-BenchmarkFastjq_Small_GetPath-16              	 5047264	       232.5 ns/op	     272 B/op	      12 allocs/op
-BenchmarkFastjq_Small_SetPath-16              	 3202240	       372.6 ns/op	     264 B/op	      12 allocs/op
-BenchmarkFastjq_Small_DelPaths-16             	 1784334	       669.6 ns/op	     608 B/op	      22 allocs/op
-BenchmarkFastjq_Large_KeysUnsorted-16         	   38911	     31026 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Any-16                  	28993443	        41.57 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Any-16                  	  954080	      1310 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_AnyExpr-16              	 3237103	       360.6 ns/op	     144 B/op	      12 allocs/op
-BenchmarkFastjq_Large_AnyExpr-16              	  321100	      3674 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Add-16                  	21552142	        57.39 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_AddStrings-16           	 9141156	       137.4 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Flatten-16              	13276808	        91.12 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Split-16                	 8463778	       140.8 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Join-16                 	11874490	        99.45 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Values-16               	 4998598	       244.7 ns/op	     328 B/op	      13 allocs/op
-BenchmarkGojq_Small_Values-16                 	  545775	      2199 ns/op	    3144 B/op	      51 allocs/op
-BenchmarkFastjq_Small_Base64Encode-16         	 9162980	       131.4 ns/op	     120 B/op	       4 allocs/op
-BenchmarkFastjq_Small_Base64Decode-16         	 6066897	       191.3 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Base64Encode-16           	 2521222	       475.7 ns/op	    1321 B/op	      15 allocs/op
-BenchmarkGojq_Small_Base64Decode-16           	 2359654	       506.2 ns/op	    1321 B/op	      15 allocs/op
-BenchmarkFastjq_Small_IndexFind-16            	12983048	        89.92 ns/op	       3 B/op	       1 allocs/op
-BenchmarkFastjq_Small_IndicesAll-16           	 6231031	       194.2 ns/op	       3 B/op	       1 allocs/op
-BenchmarkGojq_Small_IndexFind-16              	 1409239	       850.0 ns/op	    2274 B/op	      31 allocs/op
-BenchmarkGojq_Small_IndicesAll-16             	  601688	      2043 ns/op	    3907 B/op	      97 allocs/op
-BenchmarkFastjq_Small_Slice-16                	  267922	      4489 ns/op	      64 B/op	       1 allocs/op
-BenchmarkFastjq_Small_SliceString-16          	  261770	      4657 ns/op	      64 B/op	       1 allocs/op
-BenchmarkFastjq_Small_Plus-16                 	22851592	        52.35 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_PlusStr-16              	14958520	        80.09 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_AsciiDowncase-16        	 8348762	       141.3 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_AsciiDowncase-16        	   36342	     33599 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Startswith-16           	 9222294	       131.7 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Startswith-16           	   35653	     33502 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Endswith-16             	 8899062	       131.9 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Ltrimstr-16             	10130781	       124.0 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Large_Ltrimstr-16             	   38559	     30991 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Rtrimstr-16             	10429268	       120.2 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_Trim-16                 	23850457	        50.46 ns/op	       8 B/op	       1 allocs/op
-BenchmarkFastjq_Small_Ltrim-16                	26173156	        45.05 ns/op	       8 B/op	       1 allocs/op
-BenchmarkFastjq_Small_Rtrim-16                	25627814	        49.13 ns/op	       8 B/op	       1 allocs/op
-BenchmarkFastjq_Small_First-16                	 5233790	       230.5 ns/op	     216 B/op	       9 allocs/op
-BenchmarkFastjq_Large_First-16                	  188445	      6298 ns/op	    2584 B/op	     107 allocs/op
-BenchmarkFastjq_Small_Last-16                 	 4047128	       294.9 ns/op	     256 B/op	      10 allocs/op
-BenchmarkFastjq_Large_Last-16                 	  207525	      5848 ns/op	    2584 B/op	     107 allocs/op
-BenchmarkFastjq_Small_Limit-16                	12079502	        97.86 ns/op	     104 B/op	       5 allocs/op
-BenchmarkFastjq_Small_Skip-16                 	 8902456	       136.8 ns/op	     208 B/op	       7 allocs/op
-BenchmarkFastjq_Small_Reduce-16               	    9052	    132933 ns/op	    2632 B/op	      86 allocs/op
-BenchmarkFastjq_Large_Limit-16                	 1871344	       642.5 ns/op	     104 B/op	       5 allocs/op
-BenchmarkGojq_Small_Del-16                    	  565629	      2168 ns/op	    3763 B/op	      58 allocs/op
-BenchmarkGojq_Medium_Del-16                   	   67311	     17902 ns/op	   16971 B/op	     323 allocs/op
-BenchmarkGojq_Large_Del-16                    	    1605	    756862 ns/op	  546723 B/op	    4666 allocs/op
-BenchmarkGojq_Small_Field-16                  	 1312039	       915.0 ns/op	    1641 B/op	      27 allocs/op
-BenchmarkGojq_Large_Field-16                  	    2214	    546556 ns/op	  270049 B/op	    2835 allocs/op
-BenchmarkGojq_Small_Index-16                  	 2080512	       584.6 ns/op	    1401 B/op	      20 allocs/op
-BenchmarkGojq_Small_ArrayDel-16               	  740212	      1621 ns/op	    3363 B/op	      53 allocs/op
-BenchmarkGojq_Small_Construct-16              	  940831	      1298 ns/op	    2330 B/op	      37 allocs/op
-BenchmarkGojq_Large_Construct-16              	    2096	    557052 ns/op	  274460 B/op	    2867 allocs/op
-BenchmarkGojq_Small_Iterator-16               	 1678437	       714.4 ns/op	    1776 B/op	      26 allocs/op
-BenchmarkGojq_Large_Iterator-16               	   14314	     82722 ns/op	  109809 B/op	    1811 allocs/op
-BenchmarkGojq_Small_Select-16                 	  731246	      1615 ns/op	    2698 B/op	      45 allocs/op
-BenchmarkGojq_Large_Select-16                 	    1570	    732496 ns/op	  531640 B/op	    4651 allocs/op
-BenchmarkGojq_Small_Alternative-16            	 1000000	      1023 ns/op	    1897 B/op	      31 allocs/op
-BenchmarkGojq_Small_SelectAnd-16              	  688843	      1715 ns/op	    2890 B/op	      46 allocs/op
-BenchmarkGojq_Small_SelectOr-16               	  714698	      1685 ns/op	    2890 B/op	      46 allocs/op
-BenchmarkGojq_Small_Has-16                    	  747784	      1592 ns/op	    2698 B/op	      45 allocs/op
-BenchmarkGojq_Large_Has-16                    	    1641	    726265 ns/op	  531512 B/op	    4651 allocs/op
-BenchmarkGojq_Small_IfThenElse-16             	 1000000	      1015 ns/op	    1817 B/op	      30 allocs/op
-BenchmarkGojq_Small_Length-16                 	 1312710	       911.6 ns/op	    1633 B/op	      27 allocs/op
-BenchmarkGojq_Large_Length-16                 	    2211	    539744 ns/op	  269831 B/op	    2835 allocs/op
-BenchmarkGojq_Small_Map-16                    	  127932	      9449 ns/op	   13655 B/op	     251 allocs/op
-BenchmarkGojq_Large_Map-16                    	   13681	     87598 ns/op	  118625 B/op	    2237 allocs/op
-BenchmarkGojq_Small_ToEntries-16              	  305761	      3868 ns/op	    6559 B/op	      98 allocs/op
-BenchmarkGojq_Large_ToEntries-16              	    1479	    799859 ns/op	  668868 B/op	    6465 allocs/op
-BenchmarkGojq_Small_KeysUnsorted-16           	 1000000	      1203 ns/op	    1953 B/op	      35 allocs/op
-BenchmarkGojq_Small_Keys-16                   	  898873	      1231 ns/op	    1953 B/op	      35 allocs/op
-BenchmarkGojq_Small_Paths-16                  	  275634	      4095 ns/op	    6608 B/op	     119 allocs/op
-BenchmarkGojq_Small_Path-16                   	 1000000	      1136 ns/op	    1993 B/op	      36 allocs/op
-BenchmarkGojq_Small_GetPath-16                	 1247380	       963.8 ns/op	    1721 B/op	      29 allocs/op
-BenchmarkGojq_Small_SetPath-16                	  738886	      1605 ns/op	    2618 B/op	      43 allocs/op
-BenchmarkGojq_Small_DelPaths-16               	  751328	      1624 ns/op	    2426 B/op	      40 allocs/op
-BenchmarkGojq_Large_KeysUnsorted-16           	    2139	    560698 ns/op	  282839 B/op	    3039 allocs/op
-BenchmarkGojq_Small_Any-16                    	  641882	      1789 ns/op	    4508 B/op	      39 allocs/op
-BenchmarkGojq_Small_AnyExpr-16                	  600284	      1972 ns/op	    4620 B/op	      49 allocs/op
-BenchmarkGojq_Large_AnyExpr-16                	  736340	      1601 ns/op	    2818 B/op	      29 allocs/op
-BenchmarkGojq_Small_Add-16                    	 1757548	       683.4 ns/op	    1529 B/op	      28 allocs/op
-BenchmarkGojq_Small_AddStrings-16             	 1433349	       837.9 ns/op	    1785 B/op	      35 allocs/op
-BenchmarkGojq_Small_Flatten-16                	  960694	      1226 ns/op	    1857 B/op	      38 allocs/op
-BenchmarkGojq_Small_Split-16                  	 1651834	       725.1 ns/op	    1553 B/op	      21 allocs/op
-BenchmarkGojq_Small_Join-16                   	 1308943	       923.1 ns/op	    1865 B/op	      37 allocs/op
-BenchmarkGojq_Small_Slice-16                  	 1592412	       779.2 ns/op	    1425 B/op	      21 allocs/op
-BenchmarkGojq_Small_SliceString-16            	 2868276	       417.6 ns/op	    1145 B/op	      12 allocs/op
-BenchmarkGojq_Small_Plus-16                   	 1867078	       650.0 ns/op	    1673 B/op	      21 allocs/op
-BenchmarkGojq_Small_PlusStr-16                	 1724092	       690.1 ns/op	    1705 B/op	      23 allocs/op
-BenchmarkGojq_Small_AsciiDowncase-16          	  720025	      1699 ns/op	    2714 B/op	      46 allocs/op
-BenchmarkGojq_Large_AsciiDowncase-16          	    1509	    772229 ns/op	  535462 B/op	    4652 allocs/op
-BenchmarkGojq_Small_Startswith-16             	  728626	      1621 ns/op	    2698 B/op	      45 allocs/op
-BenchmarkGojq_Large_Startswith-16             	    1624	    747331 ns/op	  538586 B/op	    4651 allocs/op
-BenchmarkGojq_Small_Endswith-16               	  750690	      1625 ns/op	    2698 B/op	      45 allocs/op
-BenchmarkGojq_Small_Ltrimstr-16               	 1211323	       986.7 ns/op	    1737 B/op	      30 allocs/op
-BenchmarkGojq_Small_Rtrimstr-16               	 1000000	      1175 ns/op	    1737 B/op	      30 allocs/op
-BenchmarkGojq_Small_Trim-16                   	 3480048	       348.1 ns/op	    1129 B/op	      12 allocs/op
-BenchmarkGojq_Small_Ltrim-16                  	 3412341	       351.3 ns/op	    1129 B/op	      12 allocs/op
-BenchmarkGojq_Small_Rtrim-16                  	 3350114	       355.6 ns/op	    1129 B/op	      12 allocs/op
-BenchmarkGojq_Small_First-16                  	  838500	      1427 ns/op	    3379 B/op	      39 allocs/op
-BenchmarkGojq_Large_First-16                  	  896545	      1329 ns/op	    1889 B/op	      23 allocs/op
-BenchmarkGojq_Small_Last-16                   	  661484	      1803 ns/op	    3483 B/op	      43 allocs/op
-BenchmarkGojq_Large_Last-16                   	  854091	      1439 ns/op	    2193 B/op	      24 allocs/op
-BenchmarkGojq_Small_Limit-16                  	  770294	      1582 ns/op	    3328 B/op	      42 allocs/op
-BenchmarkGojq_Small_Skip-16                   	  709597	      1663 ns/op	    2880 B/op	      43 allocs/op
-BenchmarkGojq_Small_Reduce-16                 	  884055	      1336 ns/op	    2530 B/op	      42 allocs/op
-BenchmarkGojq_Large_Limit-16                  	  810548	      1487 ns/op	    2200 B/op	      24 allocs/op
-BenchmarkFastjq_Small_Subtract-16             	23690502	        48.06 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Subtract-16               	 1852339	       646.1 ns/op	    1649 B/op	      20 allocs/op
-BenchmarkFastjq_Small_Multiply-16             	19359508	        63.06 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Multiply-16               	 1808444	       661.2 ns/op	    1649 B/op	      21 allocs/op
-BenchmarkFastjq_Small_Divide-16               	12456666	        93.67 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Divide-16                 	 1766334	       681.9 ns/op	    1665 B/op	      21 allocs/op
-BenchmarkFastjq_Small_Min-16                  	  673556	      1793 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Min-16                    	 1000000	      1121 ns/op	    1217 B/op	      15 allocs/op
-BenchmarkFastjq_Small_MinBy-16                	  141486	      8228 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_MinBy-16                  	   23157	     51756 ns/op	   63630 B/op	    1347 allocs/op
-BenchmarkFastjq_Sort-16                       	  284226	      4162 ns/op	    7688 B/op	      14 allocs/op
-BenchmarkGojq_Sort-16                         	 1000000	      1149 ns/op	    1217 B/op	      15 allocs/op
-BenchmarkFastjq_SortBy-16                     	   74256	     16276 ns/op	   24872 B/op	     422 allocs/op
-BenchmarkGojq_SortBy-16                       	   13819	     86709 ns/op	   97014 B/op	    2145 allocs/op
-BenchmarkFastjq_Unique-16                     	  221539	      5407 ns/op	    7688 B/op	      14 allocs/op
-BenchmarkGojq_Unique-16                       	 1000000	      1142 ns/op	    1217 B/op	      15 allocs/op
-BenchmarkFastjq_GroupBy-16                    	   58615	     20767 ns/op	   24872 B/op	     422 allocs/op
-BenchmarkGojq_GroupBy-16                      	   12488	     95879 ns/op	  101958 B/op	    2260 allocs/op
-BenchmarkFastjq_Small_URIEncode-16            	 7392344	       163.9 ns/op	     120 B/op	       4 allocs/op
-BenchmarkGojq_Small_URIEncode-16              	 1833098	       656.1 ns/op	    1289 B/op	      14 allocs/op
-BenchmarkFastjq_Small_ArrayDiff-16            	 5681151	       210.7 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_ArrayDiff-16              	  965499	      1249 ns/op	    2121 B/op	      33 allocs/op
-BenchmarkFastjq_Small_TryNoError-16           	  262347	      4561 ns/op	      64 B/op	       1 allocs/op
-BenchmarkFastjq_Small_TryCatchNoError-16      	  269905	      4466 ns/op	      64 B/op	       1 allocs/op
-BenchmarkGojq_Small_TryNoError-16             	 1000000	      1020 ns/op	    1913 B/op	      30 allocs/op
-BenchmarkFastjq_Small_ObjectMerge-16          	 7128465	       163.4 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_ObjectMerge-16            	  798648	      1492 ns/op	    2906 B/op	      33 allocs/op
-BenchmarkFastjq_Small_ToJSON-16               	 2841613	       481.2 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_ToJSON-16                 	  724192	      4255 ns/op	    2411 B/op	      39 allocs/op
-BenchmarkFastjq_Small_FromJSON-16             	 6200306	       185.0 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_FromJSON-16               	  879603	      1348 ns/op	    2714 B/op	      31 allocs/op
-BenchmarkFastjq_Small_ToString-16             	 2782886	       430.8 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_ToNumber-16             	79958240	        13.27 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_ToBoolean-16            	143546721	         8.473 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_ToNumber-16               	 2791137	       433.3 ns/op	    1113 B/op	      11 allocs/op
-BenchmarkGojq_Small_ToBoolean-16              	 2746592	       408.9 ns/op	    1113 B/op	      11 allocs/op
-BenchmarkFastjq_Small_AnyTwoArg-16            	  280951	      4349 ns/op	      57 B/op	       3 allocs/op
-BenchmarkGojq_Small_AnyTwoArg-16              	  669090	      1737 ns/op	    2482 B/op	      27 allocs/op
-BenchmarkFastjq_Complex_LogNormalize-16       	 1000000	      1017 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Complex_LogNormalize-16         	  394224	      2992 ns/op	    4324 B/op	      69 allocs/op
-BenchmarkFastjq_Complex_ArrayPipeline-16      	  132735	      8864 ns/op	    2264 B/op	     106 allocs/op
-BenchmarkGojq_Complex_ArrayPipeline-16        	   50808	     23676 ns/op	   20411 B/op	     525 allocs/op
-BenchmarkFastjq_Complex_Aggregation-16        	   98054	     12456 ns/op	    3184 B/op	     106 allocs/op
-BenchmarkGojq_Complex_Aggregation-16          	   53894	     22104 ns/op	   22398 B/op	     555 allocs/op
-BenchmarkFastjq_Complex_TolerantMap-16        	    4329	    268083 ns/op	    5216 B/op	     187 allocs/op
-BenchmarkGojq_Complex_TolerantMap-16          	   41905	     28015 ns/op	   27873 B/op	     641 allocs/op
-BenchmarkFastjq_Complex_ElifRouting-16        	  133394	      9177 ns/op	    3000 B/op	     127 allocs/op
-BenchmarkGojq_Complex_ElifRouting-16          	   46617	     25989 ns/op	   25924 B/op	     595 allocs/op
-BenchmarkFastjq_Complex_StringBuild-16        	  109686	     10966 ns/op	    7216 B/op	     298 allocs/op
-BenchmarkGojq_Complex_StringBuild-16          	   48548	     25000 ns/op	   20535 B/op	     686 allocs/op
-BenchmarkFastjq_Complex_EntryFilter-16        	  341290	      3411 ns/op	    2888 B/op	      69 allocs/op
-BenchmarkGojq_Complex_EntryFilter-16          	   85898	     14231 ns/op	   18429 B/op	     250 allocs/op
-BenchmarkFastjq_Small_Sqrt-16                 	16843070	        71.79 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Sqrt-16                   	 2526297	       471.2 ns/op	    1145 B/op	      12 allocs/op
-BenchmarkFastjq_Small_Log-16                  	30435481	        39.52 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Log-16                    	 2581849	       465.1 ns/op	    1129 B/op	      12 allocs/op
-BenchmarkFastjq_Small_Sin-16                  	14970681	        81.30 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Sin-16                    	 2303846	       504.2 ns/op	    1145 B/op	      12 allocs/op
-BenchmarkFastjq_Small_Atan-16                 	22956529	        53.46 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Atan-16                   	 2874838	       413.3 ns/op	    1121 B/op	      11 allocs/op
-BenchmarkFastjq_Small_Exp-16                  	19343334	        63.12 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Exp-16                    	 2535980	       468.3 ns/op	    1121 B/op	      11 allocs/op
-BenchmarkFastjq_Small_Tgamma-16               	90070364	        13.89 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Tgamma-16                 	 2730645	       442.7 ns/op	    1105 B/op	      11 allocs/op
-BenchmarkFastjq_Small_Fabs-16                 	20915745	        57.93 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Fabs-16                   	 2490459	       483.3 ns/op	    1113 B/op	      12 allocs/op
-BenchmarkFastjq_Small_Abs-16                  	100000000	        10.06 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_Abs-16                    	 2562549	       465.1 ns/op	    1113 B/op	      12 allocs/op
-BenchmarkFastjq_Small_Bind-16                 	   40526	     29987 ns/op	     648 B/op	      18 allocs/op
-BenchmarkGojq_Small_Bind-16                   	 1407920	       844.0 ns/op	    1793 B/op	      24 allocs/op
-BenchmarkFastjq_Small_StringInterp-16         	10141051	       116.2 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_StringInterp-16           	 1000000	      1081 ns/op	    2121 B/op	      35 allocs/op
-BenchmarkFastjq_Small_StringInterpNum-16      	13486156	        89.45 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_StringInterpNum-16        	  939704	      1265 ns/op	    2498 B/op	      40 allocs/op
-BenchmarkFastjq_Small_IsEmptyTrue-16          	15931035	        73.43 ns/op	     105 B/op	       6 allocs/op
-BenchmarkGojq_Small_IsEmptyTrue-16            	 1955512	       609.1 ns/op	    1921 B/op	      18 allocs/op
-BenchmarkFastjq_Small_IsEmptyFalse-16         	13520980	        90.22 ns/op	     105 B/op	       6 allocs/op
-BenchmarkGojq_Small_IsEmptyFalse-16           	 1000000	      1086 ns/op	    2898 B/op	      33 allocs/op
-BenchmarkFastjq_Small_Nth-16                  	 9189721	       132.3 ns/op	     152 B/op	       7 allocs/op
-BenchmarkGojq_Small_Nth-16                    	  542970	      2249 ns/op	    4372 B/op	      49 allocs/op
-BenchmarkFastjq_Small_Range10-16              	 5813396	       200.3 ns/op	     120 B/op	      12 allocs/op
-BenchmarkGojq_Small_Range10-16                	 1000000	      1036 ns/op	    1864 B/op	      18 allocs/op
-BenchmarkFastjq_Small_RangeLimit-16           	 8545644	       139.1 ns/op	     128 B/op	       8 allocs/op
-BenchmarkGojq_Small_RangeLimit-16             	  754070	      1563 ns/op	    3208 B/op	      26 allocs/op
-BenchmarkRegexp_Match_Hit-16                  	26639804	        43.74 ns/op	       0 B/op	       0 allocs/op
-BenchmarkRegexp_Match_Miss-16                 	51347331	        23.41 ns/op	       0 B/op	       0 allocs/op
-BenchmarkRegexp_Match_Complex_Hit-16          	26767142	        43.38 ns/op	       0 B/op	       0 allocs/op
-BenchmarkRegexp_Match_Long_Miss-16            	15526326	        77.67 ns/op	       0 B/op	       0 allocs/op
-BenchmarkRegexp_MatchString-16                	27062810	        44.34 ns/op	       0 B/op	       0 allocs/op
-BenchmarkRegexp_FindSubmatch_Hit-16           	 5789060	       210.1 ns/op	     160 B/op	       2 allocs/op
-BenchmarkRegexp_FindSubmatch_Miss-16          	 1748239	       687.7 ns/op	       0 B/op	       0 allocs/op
-BenchmarkRegexp_FindSubmatchIndex_Hit-16      	 6571593	       182.1 ns/op	      64 B/op	       1 allocs/op
-BenchmarkRegexp_FindSubmatchIndex_Miss-16     	 1763812	       680.4 ns/op	       0 B/op	       0 allocs/op
-BenchmarkRegexp_ReplaceAll_Hit-16             	 7755412	       155.4 ns/op	      97 B/op	       5 allocs/op
-BenchmarkRegexp_ReplaceAll_Miss-16            	24146630	        50.16 ns/op	      48 B/op	       2 allocs/op
-BenchmarkRegexp_MatchViaClosure-16            	29593276	        42.59 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_TestRe_Hit-16           	11147114	       110.9 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_TestRe_Miss-16          	12134689	        98.82 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_TestRe_InPipeline-16    	 3961386	       302.7 ns/op	       8 B/op	       0 allocs/op
-BenchmarkFastjq_Small_MatchRe_Hit-16          	 5381607	       222.7 ns/op	      48 B/op	       1 allocs/op
-BenchmarkFastjq_Small_MatchRe_Miss-16         	 1913730	       628.2 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_TestRe_Hit-16             	  883516	      1321 ns/op	    2743 B/op	      26 allocs/op
-BenchmarkGojq_Small_TestRe_Miss-16            	  926806	      1277 ns/op	    2704 B/op	      26 allocs/op
-BenchmarkGojq_Small_MatchRe_Hit-16            	  383026	      2979 ns/op	    4800 B/op	      66 allocs/op
-BenchmarkGojq_Small_MatchRe_Miss-16           	  720386	      1668 ns/op	    2248 B/op	      24 allocs/op
-BenchmarkFastjq_Small_CaptureRe_Hit-16        	 5523442	       217.1 ns/op	      48 B/op	       1 allocs/op
-BenchmarkFastjq_Small_CaptureRe_Miss-16       	 1991343	       600.9 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_ScanRe_NoGroups-16      	 2124490	       567.1 ns/op	     534 B/op	      17 allocs/op
-BenchmarkFastjq_Small_ScanRe_WithGroups-16    	 1626100	       736.6 ns/op	     851 B/op	      20 allocs/op
-BenchmarkFastjq_Small_SubRe_Hit-16            	 9258619	       126.9 ns/op	      16 B/op	       1 allocs/op
-BenchmarkFastjq_Small_SubRe_Miss-16           	11681702	       102.6 ns/op	       0 B/op	       0 allocs/op
-BenchmarkFastjq_Small_GSubRe_Hit-16           	 2010483	       599.9 ns/op	     305 B/op	       5 allocs/op
-BenchmarkFastjq_Small_GSubRe_Miss-16          	 4601409	       261.1 ns/op	       0 B/op	       0 allocs/op
-BenchmarkGojq_Small_CaptureRe_Hit-16          	  498732	      2390 ns/op	    4730 B/op	      51 allocs/op
-BenchmarkGojq_Small_CaptureRe_Miss-16         	  666151	      1838 ns/op	    2674 B/op	      27 allocs/op
-BenchmarkGojq_Small_ScanRe_NoGroups-16        	  416458	      2883 ns/op	    5138 B/op	      57 allocs/op
-BenchmarkGojq_Small_SubRe_Hit-16              	  222746	      5303 ns/op	    8997 B/op	      95 allocs/op
-BenchmarkGojq_Small_GSubRe_Hit-16             	   79615	     15157 ns/op	   17911 B/op	     248 allocs/op
+BenchmarkFastjq_Small_Del-16                  	 7140957	       155.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Medium_Del-16                 	  519826	      2265 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Del-16                  	   33595	     35834 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Field-16                	12365746	        87.37 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Field-16                	  156286	      7528 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Index-16                	53790352	        22.25 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_ArrayDel-16             	14469096	        78.53 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Construct-16            	 9053098	       129.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Construct-16            	  150916	      8077 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Iterator-16             	18638809	        64.91 ns/op	      40 B/op	       2 allocs/op
+BenchmarkFastjq_Large_Iterator-16             	  150656	      7902 ns/op	      40 B/op	       2 allocs/op
+BenchmarkFastjq_Small_Select-16               	 9796921	       123.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Select-16               	   35714	     33098 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Alternative-16          	14123365	        95.75 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_SelectAnd-16            	 7285586	       166.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_SelectOr-16             	16497310	        73.53 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Has-16                  	13011673	        87.67 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Has-16                  	   36619	     32644 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_IfThenElse-16           	12249871	        97.93 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Length-16               	31108500	        40.53 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Length-16               	   37302	     32838 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Map-16                  	  704463	      1662 ns/op	     689 B/op	      29 allocs/op
+BenchmarkFastjq_Medium_Map-16                 	  154785	      7920 ns/op	    2609 B/op	     109 allocs/op
+BenchmarkFastjq_Large_Map-16                  	   76075	     15768 ns/op	    5009 B/op	     209 allocs/op
+BenchmarkFastjq_Small_ToEntries-16            	 7054894	       170.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_ToEntries-16            	   34093	     35388 ns/op	       6 B/op	       0 allocs/op
+BenchmarkFastjq_Small_KeysUnsorted-16         	 7685958	       174.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Keys-16                 	 4043300	       295.2 ns/op	     456 B/op	       7 allocs/op
+BenchmarkFastjq_Small_Paths-16                	 3118411	       384.0 ns/op	     400 B/op	      17 allocs/op
+BenchmarkFastjq_Small_Path-16                 	 9645580	       118.2 ns/op	     168 B/op	       6 allocs/op
+BenchmarkFastjq_Small_GetPath-16              	 4843465	       253.5 ns/op	     272 B/op	      12 allocs/op
+BenchmarkFastjq_Small_SetPath-16              	 2967744	       408.5 ns/op	     264 B/op	      12 allocs/op
+BenchmarkFastjq_Small_DelPaths-16             	 1675285	       717.4 ns/op	     608 B/op	      22 allocs/op
+BenchmarkFastjq_Large_KeysUnsorted-16         	   36787	     32605 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Any-16                  	27140263	        40.90 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Any-16                  	  932535	      1325 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_AnyExpr-16              	 3086510	       391.3 ns/op	     144 B/op	      12 allocs/op
+BenchmarkFastjq_Large_AnyExpr-16              	  210410	      5718 ns/op	     629 B/op	     205 allocs/op
+BenchmarkFastjq_Small_Add-16                  	20986220	        56.72 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_AddStrings-16           	 8971434	       134.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Flatten-16              	12940237	        91.74 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Split-16                	 8207798	       145.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Join-16                 	11975599	       100.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Values-16               	 4559139	       265.6 ns/op	     328 B/op	      13 allocs/op
+BenchmarkGojq_Small_Values-16                 	  489123	      2435 ns/op	    3144 B/op	      51 allocs/op
+BenchmarkFastjq_Small_Base64Encode-16         	 8093758	       148.5 ns/op	     120 B/op	       4 allocs/op
+BenchmarkFastjq_Small_Base64Decode-16         	 5536998	       217.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Base64Encode-16           	 2253802	       537.7 ns/op	    1321 B/op	      15 allocs/op
+BenchmarkGojq_Small_Base64Decode-16           	 2116507	       565.0 ns/op	    1321 B/op	      15 allocs/op
+BenchmarkFastjq_Small_IndexFind-16            	12212222	        97.69 ns/op	       3 B/op	       1 allocs/op
+BenchmarkFastjq_Small_IndicesAll-16           	 5888640	       205.0 ns/op	       3 B/op	       1 allocs/op
+BenchmarkGojq_Small_IndexFind-16              	 1274130	       943.7 ns/op	    2274 B/op	      31 allocs/op
+BenchmarkGojq_Small_IndicesAll-16             	  542698	      2310 ns/op	    3907 B/op	      97 allocs/op
+BenchmarkFastjq_Small_Slice-16                	  258679	      4700 ns/op	      64 B/op	       1 allocs/op
+BenchmarkFastjq_Small_SliceString-16          	  254780	      4742 ns/op	      64 B/op	       1 allocs/op
+BenchmarkFastjq_Small_Plus-16                 	23102227	        52.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_PlusStr-16              	14731622	        81.99 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_AsciiDowncase-16        	 8640337	       136.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_AsciiDowncase-16        	   35451	     33855 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Startswith-16           	 9953938	       122.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Startswith-16           	   36148	     33278 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Endswith-16             	 9800425	       126.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Ltrimstr-16             	 9103736	       124.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Large_Ltrimstr-16             	   37597	     31836 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Rtrimstr-16             	10183600	       122.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_Trim-16                 	23168688	        51.66 ns/op	       8 B/op	       1 allocs/op
+BenchmarkFastjq_Small_Ltrim-16                	25443246	        46.74 ns/op	       8 B/op	       1 allocs/op
+BenchmarkFastjq_Small_Rtrim-16                	23750187	        50.86 ns/op	       8 B/op	       1 allocs/op
+BenchmarkFastjq_Small_First-16                	 3618444	       331.5 ns/op	     264 B/op	      15 allocs/op
+BenchmarkFastjq_Large_First-16                	  141222	      8616 ns/op	    3248 B/op	     312 allocs/op
+BenchmarkFastjq_Small_Last-16                 	 2777586	       431.7 ns/op	     266 B/op	      20 allocs/op
+BenchmarkFastjq_Large_Last-16                 	  143587	      8424 ns/op	    3208 B/op	     310 allocs/op
+BenchmarkFastjq_Small_Limit-16                	11181300	       105.3 ns/op	     104 B/op	       5 allocs/op
+BenchmarkFastjq_Small_Skip-16                 	 8225443	       146.6 ns/op	     208 B/op	       7 allocs/op
+BenchmarkFastjq_Small_Reduce-16               	   10000	    106193 ns/op	    2408 B/op	      83 allocs/op
+BenchmarkFastjq_Small_Foreach-16              	   13509	     88876 ns/op	    3056 B/op	      97 allocs/op
+BenchmarkFastjq_Large_Limit-16                	 1762324	       680.6 ns/op	     104 B/op	       5 allocs/op
+BenchmarkGojq_Small_Del-16                    	  522494	      2314 ns/op	    3763 B/op	      58 allocs/op
+BenchmarkGojq_Medium_Del-16                   	   61632	     19597 ns/op	   16970 B/op	     323 allocs/op
+BenchmarkGojq_Large_Del-16                    	    1459	    819400 ns/op	  542851 B/op	    4666 allocs/op
+BenchmarkGojq_Small_Field-16                  	 1000000	      1007 ns/op	    1641 B/op	      27 allocs/op
+BenchmarkGojq_Large_Field-16                  	    1934	    602587 ns/op	  270051 B/op	    2835 allocs/op
+BenchmarkGojq_Small_Index-16                  	 1854694	       643.9 ns/op	    1401 B/op	      20 allocs/op
+BenchmarkGojq_Small_ArrayDel-16               	  725662	      1683 ns/op	    3363 B/op	      53 allocs/op
+BenchmarkGojq_Small_Construct-16              	  873558	      1395 ns/op	    2330 B/op	      37 allocs/op
+BenchmarkGojq_Large_Construct-16              	    2001	    641341 ns/op	  274568 B/op	    2867 allocs/op
+BenchmarkGojq_Small_Iterator-16               	 1410030	       855.2 ns/op	    1776 B/op	      26 allocs/op
+BenchmarkGojq_Large_Iterator-16               	   12956	     92394 ns/op	  109809 B/op	    1811 allocs/op
+BenchmarkGojq_Small_Select-16                 	  689865	      1820 ns/op	    2698 B/op	      45 allocs/op
+BenchmarkGojq_Large_Select-16                 	    1476	    815241 ns/op	  542173 B/op	    4652 allocs/op
+BenchmarkGojq_Small_Alternative-16            	  974997	      1143 ns/op	    1897 B/op	      31 allocs/op
+BenchmarkGojq_Small_SelectAnd-16              	  569822	      1943 ns/op	    2890 B/op	      46 allocs/op
+BenchmarkGojq_Small_SelectOr-16               	  599149	      1877 ns/op	    2890 B/op	      46 allocs/op
+BenchmarkGojq_Small_Has-16                    	  675987	      1762 ns/op	    2698 B/op	      45 allocs/op
+BenchmarkGojq_Large_Has-16                    	    1502	    793542 ns/op	  534185 B/op	    4651 allocs/op
+BenchmarkGojq_Small_IfThenElse-16             	 1000000	      1132 ns/op	    1817 B/op	      30 allocs/op
+BenchmarkGojq_Small_Length-16                 	 1000000	      1016 ns/op	    1633 B/op	      27 allocs/op
+BenchmarkGojq_Large_Length-16                 	    2024	    594355 ns/op	  269829 B/op	    2835 allocs/op
+BenchmarkGojq_Small_Map-16                    	  116138	     10322 ns/op	   13654 B/op	     251 allocs/op
+BenchmarkGojq_Large_Map-16                    	   12702	     94443 ns/op	  118587 B/op	    2237 allocs/op
+BenchmarkGojq_Small_ToEntries-16              	  289200	      4155 ns/op	    6558 B/op	      98 allocs/op
+BenchmarkGojq_Large_ToEntries-16              	    1360	    880347 ns/op	  666345 B/op	    6465 allocs/op
+BenchmarkGojq_Small_KeysUnsorted-16           	  940224	      1307 ns/op	    1953 B/op	      35 allocs/op
+BenchmarkGojq_Small_Keys-16                   	  936487	      1311 ns/op	    1953 B/op	      35 allocs/op
+BenchmarkGojq_Small_Paths-16                  	  270913	      4360 ns/op	    6608 B/op	     119 allocs/op
+BenchmarkGojq_Small_Path-16                   	  969027	      1236 ns/op	    1993 B/op	      36 allocs/op
+BenchmarkGojq_Small_GetPath-16                	 1000000	      1054 ns/op	    1721 B/op	      29 allocs/op
+BenchmarkGojq_Small_SetPath-16                	  686073	      1725 ns/op	    2618 B/op	      43 allocs/op
+BenchmarkGojq_Small_DelPaths-16               	  680042	      1756 ns/op	    2426 B/op	      40 allocs/op
+BenchmarkGojq_Large_KeysUnsorted-16           	    1954	    615672 ns/op	  282756 B/op	    3039 allocs/op
+BenchmarkGojq_Small_Any-16                    	  628460	      1906 ns/op	    4508 B/op	      39 allocs/op
+BenchmarkGojq_Small_AnyExpr-16                	  555907	      2154 ns/op	    4620 B/op	      49 allocs/op
+BenchmarkGojq_Large_AnyExpr-16                	  689415	      1764 ns/op	    2818 B/op	      29 allocs/op
+BenchmarkGojq_Small_Add-16                    	 1608544	       748.1 ns/op	    1529 B/op	      28 allocs/op
+BenchmarkGojq_Small_AddStrings-16             	 1315222	       913.4 ns/op	    1785 B/op	      35 allocs/op
+BenchmarkGojq_Small_Flatten-16                	  937771	      1351 ns/op	    1857 B/op	      38 allocs/op
+BenchmarkGojq_Small_Split-16                  	 1526677	       780.4 ns/op	    1553 B/op	      21 allocs/op
+BenchmarkGojq_Small_Join-16                   	 1264527	      1061 ns/op	    1865 B/op	      37 allocs/op
+BenchmarkGojq_Small_Slice-16                  	 1358878	       876.1 ns/op	    1425 B/op	      21 allocs/op
+BenchmarkGojq_Small_SliceString-16            	 2510907	       476.9 ns/op	    1145 B/op	      12 allocs/op
+BenchmarkGojq_Small_Plus-16                   	 1714959	       699.7 ns/op	    1673 B/op	      21 allocs/op
+BenchmarkGojq_Small_PlusStr-16                	 1598898	       754.0 ns/op	    1705 B/op	      23 allocs/op
+BenchmarkGojq_Small_AsciiDowncase-16          	  639654	      1836 ns/op	    2714 B/op	      46 allocs/op
+BenchmarkGojq_Large_AsciiDowncase-16          	    1512	    797688 ns/op	  538894 B/op	    4652 allocs/op
+BenchmarkGojq_Small_Startswith-16             	  684639	      1749 ns/op	    2698 B/op	      45 allocs/op
+BenchmarkGojq_Large_Startswith-16             	    1512	    801000 ns/op	  538881 B/op	    4651 allocs/op
+BenchmarkGojq_Small_Endswith-16               	  677458	      1800 ns/op	    2698 B/op	      45 allocs/op
+BenchmarkGojq_Small_Ltrimstr-16               	 1000000	      1089 ns/op	    1737 B/op	      30 allocs/op
+BenchmarkGojq_Small_Rtrimstr-16               	 1000000	      1070 ns/op	    1737 B/op	      30 allocs/op
+BenchmarkGojq_Small_Trim-16                   	 3079684	       390.0 ns/op	    1129 B/op	      12 allocs/op
+BenchmarkGojq_Small_Ltrim-16                  	 3074497	       391.3 ns/op	    1129 B/op	      12 allocs/op
+BenchmarkGojq_Small_Rtrim-16                  	 3006882	       392.5 ns/op	    1129 B/op	      12 allocs/op
+BenchmarkGojq_Small_First-16                  	  797162	      1553 ns/op	    3379 B/op	      39 allocs/op
+BenchmarkGojq_Large_First-16                  	  832251	      1449 ns/op	    1889 B/op	      23 allocs/op
+BenchmarkGojq_Small_Last-16                   	  622099	      2012 ns/op	    3483 B/op	      43 allocs/op
+BenchmarkGojq_Large_Last-16                   	  759310	      1593 ns/op	    2193 B/op	      24 allocs/op
+BenchmarkGojq_Small_Limit-16                  	  700732	      1788 ns/op	    3328 B/op	      42 allocs/op
+BenchmarkGojq_Small_Skip-16                   	  647784	      1821 ns/op	    2880 B/op	      43 allocs/op
+BenchmarkGojq_Small_Reduce-16                 	  805675	      1519 ns/op	    2530 B/op	      42 allocs/op
+BenchmarkGojq_Small_Foreach-16                	  881218	      1392 ns/op	    2184 B/op	      39 allocs/op
+BenchmarkGojq_Large_Limit-16                  	  726220	      1662 ns/op	    2200 B/op	      24 allocs/op
+BenchmarkFastjq_Small_Subtract-16             	24285331	        49.51 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Subtract-16               	 1647274	       725.3 ns/op	    1649 B/op	      20 allocs/op
+BenchmarkFastjq_Small_Multiply-16             	17886765	        65.63 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Multiply-16               	 1602138	       744.7 ns/op	    1649 B/op	      21 allocs/op
+BenchmarkFastjq_Small_Divide-16               	12126182	        98.12 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Divide-16                 	 1505797	       798.3 ns/op	    1665 B/op	      21 allocs/op
+BenchmarkFastjq_Small_Min-16                  	  305545	      3876 ns/op	     392 B/op	     300 allocs/op
+BenchmarkGojq_Small_Min-16                    	  976261	      1253 ns/op	    1217 B/op	      15 allocs/op
+BenchmarkFastjq_Small_MinBy-16                	  109312	     10867 ns/op	     517 B/op	     297 allocs/op
+BenchmarkGojq_Small_MinBy-16                  	   20846	     57301 ns/op	   63632 B/op	    1347 allocs/op
+BenchmarkFastjq_Sort-16                       	  174916	      6764 ns/op	    8180 B/op	     265 allocs/op
+BenchmarkGojq_Sort-16                         	  975751	      1257 ns/op	    1217 B/op	      15 allocs/op
+BenchmarkFastjq_SortBy-16                     	   59552	     20173 ns/op	   25632 B/op	     667 allocs/op
+BenchmarkGojq_SortBy-16                       	   12804	     93845 ns/op	   97006 B/op	    2145 allocs/op
+BenchmarkFastjq_Unique-16                     	  122559	      9747 ns/op	    8562 B/op	     466 allocs/op
+BenchmarkGojq_Unique-16                       	  973992	      1267 ns/op	    1217 B/op	      15 allocs/op
+BenchmarkFastjq_GroupBy-16                    	   53461	     22554 ns/op	   24872 B/op	     422 allocs/op
+BenchmarkGojq_GroupBy-16                      	   10000	    101399 ns/op	  101947 B/op	    2260 allocs/op
+BenchmarkFastjq_Small_URIEncode-16            	 7102842	       167.8 ns/op	     120 B/op	       4 allocs/op
+BenchmarkGojq_Small_URIEncode-16              	 1755286	       688.5 ns/op	    1289 B/op	      14 allocs/op
+BenchmarkFastjq_Small_ArrayDiff-16            	 5587994	       213.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_ArrayDiff-16              	  926479	      1276 ns/op	    2121 B/op	      33 allocs/op
+BenchmarkFastjq_Small_TryNoError-16           	  254446	      4746 ns/op	      64 B/op	       1 allocs/op
+BenchmarkFastjq_Small_TryCatchNoError-16      	  258330	      4654 ns/op	      64 B/op	       1 allocs/op
+BenchmarkGojq_Small_TryNoError-16             	 1000000	      1075 ns/op	    1913 B/op	      30 allocs/op
+BenchmarkFastjq_Small_ObjectMerge-16          	 7361400	       163.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_ObjectMerge-16            	  780062	      1538 ns/op	    2906 B/op	      33 allocs/op
+BenchmarkFastjq_Small_ToJSON-16               	 2883358	       416.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_ToJSON-16                 	  733260	      1620 ns/op	    2410 B/op	      39 allocs/op
+BenchmarkFastjq_Small_FromJSON-16             	 6037872	       197.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_FromJSON-16               	  924777	      1338 ns/op	    2714 B/op	      31 allocs/op
+BenchmarkFastjq_Small_ToString-16             	 2894139	       417.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_ToNumber-16             	88522777	        13.33 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_ToBoolean-16            	140872082	         8.560 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_ToNumber-16               	 3232968	       369.1 ns/op	    1113 B/op	      11 allocs/op
+BenchmarkGojq_Small_ToBoolean-16              	 3352772	       358.8 ns/op	    1113 B/op	      11 allocs/op
+BenchmarkFastjq_Small_AnyTwoArg-16            	  191658	      6260 ns/op	     680 B/op	     206 allocs/op
+BenchmarkGojq_Small_AnyTwoArg-16              	  728766	      1660 ns/op	    2482 B/op	      27 allocs/op
+BenchmarkFastjq_Complex_LogNormalize-16       	 1000000	      1059 ns/op	       6 B/op	       2 allocs/op
+BenchmarkGojq_Complex_LogNormalize-16         	  401301	      2982 ns/op	    4324 B/op	      69 allocs/op
+BenchmarkFastjq_Complex_ArrayPipeline-16      	  130723	      9151 ns/op	    2368 B/op	     132 allocs/op
+BenchmarkGojq_Complex_ArrayPipeline-16        	   52366	     22847 ns/op	   20407 B/op	     525 allocs/op
+BenchmarkFastjq_Complex_Aggregation-16        	   94066	     12827 ns/op	    3256 B/op	     144 allocs/op
+BenchmarkGojq_Complex_Aggregation-16          	   54542	     21912 ns/op	   22397 B/op	     555 allocs/op
+BenchmarkFastjq_Complex_TolerantMap-16        	    4422	    267956 ns/op	    5216 B/op	     187 allocs/op
+BenchmarkGojq_Complex_TolerantMap-16          	   42766	     28108 ns/op	   27869 B/op	     641 allocs/op
+BenchmarkFastjq_Complex_ElifRouting-16        	  124884	      9615 ns/op	    3152 B/op	     181 allocs/op
+BenchmarkGojq_Complex_ElifRouting-16          	   47310	     25692 ns/op	   25921 B/op	     595 allocs/op
+BenchmarkFastjq_Complex_StringBuild-16        	  106773	     11488 ns/op	    7216 B/op	     298 allocs/op
+BenchmarkGojq_Complex_StringBuild-16          	   49080	     24462 ns/op	   20533 B/op	     686 allocs/op
+BenchmarkFastjq_Complex_EntryFilter-16        	  345816	      3425 ns/op	    2888 B/op	      69 allocs/op
+BenchmarkGojq_Complex_EntryFilter-16          	   84411	     14007 ns/op	   18428 B/op	     250 allocs/op
+BenchmarkFastjq_Small_Sqrt-16                 	16629058	        71.19 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Sqrt-16                   	 2531112	       467.4 ns/op	    1145 B/op	      12 allocs/op
+BenchmarkFastjq_Small_Log-16                  	30710302	        39.75 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Log-16                    	 2638521	       456.1 ns/op	    1129 B/op	      12 allocs/op
+BenchmarkFastjq_Small_Sin-16                  	14636577	        79.78 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Sin-16                    	 2563695	       465.3 ns/op	    1145 B/op	      12 allocs/op
+BenchmarkFastjq_Small_Atan-16                 	22896556	        52.39 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Atan-16                   	 2996473	       399.2 ns/op	    1121 B/op	      11 allocs/op
+BenchmarkFastjq_Small_Exp-16                  	18746289	        63.36 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Exp-16                    	 2922860	       410.0 ns/op	    1121 B/op	      11 allocs/op
+BenchmarkFastjq_Small_Tgamma-16               	95126109	        12.57 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Tgamma-16                 	 3065764	       388.9 ns/op	    1104 B/op	      11 allocs/op
+BenchmarkFastjq_Small_Fabs-16                 	21814941	        54.60 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Fabs-16                   	 2812114	       421.0 ns/op	    1113 B/op	      12 allocs/op
+BenchmarkFastjq_Small_Abs-16                  	128631132	         9.325 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_Abs-16                    	 2889154	       417.7 ns/op	    1112 B/op	      12 allocs/op
+BenchmarkFastjq_Small_Bind-16                 	   40506	     29589 ns/op	     648 B/op	      18 allocs/op
+BenchmarkGojq_Small_Bind-16                   	 1496808	       803.1 ns/op	    1793 B/op	      24 allocs/op
+BenchmarkFastjq_Small_StringInterp-16         	10053292	       119.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_StringInterp-16           	 1000000	      1056 ns/op	    2121 B/op	      35 allocs/op
+BenchmarkFastjq_Small_StringInterpNum-16      	14006752	        87.52 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_StringInterpNum-16        	  985076	      1233 ns/op	    2498 B/op	      40 allocs/op
+BenchmarkFastjq_Small_IsEmptyTrue-16          	16110039	        73.19 ns/op	     105 B/op	       6 allocs/op
+BenchmarkGojq_Small_IsEmptyTrue-16            	 2003293	       601.8 ns/op	    1921 B/op	      18 allocs/op
+BenchmarkFastjq_Small_IsEmptyFalse-16         	13254242	        91.24 ns/op	     105 B/op	       6 allocs/op
+BenchmarkGojq_Small_IsEmptyFalse-16           	 1000000	      1074 ns/op	    2898 B/op	      33 allocs/op
+BenchmarkFastjq_Small_Nth-16                  	 9200798	       131.6 ns/op	     152 B/op	       7 allocs/op
+BenchmarkGojq_Small_Nth-16                    	  565082	      2170 ns/op	    4372 B/op	      49 allocs/op
+BenchmarkFastjq_Small_Range10-16              	 5938177	       202.3 ns/op	     120 B/op	      12 allocs/op
+BenchmarkGojq_Small_Range10-16                	 1000000	      1029 ns/op	    1864 B/op	      18 allocs/op
+BenchmarkFastjq_Small_RangeLimit-16           	 8813775	       136.9 ns/op	     128 B/op	       8 allocs/op
+BenchmarkGojq_Small_RangeLimit-16             	  831648	      1519 ns/op	    3208 B/op	      26 allocs/op
+BenchmarkRegexp_Match_Hit-16                  	29286297	        42.17 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRegexp_Match_Miss-16                 	51474530	        23.26 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRegexp_Match_Complex_Hit-16          	27853213	        43.08 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRegexp_Match_Long_Miss-16            	15580983	        77.23 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRegexp_MatchString-16                	28207722	        44.12 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRegexp_FindSubmatch_Hit-16           	 5903938	       203.3 ns/op	     160 B/op	       2 allocs/op
+BenchmarkRegexp_FindSubmatch_Miss-16          	 1756986	       683.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRegexp_FindSubmatchIndex_Hit-16      	 6666704	       180.9 ns/op	      64 B/op	       1 allocs/op
+BenchmarkRegexp_FindSubmatchIndex_Miss-16     	 1741658	       689.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRegexp_ReplaceAll_Hit-16             	 7821666	       153.8 ns/op	      97 B/op	       5 allocs/op
+BenchmarkRegexp_ReplaceAll_Miss-16            	24762264	        48.90 ns/op	      48 B/op	       2 allocs/op
+BenchmarkRegexp_MatchViaClosure-16            	27495529	        42.33 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_TestRe_Hit-16           	11444862	       107.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_TestRe_Miss-16          	12111781	        98.93 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_TestRe_InPipeline-16    	 4003388	       300.0 ns/op	       8 B/op	       1 allocs/op
+BenchmarkFastjq_Small_MatchRe_Hit-16          	 5460970	       222.3 ns/op	      48 B/op	       1 allocs/op
+BenchmarkFastjq_Small_MatchRe_Miss-16         	 1909693	       628.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_TestRe_Hit-16             	  859165	      1339 ns/op	    2743 B/op	      26 allocs/op
+BenchmarkGojq_Small_TestRe_Miss-16            	  961669	      1275 ns/op	    2698 B/op	      26 allocs/op
+BenchmarkGojq_Small_MatchRe_Hit-16            	  406585	      3050 ns/op	    4795 B/op	      66 allocs/op
+BenchmarkGojq_Small_MatchRe_Miss-16           	  717247	      1715 ns/op	    2248 B/op	      24 allocs/op
+BenchmarkFastjq_Small_CaptureRe_Hit-16        	 5647304	       211.5 ns/op	      48 B/op	       1 allocs/op
+BenchmarkFastjq_Small_CaptureRe_Miss-16       	 1916450	       626.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_ScanRe_NoGroups-16      	 2147930	       557.2 ns/op	     534 B/op	      17 allocs/op
+BenchmarkFastjq_Small_ScanRe_WithGroups-16    	 1687200	       719.9 ns/op	     850 B/op	      20 allocs/op
+BenchmarkFastjq_Small_SubRe_Hit-16            	 9551041	       125.0 ns/op	      16 B/op	       1 allocs/op
+BenchmarkFastjq_Small_SubRe_Miss-16           	11873120	       101.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFastjq_Small_GSubRe_Hit-16           	 2058424	       584.5 ns/op	     305 B/op	       5 allocs/op
+BenchmarkFastjq_Small_GSubRe_Miss-16          	 4765255	       252.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkGojq_Small_CaptureRe_Hit-16          	  509946	      2323 ns/op	    4720 B/op	      51 allocs/op
+BenchmarkGojq_Small_CaptureRe_Miss-16         	  661434	      1836 ns/op	    2671 B/op	      27 allocs/op
+BenchmarkGojq_Small_ScanRe_NoGroups-16        	  429460	      2813 ns/op	    5119 B/op	      57 allocs/op
+BenchmarkGojq_Small_SubRe_Hit-16              	  220860	      5280 ns/op	    8982 B/op	      95 allocs/op
+BenchmarkGojq_Small_GSubRe_Hit-16             	   81914	     14845 ns/op	   17844 B/op	     248 allocs/op
 ```
 
 ## CLI Throughput: fastjq vs jq

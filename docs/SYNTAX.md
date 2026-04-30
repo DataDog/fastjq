@@ -423,6 +423,7 @@ Numbers compared by value; strings lexicographically. Empty array → `null`. `s
 | `limit(n; expr)` | 0 | First N outputs of expr as a stream | `[1,2,3,4,5]` (with `limit(3; .[])`) | `1`, `2`, `3` |
 | `skip(n; expr)` | 0 | Drop the first N outputs of expr, emit the rest | `[1,2,3,4,5]` (with `skip(2; .[])`) | `3`, `4`, `5` |
 | `reduce gen as $x (init; update)` | output-shaped | Fold generator outputs into one or more accumulator states | `[1,2,4]` (with `reduce .[] as $x (0; . + $x)`) | `7` |
+| `foreach gen as $x (init; update; extract?)` | output-shaped | Emit intermediate accumulator-derived values while folding | `[1,2,4]` (with `foreach .[] as $x (0; . + $x; [., $x])`) | `[1,1]`, `[3,2]`, `[7,4]` |
 | `range(n)` | 1/value | Generate integers 0, 1, …, n−1 | — | `0`, `1`, `2` |
 | `range(from; to)` | 1/value | Generate integers from `from` to `to−1` | — | `2`, `3`, `4` |
 | `range(from; to; step)` | 1/value | Generate with explicit step (float ok, negative ok) | — | `0`, `2`, `4` |
@@ -430,6 +431,8 @@ Numbers compared by value; strings lexicographically. Empty array → `null`. `s
 `limit` emits a stream, not an array. Wrap in `[...]` if you need an array: `[limit(3; .[])]`. The body can be a comma-separated generator: `limit(1; a, b)`.
 
 `reduce` evaluates `init` once, then runs `update` against the accumulator for every value produced by `gen` while binding `$x` to the current item. This branch supports the simple jq form `reduce gen as $x (init; update)`.
+
+`foreach` shares the same accumulator model as `reduce`, but emits after each update. When the extract clause is omitted, it defaults to identity on the updated accumulator. If `update` produces multiple outputs, `foreach` emits extract results for each one but only carries the last update result forward to the next iteration, matching jq.
 
 `range` is a **Tier 2** operation: 1 alloc per generated value (the output byte slice), proportional to what you asked to generate. Compose with `limit` for lazy evaluation: `limit(3; range(1000))` produces only 3 values and 3 allocs.
 
@@ -523,7 +526,6 @@ These operations are implementable at zero allocation but involve more complexit
 |--------|-------------|-----------|
 | `def f: body; expr` | Function definitions | AST-level feature, compile-time only. But closures and recursion add parser/AST complexity. |
 | `label-break` | Control flow | `label $out \| foreach ...` — requires unwinding callback stack. Achievable with a sentinel error value. |
-| `foreach` | Stateful iteration | `foreach .[] as $x (init; update; extract)`. Requires mutable state across iterations. Double-buffering approach keeps it zero-alloc. |
 | `@format "template"` combined syntax | Apply format to each interpolated value | `@html "<b>\(.)</b>"` — applies `@html` to each `\(...)` value. Not yet supported; plain `"\(expr)"` string interpolation IS supported. |
 | `walk(f)` | Recursive transform | Apply f to every value bottom-up. Reconstruct entire tree with transformed values. Intermediate results from inner expressions may need temp storage. |
 
@@ -563,7 +565,6 @@ The governing principle rejects operations where allocation scales with the *sha
 
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
-| `foreach` | Stateful iteration | Same accumulator challenge as `reduce`. |
 | `label-break` | Control flow | Achievable with a sentinel error value for stack unwinding. |
 | `@format "template"` combined syntax | `@html "<b>\(.)</b>"` | Applies format to each interpolated value; requires parser + executor extension. |
 | `def f: body; expr` | User-defined functions | AST-level feature; recursive definitions add complexity. |

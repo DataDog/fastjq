@@ -15,9 +15,11 @@ const (
 	opField                        // .foo
 	opDelete                       // del(.foo)
 	opPipe                         // expr | expr
+	opApply                        // expr[...], expr.foo — postfix application with original-input scope
 	opBind                         // expr as $x | body
 	opVar                          // $x
 	opReduce                       // reduce gen as $x (init; update)
+	opForeach                      // foreach gen as $x (init; update; extract?)
 	opIndex                        // .[0], .[-1]
 	opIndexExpr                    // .[expr] dynamic index/key expression
 	opIterator                     // .[]
@@ -182,6 +184,7 @@ type op struct {
 	left            *op            // for opPipe, opCompare, opAlternative, opNth
 	right           *op            // for opPipe, opCompare, opAlternative
 	child           *op            // for opField chaining, opSelect condition, opIsEmpty, opNth body
+	extra           *op            // for opForeach: extract expression
 	index           int            // for opIndex: array index (negative = from end)
 	pairs           []pair         // for opConstruct: {key: expr} pairs
 	multiValuePairs bool           // for opConstruct: true if any pair expr may produce >1 output
@@ -199,7 +202,7 @@ func parse(query string) (*op, error) {
 	if query == "" {
 		return nil, fmt.Errorf("empty query")
 	}
-	result, rest, err := parsePipeExpr(query)
+	result, rest, err := parseGeneratorExpr(query)
 	if err != nil {
 		return nil, err
 	}
@@ -593,7 +596,7 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "first") && (len(s) == 5 || !isIdentChar(s[5])) {
 		rest := strings.TrimSpace(s[5:])
 		if len(rest) > 0 && rest[0] == '(' {
-			inner, rest2, err := parsePipeExpr(rest[1:])
+			inner, rest2, err := parseGeneratorExpr(rest[1:])
 			if err != nil {
 				return nil, rest2, err
 			}
@@ -608,7 +611,7 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "last") && (len(s) == 4 || !isIdentChar(s[4])) {
 		rest := strings.TrimSpace(s[4:])
 		if len(rest) > 0 && rest[0] == '(' {
-			inner, rest2, err := parsePipeExpr(rest[1:])
+			inner, rest2, err := parseGeneratorExpr(rest[1:])
 			if err != nil {
 				return nil, rest2, err
 			}
@@ -623,7 +626,7 @@ func parseAtom(s string) (*op, string, error) {
 
 	// limit(n; expr) — body can be a comma-separated generator: limit(1; a, b)
 	if strings.HasPrefix(s, "limit(") {
-		nExpr, rest, err := parsePipeExpr(s[6:])
+		nExpr, rest, err := parseGeneratorExpr(s[6:])
 		if err != nil {
 			return nil, rest, err
 		}
@@ -640,7 +643,11 @@ func parseAtom(s string) (*op, string, error) {
 		if len(rest) == 0 || rest[0] != ')' {
 			return nil, rest, fmt.Errorf("expected ')' after limit() arguments")
 		}
-		return &op{typ: opLimit, left: nExpr, child: genExpr}, rest[1:], nil
+		limits := make([]*op, 0, len(generatorElems(nExpr)))
+		for _, countExpr := range generatorElems(nExpr) {
+			limits = append(limits, &op{typ: opLimit, left: countExpr, child: genExpr})
+		}
+		return collapseGeneratorNodes(limits), rest[1:], nil
 	}
 	if strings.HasPrefix(s, "skip(") {
 		nExpr, rest, err := parseGeneratorExpr(s[5:])
@@ -712,6 +719,9 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "reduce") && (len(s) == 6 || !isIdentChar(s[6])) {
 		return parseReduce(s[6:])
 	}
+	if strings.HasPrefix(s, "foreach") && (len(s) == 7 || !isIdentChar(s[7])) {
+		return parseForeach(s[7:])
+	}
 
 	// any / all — with optional (expr) argument
 	if strings.HasPrefix(s, "any") && (len(s) == 3 || !isIdentChar(s[3])) {
@@ -767,7 +777,7 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "flatten") && (len(s) == 7 || !isIdentChar(s[7])) {
 		rest := strings.TrimSpace(s[7:])
 		if len(rest) > 0 && rest[0] == '(' {
-			depthExpr, rest2, err := parsePipeExpr(rest[1:])
+			depthExpr, rest2, err := parseGeneratorExpr(rest[1:])
 			if err != nil {
 				return nil, rest2, err
 			}
@@ -775,7 +785,11 @@ func parseAtom(s string) (*op, string, error) {
 			if len(rest2) == 0 || rest2[0] != ')' {
 				return nil, rest2, fmt.Errorf("expected ')' after flatten() argument")
 			}
-			return &op{typ: opFlatten, child: depthExpr}, rest2[1:], nil
+			flatteners := make([]*op, 0, len(generatorElems(depthExpr)))
+			for _, depth := range generatorElems(depthExpr) {
+				flatteners = append(flatteners, &op{typ: opFlatten, child: depth})
+			}
+			return collapseGeneratorNodes(flatteners), rest2[1:], nil
 		}
 		return &op{typ: opFlatten, index: -1}, rest, nil // -1 = unlimited depth
 	}
@@ -931,7 +945,7 @@ func parseAtom(s string) (*op, string, error) {
 
 	// map(expr) — desugars to [.[] | expr] at parse time
 	if strings.HasPrefix(s, "map(") {
-		inner, rest, err := parsePipeExpr(s[4:])
+		inner, rest, err := parseGeneratorExpr(s[4:])
 		if err != nil {
 			return nil, rest, fmt.Errorf("in map(): %w", err)
 		}
@@ -1082,7 +1096,7 @@ func parseAtom(s string) (*op, string, error) {
 
 	// nth(n; gen) — nth output of a generator (0-indexed)
 	if strings.HasPrefix(s, "nth(") {
-		nExpr, rest, err := parsePipeExpr(s[4:])
+		nExpr, rest, err := parseGeneratorExpr(s[4:])
 		if err != nil {
 			return nil, rest, err
 		}
@@ -1099,7 +1113,11 @@ func parseAtom(s string) (*op, string, error) {
 		if len(rest) == 0 || rest[0] != ')' {
 			return nil, rest, fmt.Errorf("expected ')' after nth() arguments")
 		}
-		return &op{typ: opNth, left: nExpr, child: genExpr}, rest[1:], nil
+		nths := make([]*op, 0, len(generatorElems(nExpr)))
+		for _, countExpr := range generatorElems(nExpr) {
+			nths = append(nths, &op{typ: opNth, left: countExpr, child: genExpr})
+		}
+		return collapseGeneratorNodes(nths), rest[1:], nil
 	}
 
 	// 1-arg floating-point math builtins (all take the input number, return a number).
@@ -1202,7 +1220,7 @@ func parseAtom(s string) (*op, string, error) {
 
 	// Parenthesized expression: (expr)
 	if s[0] == '(' {
-		inner, rest, err := parsePipeExpr(s[1:])
+		inner, rest, err := parseGeneratorExpr(s[1:])
 		if err != nil {
 			return nil, rest, err
 		}
@@ -1210,17 +1228,25 @@ func parseAtom(s string) (*op, string, error) {
 		if len(rest) == 0 || rest[0] != ')' {
 			return nil, rest, fmt.Errorf("expected ')' to close grouped expression")
 		}
-		return inner, rest[1:], nil
+		return applyPostfixPipe(inner, rest[1:])
 	}
 
 	// Object construction
 	if s[0] == '{' {
-		return parseConstruct(s)
+		node, rest, err := parseConstruct(s)
+		if err != nil {
+			return nil, rest, err
+		}
+		return applyPostfixPipe(node, rest)
 	}
 
 	// Array construction
 	if s[0] == '[' {
-		return parseArrayConstruct(s)
+		node, rest, err := parseArrayConstruct(s)
+		if err != nil {
+			return nil, rest, err
+		}
+		return applyPostfixPipe(node, rest)
 	}
 
 	// Number literal: digit or '-' followed by digit.
@@ -1303,6 +1329,19 @@ func validateVars(node *op, scope map[string]bool) error {
 		next := cloneVarScope(scope)
 		next[node.name] = true
 		return validateVars(node.child, next)
+	case opForeach:
+		if err := validateVars(node.left, scope); err != nil {
+			return err
+		}
+		if err := validateVars(node.right, scope); err != nil {
+			return err
+		}
+		next := cloneVarScope(scope)
+		next[node.name] = true
+		if err := validateVars(node.child, next); err != nil {
+			return err
+		}
+		return validateVars(node.extra, next)
 	case opPipe, opCompare, opAlternative, opAnd, opOr, opPlus, opMinus, opMul, opDiv, opMod, opPow:
 		if err := validateVars(node.left, scope); err != nil {
 			return err
@@ -1408,6 +1447,55 @@ func parseReduce(s string) (*op, string, error) {
 	return &op{typ: opReduce, name: name, left: gen, right: initExpr, child: updateExpr}, rest[1:], nil
 }
 
+func parseForeach(s string) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	gen, rest, err := parseGeneratorExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if !(strings.HasPrefix(rest, "as") && (len(rest) == 2 || !isIdentChar(rest[2]))) {
+		return nil, rest, fmt.Errorf("expected 'as $name' in foreach")
+	}
+	rest = strings.TrimSpace(rest[2:])
+	if len(rest) == 0 || rest[0] != '$' {
+		return nil, rest, fmt.Errorf("expected $name after as in foreach")
+	}
+	name, rest := readIdentifier(rest[1:])
+	if name == "" {
+		return nil, rest, fmt.Errorf("expected variable name after as $ in foreach")
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != '(' {
+		return nil, rest, fmt.Errorf("expected '(' after foreach as $%s", name)
+	}
+	initExpr, rest, err := parseGeneratorExpr(rest[1:])
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ';' {
+		return nil, rest, fmt.Errorf("expected ';' in foreach")
+	}
+	updateExpr, rest, err := parseGeneratorExpr(strings.TrimSpace(rest[1:]))
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	extractExpr := &op{typ: opIdentity}
+	if len(rest) > 0 && rest[0] == ';' {
+		extractExpr, rest, err = parseGeneratorExpr(strings.TrimSpace(rest[1:]))
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+	}
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after foreach")
+	}
+	return &op{typ: opForeach, name: name, left: gen, right: initExpr, child: updateExpr, extra: extractExpr}, rest[1:], nil
+}
+
 // parseDotExpr parses identity (.) or field access (.foo, .foo.bar),
 // array index (.[0], .[-1]), or iterator (.[]).
 func parseDotExpr(s string) (*op, string, error) {
@@ -1419,7 +1507,7 @@ func parseDotExpr(s string) (*op, string, error) {
 	}
 
 	// Identity: just "." followed by end, whitespace, pipe, comma, paren, or @format
-	if s == "" || s[0] == ' ' || s[0] == '\t' || s[0] == '\n' || s[0] == '\r' || s[0] == '|' || s[0] == ',' || s[0] == ';' || s[0] == ')' || s[0] == '}' || s[0] == ']' || s[0] == '=' || s[0] == '!' || s[0] == '<' || s[0] == '>' || s[0] == '/' {
+	if s == "" || s[0] == ' ' || s[0] == '\t' || s[0] == '\n' || s[0] == '\r' || s[0] == '|' || s[0] == ',' || s[0] == ';' || s[0] == ')' || s[0] == '}' || s[0] == ']' || s[0] == '=' || s[0] == '!' || s[0] == '<' || s[0] == '>' || s[0] == '/' || s[0] == '+' || s[0] == '-' || s[0] == '*' || s[0] == '%' {
 		return &op{typ: opIdentity}, s, nil
 	}
 
@@ -1501,6 +1589,27 @@ func parseAnyAll(s string, typ opType) (*op, string, error) {
 	return &op{typ: typ, child: inner}, rest[1:], nil
 }
 
+func generatorElems(node *op) []*op {
+	if node == nil {
+		return nil
+	}
+	if node.typ == opGenerator {
+		return node.elems
+	}
+	return []*op{node}
+}
+
+func collapseGeneratorNodes(nodes []*op) *op {
+	switch len(nodes) {
+	case 0:
+		return &op{typ: opEmpty}
+	case 1:
+		return nodes[0]
+	default:
+		return &op{typ: opGenerator, elems: nodes}
+	}
+}
+
 // parseUnaryGenBuiltin parses a builtin of the form name(gen_expr).
 // Unlike parseUnaryExprBuiltin, the argument is parsed as a generator
 // expression (may contain commas producing multiple outputs), e.g. sort_by(.a, .b).
@@ -1538,29 +1647,38 @@ func parseUnaryExprBuiltin(s string, typ opType) (*op, string, error) {
 // The unquoted string content is stored in op.field.
 func parseStringArgBuiltin(s string, typ opType) (*op, string, error) {
 	s = strings.TrimSpace(s)
-	if len(s) == 0 || s[0] != '"' {
-		return nil, s, fmt.Errorf("expected string argument")
-	}
-	i := 1
-	for i < len(s) {
-		if s[i] == '\\' {
-			i += 2
-			continue
+	nodes := make([]*op, 0, 1)
+	for {
+		if len(s) == 0 || s[0] != '"' {
+			return nil, s, fmt.Errorf("expected string argument")
 		}
-		if s[i] == '"' {
-			break
+		i := 1
+		for i < len(s) {
+			if s[i] == '\\' {
+				i += 2
+				continue
+			}
+			if s[i] == '"' {
+				break
+			}
+			i++
 		}
-		i++
+		if i >= len(s) {
+			return nil, s, fmt.Errorf("unterminated string argument")
+		}
+		nodes = append(nodes, &op{typ: typ, field: s[1:i]})
+		s = strings.TrimSpace(s[i+1:])
+		if len(s) == 0 {
+			return nil, s, fmt.Errorf("expected ')' after string argument")
+		}
+		if s[0] == ')' {
+			return collapseGeneratorNodes(nodes), s[1:], nil
+		}
+		if s[0] != ',' {
+			return nil, s, fmt.Errorf("expected ')' after string argument")
+		}
+		s = strings.TrimSpace(s[1:])
 	}
-	if i >= len(s) {
-		return nil, s, fmt.Errorf("unterminated string argument")
-	}
-	key := s[1:i]
-	rest := strings.TrimSpace(s[i+1:])
-	if len(rest) == 0 || rest[0] != ')' {
-		return nil, rest, fmt.Errorf("expected ')' after string argument")
-	}
-	return &op{typ: typ, field: key}, rest[1:], nil
 }
 
 // parseHas parses has("key") or has(n) — object key / array index membership.
@@ -1806,7 +1924,7 @@ func applyPostfixPipe(node *op, rest string) (*op, string, error) {
 			if err != nil {
 				return nil, remaining, err
 			}
-			node = &op{typ: opPipe, left: node, right: suffix}
+			node = &op{typ: opApply, left: node, right: suffix}
 			rest = remaining
 			continue
 		}
@@ -1815,7 +1933,7 @@ func applyPostfixPipe(node *op, rest string) (*op, string, error) {
 			if err != nil {
 				return nil, remaining, err
 			}
-			node = &op{typ: opPipe, left: node, right: suffix}
+			node = &op{typ: opApply, left: node, right: suffix}
 			rest = remaining
 			continue
 		}
@@ -1969,7 +2087,7 @@ func hasMultiOutput(n *op) bool {
 		return false
 	}
 	switch n.typ {
-	case opIterator, opRange, opScan, opGenerator, opPaths, opReduce, opPath:
+	case opIterator, opRange, opScan, opGenerator, opPaths, opReduce, opForeach, opPath:
 		return true
 
 	// Ops that cap or reduce to at most one output regardless of their children:
@@ -2238,7 +2356,7 @@ func isIdentStart(ch byte) bool {
 }
 
 func isIdentChar(ch byte) bool {
-	return isIdentStart(ch) || (ch >= '0' && ch <= '9') || ch == '-'
+	return isIdentStart(ch) || (ch >= '0' && ch <= '9')
 }
 
 func isDigit(ch byte) bool {
@@ -2402,7 +2520,7 @@ func parseRegexWithReplacement(s string, typ opType) (*op, string, error) {
 // Stored as opRange{left:from, right:to, child:step-or-nil}.
 func parseRange(s string) (*op, string, error) {
 	s = strings.TrimSpace(s)
-	arg1, rest, err := parsePipeExpr(s)
+	arg1, rest, err := parseGeneratorExpr(s)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -2411,13 +2529,17 @@ func parseRange(s string) (*op, string, error) {
 	if len(rest) > 0 && rest[0] == ')' {
 		// range(n): from=0, to=n, step=1
 		zero := &op{typ: opLiteral, literal: []byte("0")}
-		return &op{typ: opRange, left: zero, right: arg1}, rest[1:], nil
+		nodes := make([]*op, 0, len(generatorElems(arg1)))
+		for _, toExpr := range generatorElems(arg1) {
+			nodes = append(nodes, &op{typ: opRange, left: zero, right: toExpr})
+		}
+		return collapseGeneratorNodes(nodes), rest[1:], nil
 	}
 	if len(rest) == 0 || rest[0] != ';' {
 		return nil, rest, fmt.Errorf("expected ';' or ')' in range()")
 	}
 	rest = strings.TrimSpace(rest[1:])
-	arg2, rest, err := parsePipeExpr(rest)
+	arg2, rest, err := parseGeneratorExpr(rest)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -2425,13 +2547,19 @@ func parseRange(s string) (*op, string, error) {
 
 	if len(rest) > 0 && rest[0] == ')' {
 		// range(from; to): step=1
-		return &op{typ: opRange, left: arg1, right: arg2}, rest[1:], nil
+		nodes := make([]*op, 0, len(generatorElems(arg1))*len(generatorElems(arg2)))
+		for _, fromExpr := range generatorElems(arg1) {
+			for _, toExpr := range generatorElems(arg2) {
+				nodes = append(nodes, &op{typ: opRange, left: fromExpr, right: toExpr})
+			}
+		}
+		return collapseGeneratorNodes(nodes), rest[1:], nil
 	}
 	if len(rest) == 0 || rest[0] != ';' {
 		return nil, rest, fmt.Errorf("expected ';' or ')' in range()")
 	}
 	rest = strings.TrimSpace(rest[1:])
-	arg3, rest, err := parsePipeExpr(rest)
+	arg3, rest, err := parseGeneratorExpr(rest)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -2440,7 +2568,15 @@ func parseRange(s string) (*op, string, error) {
 		return nil, rest, fmt.Errorf("expected ')' after range() arguments")
 	}
 	// range(from; to; step)
-	return &op{typ: opRange, left: arg1, right: arg2, child: arg3}, rest[1:], nil
+	nodes := make([]*op, 0, len(generatorElems(arg1))*len(generatorElems(arg2))*len(generatorElems(arg3)))
+	for _, fromExpr := range generatorElems(arg1) {
+		for _, toExpr := range generatorElems(arg2) {
+			for _, stepExpr := range generatorElems(arg3) {
+				nodes = append(nodes, &op{typ: opRange, left: fromExpr, right: toExpr, child: stepExpr})
+			}
+		}
+	}
+	return collapseGeneratorNodes(nodes), rest[1:], nil
 }
 
 // simplify optimizes the AST. Currently: removes identity from pipes.

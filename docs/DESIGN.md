@@ -46,6 +46,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `has("key")` (true if object has the field, even if its value is null)
 - `if cond then expr [elif cond then expr]* [else expr] end` (conditional; elif and else optional)
 - `empty` (produce zero outputs)
+- `reduce gen as $x (init; update)` / `foreach gen as $x (init; update; extract?)`
 - `(expr)` (parenthesized grouping)
 - `select(cond)` (filter — emit input if condition truthy, nothing if falsy)
 - `.foo // "default"` (alternative — use right if left is null/false)
@@ -257,13 +258,15 @@ characters and normalized escapes.
 Errors from downstream pipeline stages propagate normally instead of being
 captured by the inner `try`.
 
-### 22. Reduce Reuses Lexical Binding Frames
+### 22. Reduce And Foreach Reuse Lexical Binding Frames
 
-`reduce gen as $x (init; update)` evaluates `init` once, then runs `update`
-against each accumulator state while binding `$x` to the current generator
-value in the existing runtime environment chain. This keeps `reduce`
-compatible with later pipeline stages and nested lexical bindings without
-changing the public API.
+`reduce gen as $x (init; update)` and `foreach gen as $x (init; update; extract?)`
+evaluate their initial state once, then run later stages against accumulator
+state while binding `$x` in the existing runtime environment chain. `reduce`
+keeps the last update result for each accumulator branch; `foreach` emits the
+extract result for every update output but only carries the last update result
+forward. This keeps both forms compatible with later pipeline stages and nested
+lexical bindings without changing the public API.
 
 ## File Structure
 
