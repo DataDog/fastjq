@@ -279,6 +279,9 @@ func BenchmarkFastjq_Small_KeysUnsorted(b *testing.B) {
 func BenchmarkFastjq_Small_Keys(b *testing.B) {
 	benchFastjqObj(b, `keys`, smallJSON)
 }
+func BenchmarkFastjq_Small_Paths(b *testing.B) {
+	benchFastjqFunc(b, `paths`, smallJSON)
+}
 func BenchmarkFastjq_Small_GetPath(b *testing.B) {
 	benchFastjqObj(b, `getpath(["field_0"])`, smallJSON)
 }
@@ -488,6 +491,9 @@ func BenchmarkGojq_Small_KeysUnsorted(b *testing.B) {
 }
 func BenchmarkGojq_Small_Keys(b *testing.B) {
 	benchGojqObj(b, `keys`, smallJSON)
+}
+func BenchmarkGojq_Small_Paths(b *testing.B) {
+	benchGojqIter(b, `paths`, smallJSON)
 }
 func BenchmarkGojq_Small_GetPath(b *testing.B) {
 	benchGojqObj(b, `getpath(["field_0"])`, smallJSON)

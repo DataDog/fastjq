@@ -176,6 +176,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opPaths:
+		return execPaths(node, input, buf, fn)
 	case opGetPath:
 		return execGetPath(node, input, buf, fn)
 	case opSetPath:
@@ -804,6 +806,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execFirstResult(node, input, buf)
 	case opKeys:
 		return execKeys(input, buf)
+	case opPaths:
+		return execFirstResult(node, input, buf)
 	case opGetPath:
 		return execFirstResult(node, input, buf)
 	case opSetPath:
@@ -3262,6 +3266,104 @@ func execGetPath(node *op, input []byte, buf []byte, fn func([]byte) error) erro
 		}
 		return fn(result)
 	})
+}
+
+type pathFrame struct {
+	parent *pathFrame
+	kind   pathStepKind
+	rawKey []byte
+	index  int
+}
+
+func execPaths(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	return execPathsValue(node.child, trimWhitespace(input), nil, buf, fn)
+}
+
+func execPathsValue(filter *op, value []byte, frame *pathFrame, buf []byte, fn func([]byte) error) error {
+	if frame != nil {
+		match, err := pathsFilterMatch(filter, value)
+		if err != nil {
+			return err
+		}
+		if match {
+			out := appendPathFrameJSON(buf[:0], frame)
+			if err := fn(out); err != nil {
+				return err
+			}
+		}
+	}
+
+	s := scanner{data: value}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return nil
+	}
+
+	switch s.data[s.pos] {
+	case '{':
+		var walkErr error
+		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
+			childFrame := pathFrame{
+				parent: frame,
+				kind:   pathStepString,
+				rawKey: key,
+			}
+			walkErr = execPathsValue(filter, value[valueStart:valueEnd], &childFrame, buf, fn)
+			return walkErr == nil
+		})
+		return walkErr
+	case '[':
+		var walkErr error
+		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
+			childFrame := pathFrame{
+				parent: frame,
+				kind:   pathStepNumber,
+				index:  index,
+			}
+			walkErr = execPathsValue(filter, value[elemStart:elemEnd], &childFrame, buf, fn)
+			return walkErr == nil
+		})
+		return walkErr
+	default:
+		return nil
+	}
+}
+
+func pathsFilterMatch(filter *op, value []byte) (bool, error) {
+	if filter == nil {
+		return true, nil
+	}
+	result, err := execSingle(filter, value, nil)
+	if err != nil {
+		return false, err
+	}
+	return !isFalsy(result), nil
+}
+
+func appendPathFrameJSON(dst []byte, frame *pathFrame) []byte {
+	dst = append(dst, '[')
+	dst = appendPathFrameElems(dst, frame)
+	dst = append(dst, ']')
+	return dst
+}
+
+func appendPathFrameElems(dst []byte, frame *pathFrame) []byte {
+	if frame == nil {
+		return dst
+	}
+	if frame.parent != nil {
+		dst = appendPathFrameElems(dst, frame.parent)
+		dst = append(dst, ',')
+	}
+	switch frame.kind {
+	case pathStepString:
+		dst = append(dst, '"')
+		dst = appendCanonicalRawJSONStringContent(dst, frame.rawKey)
+		dst = append(dst, '"')
+	case pathStepNumber:
+		dst = appendInt(dst, frame.index)
+	}
+	return dst
 }
 
 func execGetPathOne(input, pathVal, buf []byte) ([]byte, error) {

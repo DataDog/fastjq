@@ -340,6 +340,7 @@ For strings, positions are Unicode codepoint offsets (not byte offsets), matchin
 | `abs` | Numbers become positive; strings pass through unchanged | `-3.5` | `3.5` |
 | `keys` | Object keys sorted lexicographically; array → indices | `{"b":1,"a":2}` | `["a","b"]` |
 | `keys_unsorted` | Object keys in insertion order; array → indices | `{"b":1,"a":2}` | `["b","a"]` |
+| `paths` / `paths(filter)` | Emit non-root structural paths, optionally filtered by value | `[1,[[],{"a":2}]]` with `[paths(type == "number")]` | `[[0],[1,1,"a"]]` |
 | `getpath(path)` | Follow a path array of strings/numbers; variadic args emit multiple outputs | `{"a":{"b":0,"c":1}}` with `[getpath(["a","b"], ["a","c"])]` | `[0,1]` |
 | `setpath(path; value)` | Set or synthesize a nested path | `null` with `setpath(["a","b"]; 1)` | `{"a":{"b":1}}` |
 | `delpaths(paths)` | Delete a list of nested paths | `{"a":{"b":1},"x":{"y":2}}` with `delpaths([["a","b"]])` | `{"a":{},"x":{"y":2}}` |
@@ -512,7 +513,7 @@ So `a or b and c` parses as `a or (b and c)` — `and` binds tighter than `or`.
 
 | Syntax | Description | Implementation Notes |
 |--------|-------------|---------------------|
-| `path(expr)` | Output path as array | Emit path like `["foo","bar"]` or `["items",0]`. Requires tracking current path as we descend — needs a path accumulator. |
+| `path(expr)` | Output path as array | Emit path like `["foo","bar"]` or `["items",0]`. Requires path-expression evaluation, not just structural enumeration. |
 
 ### Feasible but require careful handling
 

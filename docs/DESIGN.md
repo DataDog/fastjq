@@ -24,6 +24,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `del(.[0])`, `del(.[1], .[3])` (array element deletion)
 - `del(.[n:m])`, `del(.[-n:])` (array slice deletion)
 - Dynamic numeric slice bounds and chained slices (`.[1.2:3.5]`, `.[3:3][1:]`)
+- `paths` and `paths(filter)` for structural path enumeration
 - `getpath(path)` including variadic path generators
 - `setpath(path; value)` and `delpaths(paths)` for direct path-array updates
 - `.[]` (iterator — all elements of array or values of object)

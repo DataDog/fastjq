@@ -62,6 +62,7 @@ const (
 	opRtrimStr                     // rtrimstr("s")
 	opKeys                         // keys
 	opKeysUnsorted                 // keys_unsorted
+	opPaths                        // paths / paths(filter)
 	opGetPath                      // getpath(path)
 	opSetPath                      // setpath(path; value)
 	opDelPaths                     // delpaths(paths)
@@ -664,6 +665,13 @@ func parseAtom(s string) (*op, string, error) {
 	}
 	if strings.HasPrefix(s, "keys_unsorted") && (len(s) == 13 || !isIdentChar(s[13])) {
 		return &op{typ: opKeysUnsorted}, s[13:], nil
+	}
+	if strings.HasPrefix(s, "paths") && (len(s) == 5 || !isIdentChar(s[5])) {
+		rest := strings.TrimSpace(s[5:])
+		if len(rest) == 0 || rest[0] != '(' {
+			return &op{typ: opPaths}, rest, nil
+		}
+		return parseUnaryExprBuiltin(rest[1:], opPaths)
 	}
 	if strings.HasPrefix(s, "getpath(") {
 		return parseUnaryGenBuiltin(s[8:], opGetPath)
@@ -1292,7 +1300,7 @@ func validateVars(node *op, scope map[string]bool) error {
 			}
 		}
 		return nil
-	case opSelect, opFlatten, opContains, opIsEmpty, opNth, opSortBy, opUniqueBy, opGroupBy, opTest, opMatchRe, opCapture, opScan, opSub, opGSub:
+	case opSelect, opFlatten, opContains, opIsEmpty, opNth, opSortBy, opUniqueBy, opGroupBy, opTest, opMatchRe, opCapture, opScan, opSub, opGSub, opPaths:
 		if err := validateVars(node.child, scope); err != nil {
 			return err
 		}
@@ -1801,7 +1809,7 @@ func hasMultiOutput(n *op) bool {
 		return false
 	}
 	switch n.typ {
-	case opIterator, opRange, opScan, opGenerator:
+	case opIterator, opRange, opScan, opGenerator, opPaths:
 		return true
 
 	// Ops that cap or reduce to at most one output regardless of their children:

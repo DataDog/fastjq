@@ -10,15 +10,16 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 - Added lexical variable binding for simple jq forms: `expr as $x | body` and `$x` references across later pipeline stages.
 - Added jq-compatible builtins `abs`, `trim`, `ltrim`, `rtrim`, `toboolean`, `keys`, and `skip`.
+- Added jq-compatible `paths` and `paths(filter)` for non-root structural path enumeration.
 - Added jq-compatible `getpath(path)` with variadic path-output support and `$var` path arguments.
 - Added jq-compatible `setpath(path; value)` and `delpaths(paths)` for direct path-array updates.
-- Added benchmark coverage for the new public surface: variable binding, `abs`, `toboolean`, `trim`, `ltrim`, `rtrim`, `keys`, `skip`, `getpath`, `setpath`, and `delpaths`.
+- Added benchmark coverage for the new public surface: variable binding, `abs`, `toboolean`, `trim`, `ltrim`, `rtrim`, `keys`, `skip`, `paths`, `getpath`, `setpath`, and `delpaths`.
 - Added jq-style unary negation (`-expr`) for non-literal expressions such as `-$x`.
 - Added numeric-expression slice bounds and chained slice parsing, including forms like `.[1.2:3.5]`, `.[:rindex("x")]`, and `.[3:3][1:]`.
 
 ### Fixed
 
-- Moved the official jq-suite branch coverage from `356/751` passing to `417/751` passing while keeping `0` active jq-suite failures.
+- Moved the official jq-suite branch coverage from `356/751` passing to `420/751` passing while keeping `0` active jq-suite failures.
 - Removed the blanket jq-suite skip for variable binding syntax so implemented `as $x` cases now run instead of being hidden behind harness filters.
 - Fixed variable-binding parsing inside array-construction generator contexts such as `1 as $x | [$x,$x,$x as $x | $x]`.
 - Fixed jq-suite structural comparison for JSON outputs that differ only by numerically equivalent number spellings inside arrays or objects (for example `0.1` vs `1e-1`).
@@ -33,6 +34,7 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 - This branch slice still only implements simple `$name` bindings. Destructuring binds (`. as [$a, $b]` / object-pattern binds) remain deferred with the larger control-flow work.
 - Bound values are copied into runtime environment frames so later pipeline stages can safely reference constructed values as well as input sub-slices.
+- `paths` prioritizes jq-suite parity over the usual hot-path allocation target on this branch. The current structural walker allocates on its call path (`17 allocs/op` on the small benchmark) but still stays far below gojq for the same query.
 
 ### Benchmark results
 

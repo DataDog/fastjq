@@ -196,6 +196,46 @@ func TestKeysBuiltin(t *testing.T) {
 	assertQuery(t, `keys`, `{"b":1,"a":2}`, `["a","b"]`)
 }
 
+func TestPathsBuiltin(t *testing.T) {
+	p, err := Compile(`paths`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.RunAll([]byte(`[1,[[],{"a":2}]]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{`[0]`, `[1]`, `[1,0]`, `[1,1]`, `[1,1,"a"]`}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if string(got[i]) != want[i] {
+			t.Fatalf("result %d: got %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
+func TestPathsBuiltinFilter(t *testing.T) {
+	p, err := Compile(`paths(type == "number")`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.RunAll([]byte(`[1,[[],{"a":2}]]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{`[0]`, `[1,1,"a"]`}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if string(got[i]) != want[i] {
+			t.Fatalf("result %d: got %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
 func TestSkipBuiltin(t *testing.T) {
 	p, err := Compile(`skip(0,2,3,4; .[])`)
 	if err != nil {
