@@ -338,6 +338,7 @@ For strings, positions are Unicode codepoint offsets (not byte offsets), matchin
 | `has(n)` | True if array index n exists (n ≥ 0) | `[1,2,3]` with `has(2)` | `true` |
 | `length` | String → chars, array/object → count, null → 0 | `[1,2,3]` | `3` |
 | `abs` | Numbers become positive; strings pass through unchanged | `-3.5` | `3.5` |
+| `keys` | Object keys sorted lexicographically; array → indices | `{"b":1,"a":2}` | `["a","b"]` |
 | `keys_unsorted` | Object keys in insertion order; array → indices | `{"b":1,"a":2}` | `["b","a"]` |
 
 ### Slicing and Concatenation
@@ -412,6 +413,7 @@ Numbers compared by value; strings lexicographically. Empty array → `null`. `s
 | `first(expr)` | 0 | First output of expr | `[1,2,3,4,5]` (with `first(.[] \| select(. > 2))`) | `3` |
 | `last(expr)` | 0 | Last output of expr | `[1,2,3,4,5]` (with `last(.[] \| select(. > 2))`) | `5` |
 | `limit(n; expr)` | 0 | First N outputs of expr as a stream | `[1,2,3,4,5]` (with `limit(3; .[])`) | `1`, `2`, `3` |
+| `skip(n; expr)` | 0 | Drop the first N outputs of expr, emit the rest | `[1,2,3,4,5]` (with `skip(2; .[])`) | `3`, `4`, `5` |
 | `range(n)` | 1/value | Generate integers 0, 1, …, n−1 | — | `0`, `1`, `2` |
 | `range(from; to)` | 1/value | Generate integers from `from` to `to−1` | — | `2`, `3`, `4` |
 | `range(from; to; step)` | 1/value | Generate with explicit step (float ok, negative ok) | — | `0`, `2`, `4` |
@@ -543,7 +545,6 @@ These operations allocate an auxiliary index structure, but the allocation is **
 
 | Syntax | Alloc model | Notes |
 |--------|-------------|-------|
-| `keys` (sorted) | O(n) index | Sorted object keys. (`keys_unsorted` is already 0-alloc.) |
 | `with_entries(f)` | 1 alloc/call | Needs a small scratch buffer per entry (aliasing constraint). Use `to_entries \| map(f) \| from_entries` as the 0-alloc alternative. |
 | `implode` | O(n) | Array of codepoints → UTF-8 string. |
 | `explode` | O(n) | String → array of Unicode codepoints. |

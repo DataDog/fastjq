@@ -89,9 +89,11 @@ var tableRows = []row{
 	{"`limit(10; expr)`", "200-int array", "Large_Limit", "Large_Limit"},
 	{"`.[1:4]` slice", "6-elem array", "Small_Slice", "Small_Slice"},
 	{"`values`", "9-elem array", "Small_Values", "Small_Values"},
+	{"`skip(2; .[])`", "5-elem array", "Small_Skip", "Small_Skip"},
 	// Object transforms
 	{"`to_entries`", "Small (~100B)", "Small_ToEntries", "Small_ToEntries"},
 	{"`to_entries`", "Large (~100KB)", "Large_ToEntries", "Large_ToEntries"},
+	{"`keys`", "Small (~100B)", "Small_Keys", "Small_Keys"},
 	{"`keys_unsorted`", "Small (~100B)", "Small_KeysUnsorted", "Small_KeysUnsorted"},
 	{"`keys_unsorted`", "Large (~100KB)", "Large_KeysUnsorted", "Large_KeysUnsorted"},
 	{"`object merge .a + .b`", "Small (~100B)", "Small_ObjectMerge", "Small_ObjectMerge"},

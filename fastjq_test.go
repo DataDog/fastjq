@@ -191,6 +191,35 @@ func TestAbsBuiltin(t *testing.T) {
 	assertQuery(t, `abs`, `1000000000000000002`, `1000000000000000002`)
 }
 
+func TestKeysBuiltin(t *testing.T) {
+	assertQuery(t, `keys`, `[42,3,35]`, `[0,1,2]`)
+	assertQuery(t, `keys`, `{"b":1,"a":2}`, `["a","b"]`)
+}
+
+func TestSkipBuiltin(t *testing.T) {
+	p, err := Compile(`skip(0,2,3,4; .[])`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.RunAll([]byte(`[1,2,3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"1", "2", "3", "3"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if string(got[i]) != want[i] {
+			t.Fatalf("result %d: got %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSkipBuiltinNegativeCount(t *testing.T) {
+	assertQuery(t, `try skip(-1; error) catch .`, `null`, `"skip doesn't support negative count"`)
+}
+
 func TestRunWithBuffer(t *testing.T) {
 	p, err := Compile("del(.age)")
 	if err != nil {

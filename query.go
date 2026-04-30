@@ -59,12 +59,14 @@ const (
 	opRtrim                        // rtrim
 	opLtrimStr                     // ltrimstr("s")
 	opRtrimStr                     // rtrimstr("s")
+	opKeys                         // keys
 	opKeysUnsorted                 // keys_unsorted
 	opAny                          // any / any(expr)
 	opAll                          // all / all(expr)
 	opFirst                        // first(expr)
 	opLast                         // last(expr)
 	opLimit                        // limit(n; expr)
+	opSkip                         // skip(n; expr)
 	opMinus                        // expr - expr
 	opMul                          // expr * expr
 	opDiv                          // expr / expr
@@ -609,8 +611,31 @@ func parseAtom(s string) (*op, string, error) {
 		}
 		return &op{typ: opLimit, left: nExpr, child: genExpr}, rest[1:], nil
 	}
+	if strings.HasPrefix(s, "skip(") {
+		nExpr, rest, err := parseGeneratorExpr(s[5:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected ';' in skip(n; expr)")
+		}
+		rest = strings.TrimSpace(rest[1:])
+		genExpr, rest, err := parseGeneratorExpr(rest)
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after skip() arguments")
+		}
+		return &op{typ: opSkip, left: nExpr, child: genExpr}, rest[1:], nil
+	}
 
-	// keys_unsorted
+	// keys / keys_unsorted
+	if strings.HasPrefix(s, "keys") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opKeys}, s[4:], nil
+	}
 	if strings.HasPrefix(s, "keys_unsorted") && (len(s) == 13 || !isIdentChar(s[13])) {
 		return &op{typ: opKeysUnsorted}, s[13:], nil
 	}

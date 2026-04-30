@@ -71,6 +71,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `any`, `any(expr)`, `any(gen; cond)` (any truthy)
 - `all`, `all(expr)`, `all(gen; cond)` (all truthy)
 - `first`, `last` (first/last element; one-arg forms take an expr)
+- `limit(n; expr)`, `skip(n; expr)` (stream control over generator outputs)
 - `values` (filter nulls from stream)
 - `numbers`, `strings`, `arrays`, `objects`, `booleans`, `nulls`, `iterables`, `scalars` (type filters)
 - `index(s)`, `rindex(s)`, `indices(s)` (first/last/all occurrences; overlapping; Unicode codepoint positions; array subsequence search)
@@ -80,7 +81,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 
 **Object operations**
 - `to_entries` / `from_entries` / `with_entries` (reshape)
-- `keys_unsorted` (keys in insertion order; array → indices)
+- `keys` / `keys_unsorted` (`keys` sorts object keys; array → indices)
 - `length` (string → char count, array/object → count, null → 0, number → |n|)
 
 **Type & conversion**

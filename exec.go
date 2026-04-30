@@ -159,6 +159,14 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execLast(node, input, buf, fn)
 	case opLimit:
 		return execLimit(node, input, buf, fn)
+	case opSkip:
+		return execSkip(node, input, buf, fn)
+	case opKeys:
+		result, err := execKeys(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opKeysUnsorted:
 		result, err := execKeysUnsorted(input, buf)
 		if err != nil {
@@ -761,6 +769,10 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return exec(node.child, input, buf)
 	case opLast:
 		return execLastSingle(node, input, buf)
+	case opSkip:
+		return execFirstResult(node, input, buf)
+	case opKeys:
+		return execKeys(input, buf)
 	case opKeysUnsorted:
 		return execKeysUnsorted(input, buf)
 	case opAny:
@@ -2105,6 +2117,27 @@ func execLimit(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	return err
 }
 
+func execSkip(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	return execMulti(node.left, input, nil, func(countVal []byte) error {
+		nf, ok := parseJSONFloat(countVal)
+		if !ok {
+			return fmt.Errorf("skip: count must be a number")
+		}
+		n := int(nf)
+		if n < 0 {
+			return fmt.Errorf("skip doesn't support negative count")
+		}
+		skipped := 0
+		return execMulti(node.child, input, buf, func(result []byte) error {
+			if skipped < n {
+				skipped++
+				return nil
+			}
+			return fn(result)
+		})
+	})
+}
+
 // execAdd reduces an array by summing numbers, concatenating strings/arrays,
 // or merging objects. Returns null for empty/null input.
 func execAdd(input []byte, buf []byte, fn func([]byte) error) error {
@@ -3085,6 +3118,41 @@ func execKeysUnsorted(input []byte, buf []byte) ([]byte, error) {
 		}
 	default:
 		return nil, fmt.Errorf("keys_unsorted input must be an object or array")
+	}
+	buf = append(buf, ']')
+	return buf, nil
+}
+
+func execKeys(input []byte, buf []byte) ([]byte, error) {
+	s := &scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return append(buf, "[]"...), nil
+	}
+	if s.data[s.pos] == '[' {
+		return execKeysUnsorted(input, buf)
+	}
+	if s.data[s.pos] != '{' {
+		return nil, fmt.Errorf("keys input must be an object or array")
+	}
+
+	var keys [][]byte
+	s.objectIter(func(key []byte, _, _ int) bool {
+		keys = append(keys, key)
+		return true
+	})
+	sort.Slice(keys, func(i, j int) bool {
+		return bytesCompare(keys[i], keys[j]) < 0
+	})
+
+	buf = append(buf, '[')
+	for i, key := range keys {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, '"')
+		buf = append(buf, key...)
+		buf = append(buf, '"')
 	}
 	buf = append(buf, ']')
 	return buf, nil

@@ -276,6 +276,9 @@ func BenchmarkFastjq_Large_ToEntries(b *testing.B) {
 func BenchmarkFastjq_Small_KeysUnsorted(b *testing.B) {
 	benchFastjqObj(b, `keys_unsorted`, smallJSON)
 }
+func BenchmarkFastjq_Small_Keys(b *testing.B) {
+	benchFastjqObj(b, `keys`, smallJSON)
+}
 func BenchmarkFastjq_Large_KeysUnsorted(b *testing.B) {
 	benchFastjqObj(b, `keys_unsorted`, largeJSON)
 }
@@ -402,6 +405,9 @@ func BenchmarkFastjq_Large_Last(b *testing.B) {
 func BenchmarkFastjq_Small_Limit(b *testing.B) {
 	benchFastjqFunc(b, `limit(3; .[])`, []byte(`[10,20,30,40,50]`))
 }
+func BenchmarkFastjq_Small_Skip(b *testing.B) {
+	benchFastjqFunc(b, `skip(2; .[])`, []byte(`[10,20,30,40,50]`))
+}
 func BenchmarkFastjq_Large_Limit(b *testing.B) {
 	benchFastjqFunc(b, `limit(10; .[])`, largeIntArr)
 }
@@ -470,6 +476,9 @@ func BenchmarkGojq_Small_ToEntries(b *testing.B)    { benchGojqObj(b, `to_entrie
 func BenchmarkGojq_Large_ToEntries(b *testing.B)    { benchGojqLargeRot(b, `to_entries`) }
 func BenchmarkGojq_Small_KeysUnsorted(b *testing.B) {
 	benchGojqObj(b, `keys`, smallJSON) // gojq: keys_unsorted not supported
+}
+func BenchmarkGojq_Small_Keys(b *testing.B) {
+	benchGojqObj(b, `keys`, smallJSON)
 }
 func BenchmarkGojq_Large_KeysUnsorted(b *testing.B) {
 	benchGojqLargeRot(b, `keys`) // gojq: keys_unsorted not supported
@@ -555,6 +564,9 @@ func BenchmarkGojq_Large_Last(b *testing.B) {
 }
 func BenchmarkGojq_Small_Limit(b *testing.B) {
 	benchGojqIter(b, `limit(3; .[])`, []byte(`[10,20,30,40,50]`))
+}
+func BenchmarkGojq_Small_Skip(b *testing.B) {
+	benchGojqIter(b, `skip(2; .[])`, []byte(`[10,20,30,40,50]`))
 }
 func BenchmarkGojq_Large_Limit(b *testing.B) {
 	benchGojqIter(b, `limit(10; .[])`, largeIntArr)
