@@ -39,6 +39,12 @@ type downstreamError struct {
 
 func (e *downstreamError) Error() string { return e.err.Error() }
 
+type transparentError struct {
+	err error
+}
+
+func (e *transparentError) Error() string { return e.err.Error() }
+
 // bTrue / bFalse / bNull are package-level literals returned directly when buf == nil,
 // avoiding heap allocation for boolean and null results in zero-scratch evaluation paths.
 var bTrue = []byte("true")
@@ -172,6 +178,18 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(result)
 	case opGetPath:
 		return execGetPath(node, input, buf, fn)
+	case opSetPath:
+		result, err := execSetPath(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opDelPaths:
+		result, err := execDelPaths(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opKeysUnsorted:
 		result, err := execKeysUnsorted(input, buf)
 		if err != nil {
@@ -788,6 +806,10 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execKeys(input, buf)
 	case opGetPath:
 		return execFirstResult(node, input, buf)
+	case opSetPath:
+		return execSetPath(node, input, buf)
+	case opDelPaths:
+		return execDelPaths(node, input, buf)
 	case opKeysUnsorted:
 		return execKeysUnsorted(input, buf)
 	case opAny:
@@ -1574,6 +1596,10 @@ func execConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 		buf = append(buf, '"', ':')
 		val, err := exec(p.expr, input, buf[len(buf):len(buf):cap(buf)])
 		if err != nil {
+			var te *transparentError
+			if errors.As(err, &te) {
+				return nil, err
+			}
 			return nil, fmt.Errorf("in object construction for key %q: %w", p.key, err)
 		}
 		buf = append(buf, normalizeNaNInf(val)...)
@@ -1667,6 +1693,10 @@ func execArrayConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 		if err != nil {
 			// Propagate jsonErrors unwrapped so try-catch receives the original value.
 			if _, ok := err.(*jsonError); ok {
+				return nil, err
+			}
+			var te *transparentError
+			if errors.As(err, &te) {
 				return nil, err
 			}
 			return nil, fmt.Errorf("in array construction: %w", err)
@@ -3318,6 +3348,436 @@ func getpathAccessError(current, step []byte) error {
 		return fmt.Errorf("Cannot index %s with string %q", jsonTypeName(current), ss.readString())
 	}
 	return fmt.Errorf("Cannot index %s with %s", jsonTypeName(current), jsonTypeName(step))
+}
+
+type pathStepKind int
+
+const (
+	pathStepString pathStepKind = iota
+	pathStepNumber
+	pathStepOther
+)
+
+type pathStep struct {
+	kind     pathStepKind
+	key      []byte
+	index    int
+	raw      []byte
+	typeName string
+}
+
+func decodePath(pathVal []byte) ([]pathStep, error) {
+	ps := scanner{data: pathVal}
+	ps.skipWhitespace()
+	if ps.pos >= len(ps.data) || ps.data[ps.pos] != '[' {
+		return nil, fmt.Errorf("Path must be specified as an array")
+	}
+	steps := make([]pathStep, 0, ps.arrayLen())
+	ps = scanner{data: pathVal}
+	ps.arrayIter(func(_ int, elemStart, elemEnd int) bool {
+		raw := trimWhitespace(pathVal[elemStart:elemEnd])
+		ss := scanner{data: raw}
+		ss.skipWhitespace()
+		if ss.pos < len(ss.data) && ss.data[ss.pos] == '"' {
+			steps = append(steps, pathStep{
+				kind: pathStepString,
+				key:  ss.readString(),
+				raw:  raw,
+			})
+			return true
+		}
+		if f, ok := parseJSONFloat(raw); ok {
+			steps = append(steps, pathStep{
+				kind:  pathStepNumber,
+				index: int(f),
+				raw:   raw,
+			})
+			return true
+		}
+		steps = append(steps, pathStep{
+			kind:     pathStepOther,
+			raw:      raw,
+			typeName: jsonTypeName(raw),
+		})
+		return true
+	})
+	return steps, nil
+}
+
+func execSetPath(node *op, input []byte, buf []byte) ([]byte, error) {
+	pathVal, err := execSingle(node.left, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	value, err := execSingle(node.child, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	steps, err := decodePath(pathVal)
+	if err != nil {
+		return nil, &transparentError{err: err}
+	}
+	out, err := setPathDecoded(input, steps, 0, value, buf)
+	if err != nil {
+		return nil, &transparentError{err: err}
+	}
+	return out, nil
+}
+
+func execDelPaths(node *op, input []byte, buf []byte) ([]byte, error) {
+	pathsVal, err := execSingle(node.child, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	ps := scanner{data: pathsVal}
+	ps.skipWhitespace()
+	if ps.pos >= len(ps.data) || ps.data[ps.pos] != '[' {
+		return nil, &transparentError{err: fmt.Errorf("Paths must be specified as an array")}
+	}
+	current := normalizeOutputValue(input, nil)
+	var iterErr error
+	ps = scanner{data: pathsVal}
+	ps.arrayIter(func(_ int, elemStart, elemEnd int) bool {
+		steps, err := decodePath(pathsVal[elemStart:elemEnd])
+		if err != nil {
+			iterErr = &transparentError{err: fmt.Errorf("Paths must be specified as an array")}
+			return false
+		}
+		next, _, err := delPathDecoded(current, steps, 0, nil)
+		if err != nil {
+			iterErr = err
+			return false
+		}
+		current = next
+		return true
+	})
+	if iterErr != nil {
+		return nil, iterErr
+	}
+	return normalizeOutputValue(current, buf), nil
+}
+
+func setPathDecoded(input []byte, steps []pathStep, depth int, value []byte, buf []byte) ([]byte, error) {
+	input = trimWhitespace(input)
+	if depth >= len(steps) {
+		if buf == nil {
+			return trimWhitespace(value), nil
+		}
+		return append(buf, trimWhitespace(value)...), nil
+	}
+	step := steps[depth]
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		input = bNull
+		s = scanner{data: input}
+		s.skipWhitespace()
+	}
+
+	switch step.kind {
+	case pathStepString:
+		if s.data[s.pos] == 'n' {
+			return setPathObjectFromNull(step, steps, depth, value, buf)
+		}
+		if s.data[s.pos] != '{' {
+			return nil, setpathAccessError(input, step)
+		}
+		return setPathObject(input, step, steps, depth, value, buf)
+	case pathStepNumber:
+		if s.data[s.pos] == 'n' {
+			return setPathArray(bNull, step, steps, depth, value, buf)
+		}
+		if s.data[s.pos] != '[' {
+			return nil, setpathAccessError(input, step)
+		}
+		return setPathArray(input, step, steps, depth, value, buf)
+	default:
+		return nil, setpathAccessError(input, step)
+	}
+}
+
+func setPathObjectFromNull(step pathStep, steps []pathStep, depth int, value []byte, buf []byte) ([]byte, error) {
+	child, err := setPathDecoded(bNull, steps, depth+1, value, nil)
+	if err != nil {
+		return nil, err
+	}
+	buf = append(buf, '{', '"')
+	buf = append(buf, step.key...)
+	buf = append(buf, '"', ':')
+	buf = append(buf, child...)
+	buf = append(buf, '}')
+	return buf, nil
+}
+
+func setPathObject(input []byte, step pathStep, steps []pathStep, depth int, value []byte, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	buf = append(buf, '{')
+	first := true
+	found := false
+	var iterErr error
+	s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
+		outVal := input[valueStart:valueEnd]
+		if bytesEqual(key, step.key) {
+			found = true
+			var err error
+			outVal, err = setPathDecoded(outVal, steps, depth+1, value, nil)
+			if err != nil {
+				iterErr = err
+				return false
+			}
+		}
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = append(buf, '"')
+		buf = append(buf, key...)
+		buf = append(buf, '"', ':')
+		buf = append(buf, outVal...)
+		return true
+	})
+	if iterErr != nil {
+		return nil, iterErr
+	}
+	if !found {
+		outVal, err := setPathDecoded(bNull, steps, depth+1, value, nil)
+		if err != nil {
+			return nil, err
+		}
+		if !first {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, '"')
+		buf = append(buf, step.key...)
+		buf = append(buf, '"', ':')
+		buf = append(buf, outVal...)
+	}
+	buf = append(buf, '}')
+	return buf, nil
+}
+
+func setPathArray(input []byte, step pathStep, steps []pathStep, depth int, value []byte, buf []byte) ([]byte, error) {
+	elems := make([][]byte, 0)
+	if !isNull(input) {
+		s := scanner{data: input}
+		s.skipWhitespace()
+		s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
+			elems = append(elems, input[elemStart:elemEnd])
+			return true
+		})
+	}
+	idx := step.index
+	if idx < 0 {
+		idx = len(elems) + idx
+		if idx < 0 {
+			return nil, fmt.Errorf("Out of bounds negative array index")
+		}
+	}
+	buf = append(buf, '[')
+	first := true
+	for i := 0; i < idx; i++ {
+		var outVal []byte
+		if i < len(elems) {
+			outVal = elems[i]
+		} else {
+			outVal = bNull
+		}
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = append(buf, outVal...)
+	}
+	var target []byte
+	if idx < len(elems) {
+		target = elems[idx]
+	} else {
+		target = bNull
+	}
+	newVal, err := setPathDecoded(target, steps, depth+1, value, nil)
+	if err != nil {
+		return nil, err
+	}
+	if !first {
+		buf = append(buf, ',')
+	}
+	first = false
+	buf = append(buf, newVal...)
+	for i := idx + 1; i < len(elems); i++ {
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = append(buf, elems[i]...)
+	}
+	buf = append(buf, ']')
+	return buf, nil
+}
+
+func delPathDecoded(input []byte, steps []pathStep, depth int, buf []byte) ([]byte, bool, error) {
+	input = trimWhitespace(input)
+	if depth >= len(steps) {
+		return nil, true, nil
+	}
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return input, false, nil
+	}
+	if s.data[s.pos] == 'n' {
+		if buf == nil {
+			return bNull, false, nil
+		}
+		return append(buf, "null"...), false, nil
+	}
+
+	step := steps[depth]
+	switch step.kind {
+	case pathStepString:
+		if s.data[s.pos] == '{' {
+			return delPathObject(input, step, steps, depth, buf)
+		}
+		if s.data[s.pos] == '[' {
+			return nil, false, fmt.Errorf("Cannot delete string element of array")
+		}
+		return nil, false, fmt.Errorf("Cannot delete fields from %s", jsonTypeName(input))
+	case pathStepNumber:
+		if s.data[s.pos] == '[' {
+			return delPathArray(input, step, steps, depth, buf)
+		}
+		if s.data[s.pos] == '{' {
+			return nil, false, fmt.Errorf("Cannot delete number field of object")
+		}
+		return nil, false, fmt.Errorf("Cannot delete fields from %s", jsonTypeName(input))
+	default:
+		if s.data[s.pos] == '[' {
+			return nil, false, fmt.Errorf("Cannot delete %s element of array", step.typeName)
+		}
+		if s.data[s.pos] == '{' {
+			return nil, false, fmt.Errorf("Cannot delete %s field of object", step.typeName)
+		}
+		return nil, false, fmt.Errorf("Cannot delete fields from %s", jsonTypeName(input))
+	}
+}
+
+func delPathObject(input []byte, step pathStep, steps []pathStep, depth int, buf []byte) ([]byte, bool, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	buf = append(buf, '{')
+	first := true
+	found := false
+	var iterErr error
+	s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
+		outVal := input[valueStart:valueEnd]
+		omit := false
+		if bytesEqual(key, step.key) {
+			found = true
+			if depth+1 >= len(steps) {
+				omit = true
+			} else {
+				var deleted bool
+				var err error
+				outVal, deleted, err = delPathDecoded(outVal, steps, depth+1, nil)
+				if err != nil {
+					iterErr = err
+					return false
+				}
+				omit = deleted
+			}
+		}
+		if omit {
+			return true
+		}
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = append(buf, '"')
+		buf = append(buf, key...)
+		buf = append(buf, '"', ':')
+		buf = append(buf, outVal...)
+		return true
+	})
+	if iterErr != nil {
+		return nil, false, iterErr
+	}
+	if !found {
+		return normalizeOutputValue(input, buf[:0]), false, nil
+	}
+	buf = append(buf, '}')
+	return buf, false, nil
+}
+
+func delPathArray(input []byte, step pathStep, steps []pathStep, depth int, buf []byte) ([]byte, bool, error) {
+	elems := make([][]byte, 0)
+	s := scanner{data: input}
+	s.skipWhitespace()
+	s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
+		elems = append(elems, input[elemStart:elemEnd])
+		return true
+	})
+	idx := step.index
+	if idx < 0 {
+		idx = len(elems) + idx
+		if idx < 0 {
+			return normalizeOutputValue(input, buf[:0]), false, nil
+		}
+	}
+	if idx >= len(elems) {
+		return normalizeOutputValue(input, buf[:0]), false, nil
+	}
+	buf = append(buf, '[')
+	first := true
+	for i, elem := range elems {
+		omit := false
+		outVal := elem
+		if i == idx {
+			if depth+1 >= len(steps) {
+				omit = true
+			} else {
+				var deleted bool
+				var err error
+				outVal, deleted, err = delPathDecoded(elem, steps, depth+1, nil)
+				if err != nil {
+					return nil, false, err
+				}
+				omit = deleted
+			}
+		}
+		if omit {
+			continue
+		}
+		if !first {
+			buf = append(buf, ',')
+		}
+		first = false
+		buf = append(buf, outVal...)
+	}
+	buf = append(buf, ']')
+	return buf, false, nil
+}
+
+func setpathAccessError(current []byte, step pathStep) error {
+	if step.kind == pathStepString {
+		return fmt.Errorf("Cannot index %s with string %q", jsonTypeName(current), step.key)
+	}
+	if step.kind == pathStepNumber {
+		return fmt.Errorf("Cannot index %s with number", jsonTypeName(current))
+	}
+	if step.typeName == "array" && isArrayValue(current) {
+		return fmt.Errorf("Cannot update field at array index of array")
+	}
+	if step.typeName == "object" && (isNull(current) || isArrayValue(current)) {
+		return fmt.Errorf("Array/string slice indices must be integers")
+	}
+	return fmt.Errorf("Cannot index %s with %s", jsonTypeName(current), step.typeName)
+}
+
+func isArrayValue(input []byte) bool {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	return s.pos < len(s.data) && s.data[s.pos] == '['
 }
 
 // execAnyAll implements any/all with optional expr argument.

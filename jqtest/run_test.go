@@ -42,14 +42,14 @@ const manTestLocalCache = "testdata/man.test"
 //
 // Official-suite baseline for this branch:
 //   - Total: 751
-//   - Skipped: 344
-//   - Attempted: 407
-//   - Passed: 407
+//   - Skipped: 334
+//   - Attempted: 417
+//   - Passed: 417
 //   - Failed: 0
 //
 // Skip families currently driving the branch:
 //   - reduce / foreach / label / break
-//   - path / paths / setpath / delpaths / leaf_paths
+//   - path / paths / leaf_paths
 //   - def
 //   - assignment/update syntax and remaining parser breadth gaps
 //
@@ -60,7 +60,7 @@ var unsupportedOps = []string{
 	// Recursive descent — permanently rejected (allocs scale with input depth, not output)
 	"..", "recurse",
 	// Path operations
-	"path(", "paths", "setpath", "delpaths", "leaf_paths",
+	"path(", "paths", "leaf_paths",
 	// User-defined functions
 	"def ",
 	// Reduce / foreach / label-break

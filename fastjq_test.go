@@ -240,6 +240,30 @@ func TestGetPathBuiltinErrors(t *testing.T) {
 	assertQuery(t, `try getpath(["a"]) catch .`, `[1,2]`, `"Cannot index array with string \"a\""`)
 }
 
+func TestSetPathBuiltin(t *testing.T) {
+	assertQuery(t, `setpath(["a","b"]; 1)`, `null`, `{"a":{"b":1}}`)
+	assertQuery(t, `setpath([0,"a"]; 1)`, `null`, `[{"a":1}]`)
+	assertQuery(t, `setpath([-1]; 1)`, `[0]`, `[1]`)
+	assertQuery(t, `["foo",1] as $p | setpath($p; 20)`, `{"bar":false}`, `{"bar":false,"foo":[null,20]}`)
+}
+
+func TestSetPathBuiltinErrors(t *testing.T) {
+	assertQuery(t, `try setpath([1]; 1) catch .`, `{"hi":"hello"}`, `"Cannot index object with number"`)
+	assertQuery(t, `try setpath([[1]]; 1) catch .`, `[]`, `"Cannot update field at array index of array"`)
+}
+
+func TestDelPathsBuiltin(t *testing.T) {
+	assertQuery(t, `delpaths([["a","b"]])`, `{"a":{"b":1},"x":{"y":2}}`, `{"a":{},"x":{"y":2}}`)
+	assertQuery(t, `map(delpaths([[2]]))`, `[[0],[0,1],[0,1,2]]`, `[[0],[0,1],[0,1]]`)
+	assertQuery(t, `map(delpaths([[0,"foo"]]))`, `[[{"foo":2,"x":1}],[{"bar":2}]]`, `[[{"x":1}],[{"bar":2}]]`)
+	assertQuery(t, `delpaths([[-200]])`, `[1,2,3]`, `[1,2,3]`)
+}
+
+func TestDelPathsBuiltinErrors(t *testing.T) {
+	assertQuery(t, `try delpaths(0) catch .`, `{}`, `"Paths must be specified as an array"`)
+	assertQuery(t, `try delpaths([[true]]) catch .`, `[1,2]`, `"Cannot delete boolean element of array"`)
+}
+
 func TestRunWithBuffer(t *testing.T) {
 	p, err := Compile("del(.age)")
 	if err != nil {

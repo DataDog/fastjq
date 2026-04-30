@@ -63,6 +63,8 @@ const (
 	opKeys                         // keys
 	opKeysUnsorted                 // keys_unsorted
 	opGetPath                      // getpath(path)
+	opSetPath                      // setpath(path; value)
+	opDelPaths                     // delpaths(paths)
 	opAny                          // any / any(expr)
 	opAll                          // all / all(expr)
 	opFirst                        // first(expr)
@@ -665,6 +667,28 @@ func parseAtom(s string) (*op, string, error) {
 	}
 	if strings.HasPrefix(s, "getpath(") {
 		return parseUnaryGenBuiltin(s[8:], opGetPath)
+	}
+	if strings.HasPrefix(s, "setpath(") {
+		pathExpr, rest, err := parsePipeExpr(s[8:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected ';' in setpath(path; value)")
+		}
+		valueExpr, rest, err := parsePipeExpr(strings.TrimSpace(rest[1:]))
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after setpath() arguments")
+		}
+		return &op{typ: opSetPath, left: pathExpr, child: valueExpr}, rest[1:], nil
+	}
+	if strings.HasPrefix(s, "delpaths(") {
+		return parseUnaryExprBuiltin(s[9:], opDelPaths)
 	}
 
 	// any / all — with optional (expr) argument

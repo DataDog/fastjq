@@ -341,6 +341,8 @@ For strings, positions are Unicode codepoint offsets (not byte offsets), matchin
 | `keys` | Object keys sorted lexicographically; array → indices | `{"b":1,"a":2}` | `["a","b"]` |
 | `keys_unsorted` | Object keys in insertion order; array → indices | `{"b":1,"a":2}` | `["b","a"]` |
 | `getpath(path)` | Follow a path array of strings/numbers; variadic args emit multiple outputs | `{"a":{"b":0,"c":1}}` with `[getpath(["a","b"], ["a","c"])]` | `[0,1]` |
+| `setpath(path; value)` | Set or synthesize a nested path | `null` with `setpath(["a","b"]; 1)` | `{"a":{"b":1}}` |
+| `delpaths(paths)` | Delete a list of nested paths | `{"a":{"b":1},"x":{"y":2}}` with `delpaths([["a","b"]])` | `{"a":{},"x":{"y":2}}` |
 
 ### Slicing and Concatenation
 
@@ -523,9 +525,6 @@ These operations are implementable at zero allocation but involve more complexit
 | `label-break` | Control flow | `label $out \| foreach ...` — requires unwinding callback stack. Achievable with a sentinel error value. |
 | `foreach` | Stateful iteration | `foreach .[] as $x (init; update; extract)`. Requires mutable state across iterations. Double-buffering approach keeps it zero-alloc. |
 | `@format "template"` combined syntax | Apply format to each interpolated value | `@html "<b>\(.)</b>"` — applies `@html` to each `\(...)` value. Not yet supported; plain `"\(expr)"` string interpolation IS supported. |
-| `getpath(path)` | Get value at path | Navigate nested structure following path array. Zero-alloc via scanner. |
-| `setpath(path; val)` | Set value at path | Navigate to position, reconstruct tree with modified value. Multi-level reconstruction. Zero-alloc feasible but code complexity is high. |
-| `delpaths(paths)` | Delete at multiple paths | Like `setpath` but removing. Same reconstruction complexity. |
 | `walk(f)` | Recursive transform | Apply f to every value bottom-up. Reconstruct entire tree with transformed values. Intermediate results from inner expressions may need temp storage. |
 
 ### Implemented — bounded O(n) allocation (Tier 2)
@@ -565,9 +564,6 @@ The governing principle rejects operations where allocation scales with the *sha
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
 | `path(expr)` | Output path as array | Track current path during descent — needs a path accumulator. |
-| `getpath(path)` | Get value at path | Navigate nested structure following path array. |
-| `setpath(path; val)` | Set value at path | Navigate to position, reconstruct tree with modified value. |
-| `delpaths(paths)` | Delete at multiple paths | Like `setpath` but removing. |
 | `reduce .[] as $x (init; update)` | Fold/accumulate | Needs mutable accumulator; double-buffering keeps it near-zero-alloc. |
 | `foreach` | Stateful iteration | Same accumulator challenge as `reduce`. |
 | `label-break` | Control flow | Achievable with a sentinel error value for stack unwinding. |

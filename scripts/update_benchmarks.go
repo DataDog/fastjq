@@ -94,6 +94,8 @@ var tableRows = []row{
 	{"`to_entries`", "Small (~100B)", "Small_ToEntries", "Small_ToEntries"},
 	{"`to_entries`", "Large (~100KB)", "Large_ToEntries", "Large_ToEntries"},
 	{"`getpath([\"field_0\"])`", "Small (~100B)", "Small_GetPath", "Small_GetPath"},
+	{"`setpath([\"field_0\"]; \"y\")`", "Small (~100B)", "Small_SetPath", "Small_SetPath"},
+	{"`delpaths([[\"field_0\"]])`", "Small (~100B)", "Small_DelPaths", "Small_DelPaths"},
 	{"`keys`", "Small (~100B)", "Small_Keys", "Small_Keys"},
 	{"`keys_unsorted`", "Small (~100B)", "Small_KeysUnsorted", "Small_KeysUnsorted"},
 	{"`keys_unsorted`", "Large (~100KB)", "Large_KeysUnsorted", "Large_KeysUnsorted"},

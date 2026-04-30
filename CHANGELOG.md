@@ -4,20 +4,21 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
-## [Unreleased] — parser breadth, path access, jq parity majority, and builtin sweep
+## [Unreleased] — parser breadth, path updates, jq parity majority, and builtin sweep
 
 ### Added
 
 - Added lexical variable binding for simple jq forms: `expr as $x | body` and `$x` references across later pipeline stages.
 - Added jq-compatible builtins `abs`, `trim`, `ltrim`, `rtrim`, `toboolean`, `keys`, and `skip`.
 - Added jq-compatible `getpath(path)` with variadic path-output support and `$var` path arguments.
-- Added benchmark coverage for the new public surface: variable binding, `abs`, `toboolean`, `trim`, `ltrim`, `rtrim`, `keys`, `skip`, and `getpath`.
+- Added jq-compatible `setpath(path; value)` and `delpaths(paths)` for direct path-array updates.
+- Added benchmark coverage for the new public surface: variable binding, `abs`, `toboolean`, `trim`, `ltrim`, `rtrim`, `keys`, `skip`, `getpath`, `setpath`, and `delpaths`.
 - Added jq-style unary negation (`-expr`) for non-literal expressions such as `-$x`.
 - Added numeric-expression slice bounds and chained slice parsing, including forms like `.[1.2:3.5]`, `.[:rindex("x")]`, and `.[3:3][1:]`.
 
 ### Fixed
 
-- Moved the official jq-suite branch coverage from `356/751` passing to `407/751` passing while keeping `0` active jq-suite failures.
+- Moved the official jq-suite branch coverage from `356/751` passing to `417/751` passing while keeping `0` active jq-suite failures.
 - Removed the blanket jq-suite skip for variable binding syntax so implemented `as $x` cases now run instead of being hidden behind harness filters.
 - Fixed variable-binding parsing inside array-construction generator contexts such as `1 as $x | [$x,$x,$x as $x | $x]`.
 - Fixed jq-suite structural comparison for JSON outputs that differ only by numerically equivalent number spellings inside arrays or objects (for example `0.1` vs `1e-1`).
@@ -26,6 +27,7 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 - Fixed optional slice behavior so `.[1:3]?` suppresses type errors without dropping jq's special `null` result case.
 - Fixed string slicing and unary-negation error previews to match jq with UTF-8-aware truncation and codepoint-based slice offsets.
 - Fixed jq-suite skip filtering so unsupported `path(...)` no longer accidentally suppresses implemented `getpath(...)` tests.
+- Fixed path-update error propagation so `try`/`catch` sees jq-style raw messages even when `setpath(...)` appears inside array/object construction.
 
 ### Tradeoffs
 
@@ -34,7 +36,7 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ### Benchmark results
 
-- Regenerated `docs/BENCHMARKS.md` and kept the benchmark table current while parity work expanded parser coverage and path access support.
+- Regenerated `docs/BENCHMARKS.md` and kept the benchmark table current while parity work expanded parser coverage and path update support.
 
 ## [Unreleased] — codex/jq-parity suite tracking
 
