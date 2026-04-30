@@ -9,7 +9,9 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
+	"unicode"
 )
 
 var (
@@ -68,6 +70,26 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(result)
 	case opPipe:
 		return execPipeMulti(node, input, buf, fn)
+	case opBind:
+		baseCtx := currentExecContext()
+		return execMulti(node.left, input, nil, func(bound []byte) error {
+			return withExecContext(baseCtx.bindVar(node.name, bound), func() error {
+				return execMulti(node.right, input, buf, fn)
+			})
+		})
+	case opVar:
+		ctx := currentExecContext()
+		value, ok := ctx.lookupVar(node.name)
+		if !ok {
+			return fmt.Errorf("$%s is not defined", node.name)
+		}
+		if node.child != nil {
+			return execMulti(node.child, value, buf, fn)
+		}
+		if buf == nil {
+			return fn(value[:len(value):len(value)])
+		}
+		return fn(append(buf, value...))
 	case opIndex:
 		return execIndexMulti(node, input, buf, fn)
 	case opIterator:
@@ -104,6 +126,12 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(append(buf, "false"...))
 	case opLength:
 		return execLength(input, buf, fn)
+	case opAbs:
+		result, err := execAbs(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opToEntries:
 		result, err := execToEntries(input, buf)
 		if err != nil {
@@ -243,6 +271,24 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(execStringPredicate(input, buf, node.field, true, false))
 	case opEndsWith:
 		return fn(execStringPredicate(input, buf, node.field, false, true))
+	case opTrim:
+		result, err := execTrim(input, buf, trimBoth)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opLtrim:
+		result, err := execTrim(input, buf, trimLeft)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opRtrim:
+		result, err := execTrim(input, buf, trimRight)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opLtrimStr:
 		return fn(execTrimStr(input, buf, node.field, true))
 	case opRtrimStr:
@@ -376,6 +422,12 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(execToString(input, buf))
 	case opToNumber:
 		result, err := execToNumber(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opToBoolean:
+		result, err := execToBoolean(input, buf)
 		if err != nil {
 			return err
 		}
@@ -618,6 +670,19 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execField(node, input, buf)
 	case opIndex:
 		return execIndex(node, input, buf)
+	case opVar:
+		ctx := currentExecContext()
+		value, ok := ctx.lookupVar(node.name)
+		if !ok {
+			return nil, fmt.Errorf("$%s is not defined", node.name)
+		}
+		if node.child != nil {
+			return execSingle(node.child, value, buf)
+		}
+		if buf == nil {
+			return value[:len(value):len(value)], nil
+		}
+		return append(buf, value...), nil
 	case opTypeBuiltin:
 		return execTypeSingle(input, buf)
 	case opCompare:
@@ -685,6 +750,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return append(buf, "false"...), nil
 	case opLength:
 		return execLengthSingle(input, buf)
+	case opAbs:
+		return execAbs(input, buf)
 	case opToEntries:
 		return execToEntries(input, buf)
 	case opFromEntries:
@@ -744,6 +811,12 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execStringPredicate(input, buf, node.field, true, false), nil
 	case opEndsWith:
 		return execStringPredicate(input, buf, node.field, false, true), nil
+	case opTrim:
+		return execTrim(input, buf, trimBoth)
+	case opLtrim:
+		return execTrim(input, buf, trimLeft)
+	case opRtrim:
+		return execTrim(input, buf, trimRight)
 	case opLtrimStr:
 		return execTrimStr(input, buf, node.field, true), nil
 	case opRtrimStr:
@@ -1014,6 +1087,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execToString(input, buf), nil
 	case opToNumber:
 		return execToNumber(input, buf)
+	case opToBoolean:
+		return execToBoolean(input, buf)
 	default:
 		return execFirstResult(node, input, buf)
 	}
@@ -3392,6 +3467,39 @@ func execTrimStr(input []byte, buf []byte, s string, left bool) []byte {
 	return buf
 }
 
+type trimMode int
+
+const (
+	trimBoth trimMode = iota
+	trimLeft
+	trimRight
+)
+
+func execTrim(input []byte, buf []byte, mode trimMode) ([]byte, error) {
+	sc := &scanner{data: input}
+	sc.skipWhitespace()
+	if sc.pos >= len(sc.data) || sc.data[sc.pos] != '"' {
+		return nil, fmt.Errorf("trim input must be a string")
+	}
+	raw := sc.readString()
+	decoded := decodeJSONStringContent(nil, raw)
+
+	var trimmed string
+	switch mode {
+	case trimLeft:
+		trimmed = strings.TrimLeftFunc(string(decoded), unicode.IsSpace)
+	case trimRight:
+		trimmed = strings.TrimRightFunc(string(decoded), unicode.IsSpace)
+	default:
+		trimmed = strings.TrimFunc(string(decoded), unicode.IsSpace)
+	}
+
+	buf = append(buf, '"')
+	buf = appendJSONStringContent(buf, []byte(trimmed))
+	buf = append(buf, '"')
+	return buf, nil
+}
+
 // execHas checks field membership (object) or index bounds (array).
 // For objects: true if the field exists, even if its value is null.
 // For arrays: true if the index is within bounds (node.literal == "array").
@@ -4510,6 +4618,69 @@ func execToNumber(input []byte, buf []byte) ([]byte, error) {
 			return append(buf, input[start:s.pos]...), nil
 		}
 		return nil, fmt.Errorf("tonumber: expected number or string, got %q", string(s.data[s.pos:s.pos+1]))
+	}
+}
+
+func execToBoolean(input []byte, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return nil, fmt.Errorf("null () cannot be parsed as a boolean")
+	}
+	switch s.data[s.pos] {
+	case 't':
+		return append(buf, "true"...), nil
+	case 'f':
+		return append(buf, "false"...), nil
+	case '"':
+		raw := trimWhitespace(input)
+		content := s.readString()
+		if bytesEqualStr(content, "true") {
+			return append(buf, "true"...), nil
+		}
+		if bytesEqualStr(content, "false") {
+			return append(buf, "false"...), nil
+		}
+		return nil, fmt.Errorf("string (%s) cannot be parsed as a boolean", raw)
+	default:
+		raw := trimWhitespace(input)
+		typeName := jsonTypeName(raw)
+		if isNumberByte(s.data[s.pos]) {
+			typeName = "number"
+		}
+		return nil, fmt.Errorf("%s (%s) cannot be parsed as a boolean", typeName, raw)
+	}
+}
+
+func execAbs(input []byte, buf []byte) ([]byte, error) {
+	s := scanner{data: input}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return nil, fmt.Errorf("abs input must be a number or string")
+	}
+	start := s.pos
+	switch s.data[s.pos] {
+	case '"':
+		s.skipValue()
+		if buf == nil {
+			return input[start:s.pos:s.pos], nil
+		}
+		return append(buf, input[start:s.pos]...), nil
+	case '-':
+		s.skipValue()
+		if buf == nil {
+			return input[start+1 : s.pos : s.pos], nil
+		}
+		return append(buf, input[start+1:s.pos]...), nil
+	default:
+		if isNumberByte(s.data[s.pos]) {
+			s.skipValue()
+			if buf == nil {
+				return input[start:s.pos:s.pos], nil
+			}
+			return append(buf, input[start:s.pos]...), nil
+		}
+		return nil, fmt.Errorf("abs input must be a number or string")
 	}
 }
 

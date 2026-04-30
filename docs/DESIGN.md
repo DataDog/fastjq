@@ -42,6 +42,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `(expr)` (parenthesized grouping)
 - `select(cond)` (filter — emit input if condition truthy, nothing if falsy)
 - `.foo // "default"` (alternative — use right if left is null/false)
+- `expr as $x | body` (lexical variable binding; body runs against the original input)
 - `.foo?`, `.[0]?`, `.[]?` (optional — suppress errors, produce nothing)
 - `try expr` / `try expr catch handler` (error suppression; handler receives JSON value from `error`, or string for built-in errors)
 - `error` (throw input as a `jsonError`; `catch` receives original JSON value)
@@ -85,10 +86,11 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 **Type & conversion**
 - `type` (type name string)
 - `tojson` / `@json`, `fromjson` (JSON string serialize/parse)
-- `tostring` / `@text`, `tonumber` (string/number coercion)
+- `tostring` / `@text`, `tonumber`, `toboolean` (string/number/boolean coercion)
+- `abs` (jq-style absolute value; numbers become positive, strings pass through)
 - `floor`, `ceil`, `round` (numeric rounding)
 - `ascii_downcase`, `ascii_upcase` (case conversion)
-- `startswith("s")`, `endswith("s")`, `ltrimstr("s")`, `rtrimstr("s")` (string prefix/suffix)
+- `startswith("s")`, `endswith("s")`, `trim`, `ltrim`, `rtrim`, `ltrimstr("s")`, `rtrimstr("s")` (string prefix/suffix/whitespace trim)
 
 **Format strings**
 - `@base64`, `@base64d` (base64 encode/decode; decode JSON string content first)
@@ -166,54 +168,62 @@ naturally through pipes.
 index, compare, type) without creating closures, avoiding heap allocations in
 hot paths like `select(.field == "value")`.
 
-### 11. Multi-Output Arithmetic Operands
+### 11. Runtime Context for Variable Binding
+
+Variable bindings use an internal `execContext` stack keyed by goroutine. Each
+`expr as $x | body` evaluation copies the bound JSON bytes into a linked-list
+environment frame, then runs `body` against the original input with `$x`
+available to nested pipeline stages. This keeps lexical scoping simple without
+changing the public API.
+
+### 12. Multi-Output Arithmetic Operands
 
 `execMulti` uses `execMulti` for the left side of arithmetic operators.
 This supports `.[] + 1` and similar generators as operands. The right side is
 evaluated once per left output. `execPlusValues` holds core arithmetic logic,
 decoupled from operand evaluation.
 
-### 12. Object Merge Key Order
+### 13. Object Merge Key Order
 
 `expr + expr` on two objects: all left keys are emitted first (with right's
 value for duplicates), then new right-only keys. This preserves left-object
 key order even when right overrides a value.
 
-### 13. Object Equality (Key-Order Independent)
+### 14. Object Equality (Key-Order Independent)
 
 `jsonEqual` for objects does a content comparison: for every key in A, look it
 up in B and recursively compare values; also verify key counts match. This
 ensures `{"a":1,"b":2} == {"b":2,"a":1}` returns `true`, matching jq semantics.
 
-### 14. jsonError for error Propagation
+### 15. jsonError for error Propagation
 
 The `error` builtin returns a `*jsonError{payload []byte}` instead of a Go
 `fmt.Errorf`. `try-catch` handlers receive the payload directly as the input
 JSON value, not a string representation. Regular built-in errors (wrong type,
 division by zero, etc.) still produce string messages in catch.
 
-### 15. Iterator Error Propagation
+### 16. Iterator Error Propagation
 
 `execIterator` propagates `*jsonError` and `errBreak` from its callback, while
 silently dropping other errors. This allows `try (.[] | error) catch .` to work
 correctly while preserving the lenient multi-output behaviour (e.g.
 `.[] | .foo` on a mixed array doesn't abort on non-objects).
 
-### 16. opGenerator for Comma-Separated Bodies
+### 17. opGenerator for Comma-Separated Bodies
 
 `limit(n; a, b)` — where the body is a comma-separated generator — is parsed
 into an `opGenerator` node with `elems []*op`. `execMulti` runs each element
 in sequence, feeding all outputs to the callback. This gives `limit` the ability
 to short-circuit across generator elements cleanly.
 
-### 17. Format String JSON Decoding
+### 18. Format String JSON Decoding
 
 All format strings that operate on string content (`@base64`, `@uri`, `@html`,
 `@csv`, `@tsv`, `@sh`) first decode JSON string escape sequences
 (`decodeJSONStringContent`) before encoding. This ensures `"\n"` becomes
 byte `0x0a` in base64 output, not the two ASCII bytes `\` and `n`.
 
-### 18. Containment (Zero-Alloc Parallel Scan)
+### 19. Containment (Zero-Alloc Parallel Scan)
 
 `jsonContains(haystack, needle)` is implemented recursively using parallel
 scanner instances for objects (no allocation for the comparison logic). For

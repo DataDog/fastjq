@@ -465,7 +465,42 @@ func jsonEqual(a, b []byte) bool {
 		return equal && countA == countB
 	}
 
-	// Arrays and other types: byte-for-byte only (already tried above)
+	// Arrays: compare element-by-element recursively so numerically equivalent
+	// values like 0.1 and 1e-1 match inside collections too.
+	if aCh == '[' && bCh == '[' {
+		countA := 0
+		countB := 0
+		equal := true
+
+		var elemsA [][2]int
+		sa := scanner{data: a}
+		sa.arrayIter(func(_ int, start, end int) bool {
+			elemsA = append(elemsA, [2]int{start, end})
+			countA++
+			return true
+		})
+
+		sb := scanner{data: b}
+		sb.arrayIter(func(i, start, end int) bool {
+			countB++
+			if !equal {
+				return true
+			}
+			if i >= len(elemsA) {
+				equal = false
+				return false
+			}
+			span := elemsA[i]
+			if !jsonEqual(a[span[0]:span[1]], b[start:end]) {
+				equal = false
+				return false
+			}
+			return true
+		})
+		return equal && countA == countB
+	}
+
+	// Other types: byte-for-byte only (already tried above)
 	return false
 }
 

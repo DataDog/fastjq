@@ -378,6 +378,15 @@ func BenchmarkFastjq_Large_Ltrimstr(b *testing.B) {
 func BenchmarkFastjq_Small_Rtrimstr(b *testing.B) {
 	benchFastjqObj(b, `.field_2 | rtrimstr("xxx")`, smallJSON)
 }
+func BenchmarkFastjq_Small_Trim(b *testing.B) {
+	benchFastjqObj(b, `trim`, []byte(`"  abc  "`))
+}
+func BenchmarkFastjq_Small_Ltrim(b *testing.B) {
+	benchFastjqObj(b, `ltrim`, []byte(`"  abc  "`))
+}
+func BenchmarkFastjq_Small_Rtrim(b *testing.B) {
+	benchFastjqObj(b, `rtrim`, []byte(`"  abc  "`))
+}
 func BenchmarkFastjq_Small_First(b *testing.B) {
 	benchFastjqObj(b, `first(.[] | select(. > 2))`, []byte(`[1,2,3,4,5]`))
 }
@@ -523,6 +532,15 @@ func BenchmarkGojq_Small_Ltrimstr(b *testing.B) {
 func BenchmarkGojq_Small_Rtrimstr(b *testing.B) {
 	benchGojqObj(b, `.field_2 | rtrimstr("xxx")`, smallJSON)
 }
+func BenchmarkGojq_Small_Trim(b *testing.B) {
+	benchGojqObj(b, `trim`, []byte(`"  abc  "`))
+}
+func BenchmarkGojq_Small_Ltrim(b *testing.B) {
+	benchGojqObj(b, `ltrim`, []byte(`"  abc  "`))
+}
+func BenchmarkGojq_Small_Rtrim(b *testing.B) {
+	benchGojqObj(b, `rtrim`, []byte(`"  abc  "`))
+}
 func BenchmarkGojq_Small_First(b *testing.B) {
 	benchGojqObj(b, `first(.[] | select(. > 2))`, []byte(`[1,2,3,4,5]`))
 }
@@ -642,8 +660,14 @@ func BenchmarkFastjq_Small_ToString(b *testing.B) {
 func BenchmarkFastjq_Small_ToNumber(b *testing.B) {
 	benchFastjqObj(b, `tonumber`, []byte(`"42"`))
 }
+func BenchmarkFastjq_Small_ToBoolean(b *testing.B) {
+	benchFastjqObj(b, `toboolean`, []byte(`"true"`))
+}
 func BenchmarkGojq_Small_ToNumber(b *testing.B) {
 	benchGojqObj(b, `tonumber`, []byte(`"42"`))
+}
+func BenchmarkGojq_Small_ToBoolean(b *testing.B) {
+	benchGojqObj(b, `toboolean`, []byte(`"true"`))
 }
 
 func BenchmarkFastjq_Small_AnyTwoArg(b *testing.B) {
@@ -801,6 +825,15 @@ func BenchmarkGojq_Small_Tgamma(b *testing.B)   { benchGojqObj(b, `tgamma`, []by
 
 func BenchmarkFastjq_Small_Fabs(b *testing.B) { benchFastjqObj(b, `fabs`, []byte(`-3.14`)) }
 func BenchmarkGojq_Small_Fabs(b *testing.B)   { benchGojqObj(b, `fabs`, []byte(`-3.14`)) }
+func BenchmarkFastjq_Small_Abs(b *testing.B)  { benchFastjqObj(b, `abs`, []byte(`-3.14`)) }
+func BenchmarkGojq_Small_Abs(b *testing.B)    { benchGojqObj(b, `abs`, []byte(`-3.14`)) }
+
+func BenchmarkFastjq_Small_Bind(b *testing.B) {
+	benchFastjqObj(b, `.bar as $x | .foo | . + $x`, []byte(`{"foo":10,"bar":200}`))
+}
+func BenchmarkGojq_Small_Bind(b *testing.B) {
+	benchGojqObj(b, `.bar as $x | .foo | . + $x`, []byte(`{"foo":10,"bar":200}`))
+}
 
 // --- String interpolation ---
 // Zero-alloc for field-access expressions (sub-slices of input).

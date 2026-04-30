@@ -99,6 +99,7 @@ var tableRows = []row{
 	{"`tojson`", "Small (~100B)", "Small_ToJSON", "Small_ToJSON"},
 	{"`fromjson`", "JSON string", "Small_FromJSON", "Small_FromJSON"},
 	{"`tonumber`", "`\"42\"` string", "Small_ToNumber", "Small_ToNumber"},
+	{"`toboolean`", "`\"true\"` string", "Small_ToBoolean", "Small_ToBoolean"},
 	// Strings
 	{"`split(\",\")`", "short string", "Small_Split", "Small_Split"},
 	{"`join(\",\")`", "5-elem array", "Small_Join", "Small_Join"},
@@ -107,6 +108,9 @@ var tableRows = []row{
 	{"`startswith(\"s\")`", "Small (~100B)", "Small_Startswith", "Small_Startswith"},
 	{"`startswith(\"s\")`", "Large (~100KB)", "Large_Startswith", "Large_Startswith"},
 	{"`endswith(\"s\")`", "Small (~100B)", "Small_Endswith", "Small_Endswith"},
+	{"`trim`", "short string", "Small_Trim", "Small_Trim"},
+	{"`ltrim`", "short string", "Small_Ltrim", "Small_Ltrim"},
+	{"`rtrim`", "short string", "Small_Rtrim", "Small_Rtrim"},
 	{"`ltrimstr(\"s\")`", "Small (~100B)", "Small_Ltrimstr", "Small_Ltrimstr"},
 	{"`rtrimstr(\"s\")`", "Small (~100B)", "Small_Rtrimstr", "Small_Rtrimstr"},
 	// Complex multi-feature (array-building queries; allocs expected per element)
@@ -132,6 +136,9 @@ var tableRows = []row{
 	{"`exp`", "integer 1", "Small_Exp", "Small_Exp"},
 	{"`tgamma`", "integer 5", "Small_Tgamma", "Small_Tgamma"},
 	{"`fabs`", "float -3.14", "Small_Fabs", "Small_Fabs"},
+	{"`abs`", "float -3.14", "Small_Abs", "Small_Abs"},
+	// Bindings
+	{"`expr as $x | body`", "Small (~20B object)", "Small_Bind", "Small_Bind"},
 	// String interpolation
 	{"``\"\\(.level): \\(.svc)\"``", "~45B object", "Small_StringInterp", "Small_StringInterp"},
 	{"``\"user \\(.name) …\"``", "~45B object", "Small_StringInterpNum", "Small_StringInterpNum"},

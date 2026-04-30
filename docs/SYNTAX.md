@@ -87,6 +87,16 @@ Array construction follows jq generator precedence: `[a, b | f]` is parsed as
 
 Pipes propagate multi-output: if the left side produces N results, the right side runs N times.
 
+### Variables
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `expr as $x \| body` | Bind the result of `expr` to `$x`, then run `body` against the original input | `null` with `1 as $x \| [$x,$x]` | `[1,1]` |
+| `.bar as $x \| .foo \| . + $x` | Bound values remain visible across later pipeline stages | `{"foo":10,"bar":200}` | `210` |
+| `1 as $x \| [$x,$x,$x as $x \| $x]` | Nested binds shadow outer ones lexically | `null` | `[1,1,1]` |
+
+Only simple `$name` bindings are supported in this branch. Destructuring forms like `. as [$a, $b]` are still deferred.
+
 ### Literals
 
 | Syntax | Description | Example Output |
@@ -327,6 +337,7 @@ For strings, positions are Unicode codepoint offsets (not byte offsets), matchin
 | `has("key")` | True if object has field (even if null) | `{"x":null}` | `true` |
 | `has(n)` | True if array index n exists (n ≥ 0) | `[1,2,3]` with `has(2)` | `true` |
 | `length` | String → chars, array/object → count, null → 0 | `[1,2,3]` | `3` |
+| `abs` | Numbers become positive; strings pass through unchanged | `-3.5` | `3.5` |
 | `keys_unsorted` | Object keys in insertion order; array → indices | `{"b":1,"a":2}` | `["b","a"]` |
 
 ### Slicing and Concatenation
@@ -432,6 +443,9 @@ All forms short-circuit. `any(gen; cond)` is equivalent to `first(gen \| select(
 | `ascii_upcase` | Convert string to uppercase | `"hello"` | `"HELLO"` |
 | `startswith("s")` | True if string starts with s | `"foobar"` | `true` |
 | `endswith("s")` | True if string ends with s | `"foobar"` | `false` (for `"foo"`) |
+| `trim` | Trim leading and trailing Unicode whitespace | `"  abc  "` | `"abc"` |
+| `ltrim` | Trim leading Unicode whitespace | `"  abc  "` | `"abc  "` |
+| `rtrim` | Trim trailing Unicode whitespace | `"  abc  "` | `"  abc"` |
 | `ltrimstr("s")` | Remove prefix if present | `"prod-auth"` | `"auth"` |
 | `rtrimstr("s")` | Remove suffix if present | `"app.log"` | `"app"` |
 
@@ -461,8 +475,9 @@ Replacement strings in `sub`/`gsub` are literals — `\(...)` capture group refe
 | `fromjson` | Parse a JSON string to its value | `"{\"a\":1}"` | `{"a":1}` |
 | `tostring` | Strings pass through; non-strings serialized via `tojson` | `42` | `"42"` |
 | `tonumber` | Numbers pass through; strings parsed as floats | `"3.14"` | `3.14` |
+| `toboolean` | Booleans pass through; `"true"`/`"false"` strings are parsed | `"true"` | `true` |
 
-`tojson \| fromjson` is an identity round-trip. `tostring \| tonumber` round-trips numbers.
+`tojson \| fromjson` is an identity round-trip. `tostring \| tonumber` round-trips numbers. `toboolean` throws a jq-style error string for invalid input such as `0`, `null`, or `"tru"`.
 
 ### Object Transforms
 
@@ -499,7 +514,6 @@ These operations are implementable at zero allocation but involve more complexit
 
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
-| `as $x \| expr` | Variable binding | Store `(start, end)` offsets into original input. **Zero-alloc only if bound values reference input, not constructed output.** Binding a constructed value (e.g., `{a:1} as $x`) would need to store bytes somewhere. |
 | `def f: body; expr` | Function definitions | AST-level feature, compile-time only. But closures and recursion add parser/AST complexity. |
 | `reduce .[] as $x (init; update)` | Fold/accumulate | Needs mutable accumulator. If accumulator lives in the output buffer, works, but each step reads previous output. May require double-buffering (ping-pong between two buffer slices). |
 | `label-break` | Control flow | `label $out \| foreach ...` — requires unwinding callback stack. Achievable with a sentinel error value. |
@@ -551,7 +565,6 @@ The governing principle rejects operations where allocation scales with the *sha
 | `getpath(path)` | Get value at path | Navigate nested structure following path array. |
 | `setpath(path; val)` | Set value at path | Navigate to position, reconstruct tree with modified value. |
 | `delpaths(paths)` | Delete at multiple paths | Like `setpath` but removing. |
-| `as $x \| expr` | Variable binding | Zero-alloc if bound values reference input; allocates if they hold constructed data. |
 | `reduce .[] as $x (init; update)` | Fold/accumulate | Needs mutable accumulator; double-buffering keeps it near-zero-alloc. |
 | `foreach` | Stateful iteration | Same accumulator challenge as `reduce`. |
 | `label-break` | Control flow | Achievable with a sentinel error value for stack unwinding. |

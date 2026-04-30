@@ -15,6 +15,8 @@ const (
 	opField                        // .foo
 	opDelete                       // del(.foo)
 	opPipe                         // expr | expr
+	opBind                         // expr as $x | body
+	opVar                          // $x
 	opIndex                        // .[0], .[-1]
 	opIterator                     // .[]
 	opConstruct                    // {name, a: .foo}
@@ -31,6 +33,7 @@ const (
 	opHas                          // has("key")
 	opIf                           // if cond then expr else expr end
 	opLength                       // length
+	opAbs                          // abs
 	opToEntries                    // to_entries
 	opFromEntries                  // from_entries
 	opAdd                          // add
@@ -51,6 +54,9 @@ const (
 	opAsciiUpcase                  // ascii_upcase
 	opStartsWith                   // startswith("s")
 	opEndsWith                     // endswith("s")
+	opTrim                         // trim
+	opLtrim                        // ltrim
+	opRtrim                        // rtrim
 	opLtrimStr                     // ltrimstr("s")
 	opRtrimStr                     // rtrimstr("s")
 	opKeysUnsorted                 // keys_unsorted
@@ -73,6 +79,7 @@ const (
 	opFromJSON                     // fromjson
 	opToString                     // tostring
 	opToNumber                     // tonumber
+	opToBoolean                    // toboolean
 	opContains                     // contains(val) — recursive containment; optional=true for inside()
 	opFloor                        // floor
 	opCeil                         // ceil
@@ -160,6 +167,7 @@ type pair struct {
 type op struct {
 	typ             opType
 	field           string         // for opField
+	name            string         // for opVar/opBind
 	fields          []op           // for opDelete: list of field-access/index paths to delete
 	left            *op            // for opPipe, opCompare, opAlternative, opNth
 	right           *op            // for opPipe, opCompare, opAlternative
@@ -194,12 +202,16 @@ func parse(query string) (*op, error) {
 	// Optimization: simplify identity pipes
 	result = simplify(result)
 
+	if err := validateVars(result, nil); err != nil {
+		return nil, err
+	}
+
 	return result, nil
 }
 
 // parsePipeExpr parses a pipe chain: expr | expr | ...
 func parsePipeExpr(s string) (*op, string, error) {
-	result, rest, err := parseExpr(s)
+	result, rest, err := parseBindExpr(s)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -207,7 +219,7 @@ func parsePipeExpr(s string) (*op, string, error) {
 
 	for strings.HasPrefix(rest, "|") {
 		rest = strings.TrimSpace(rest[1:])
-		right, remainder, err := parseExpr(rest)
+		right, remainder, err := parseBindExpr(rest)
 		if err != nil {
 			return nil, remainder, err
 		}
@@ -216,6 +228,36 @@ func parsePipeExpr(s string) (*op, string, error) {
 	}
 
 	return result, rest, nil
+}
+
+// parseBindExpr parses `expr as $name | body`.
+// The bound value is produced by expr, but body runs against the original input.
+func parseBindExpr(s string) (*op, string, error) {
+	left, rest, err := parseExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if !(strings.HasPrefix(rest, "as") && (len(rest) == 2 || !isIdentChar(rest[2]))) {
+		return left, rest, nil
+	}
+	rest = strings.TrimSpace(rest[2:])
+	if len(rest) == 0 || rest[0] != '$' {
+		return nil, rest, fmt.Errorf("expected $name after as")
+	}
+	name, remaining := readIdentifier(rest[1:])
+	if name == "" {
+		return nil, rest, fmt.Errorf("expected variable name after as $")
+	}
+	remaining = strings.TrimSpace(remaining)
+	if len(remaining) == 0 || remaining[0] != '|' {
+		return nil, remaining, fmt.Errorf("expected '|' after as $%s", name)
+	}
+	body, rest, err := parsePipeExpr(remaining[1:])
+	if err != nil {
+		return nil, rest, err
+	}
+	return &op{typ: opBind, name: name, left: left, right: body}, rest, nil
 }
 
 // parseGeneratorExpr parses generator syntax in contexts where commas produce
@@ -245,7 +287,7 @@ func parseGeneratorExpr(s string) (*op, string, error) {
 // is a regular expression operand. Returns a single op if there is only one
 // element, or an opGenerator if there are multiple.
 func parseGeneratorTerm(s string) (*op, string, error) {
-	first, rest, err := parseExpr(s)
+	first, rest, err := parseBindExpr(s)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -256,7 +298,7 @@ func parseGeneratorTerm(s string) (*op, string, error) {
 	elems := []*op{first}
 	for len(rest) > 0 && rest[0] == ',' {
 		rest = strings.TrimSpace(rest[1:])
-		next, rest2, err := parseExpr(rest)
+		next, rest2, err := parseBindExpr(rest)
 		if err != nil {
 			return nil, rest2, err
 		}
@@ -456,6 +498,11 @@ func parseAtom(s string) (*op, string, error) {
 		return parseStringLiteral(s)
 	}
 
+	// Variable reference: $name
+	if s[0] == '$' {
+		return parseVarRef(s)
+	}
+
 	// del()
 	if strings.HasPrefix(s, "del(") {
 		return parseDel(s)
@@ -504,6 +551,9 @@ func parseAtom(s string) (*op, string, error) {
 	// length builtin
 	if strings.HasPrefix(s, "length") && (len(s) == 6 || !isIdentChar(s[6])) {
 		return &op{typ: opLength}, s[6:], nil
+	}
+	if strings.HasPrefix(s, "abs") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return &op{typ: opAbs}, s[3:], nil
 	}
 
 	// first / last — no-arg desugar to .[0] / .[-1]; with arg use dedicated op
@@ -750,12 +800,21 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opImplode}, s[7:], nil
 	}
 
-	// startswith(s) / endswith(s) / ltrimstr(s) / rtrimstr(s)
+	// startswith(s) / endswith(s) / trim() / ltrim() / rtrim() / ltrimstr(s) / rtrimstr(s)
 	if strings.HasPrefix(s, "startswith(") {
 		return parseStringArgBuiltin(s[11:], opStartsWith)
 	}
 	if strings.HasPrefix(s, "endswith(") {
 		return parseStringArgBuiltin(s[9:], opEndsWith)
+	}
+	if strings.HasPrefix(s, "trim") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opTrim}, s[4:], nil
+	}
+	if strings.HasPrefix(s, "ltrim") && (len(s) == 5 || !isIdentChar(s[5])) {
+		return &op{typ: opLtrim}, s[5:], nil
+	}
+	if strings.HasPrefix(s, "rtrim") && (len(s) == 5 || !isIdentChar(s[5])) {
+		return &op{typ: opRtrim}, s[5:], nil
 	}
 	if strings.HasPrefix(s, "ltrimstr(") {
 		return parseStringArgBuiltin(s[9:], opLtrimStr)
@@ -789,7 +848,7 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opArrayConstruct, elems: []*op{pipe}}, rest, nil
 	}
 
-	// tojson / fromjson / tostring / tonumber
+	// tojson / fromjson / tostring / tonumber / toboolean
 	if strings.HasPrefix(s, "tojson") && (len(s) == 6 || !isIdentChar(s[6])) {
 		return &op{typ: opToJSON}, s[6:], nil
 	}
@@ -801,6 +860,9 @@ func parseAtom(s string) (*op, string, error) {
 	}
 	if strings.HasPrefix(s, "tonumber") && (len(s) == 8 || !isIdentChar(s[8])) {
 		return &op{typ: opToNumber}, s[8:], nil
+	}
+	if strings.HasPrefix(s, "toboolean") && (len(s) == 9 || !isIdentChar(s[9])) {
+		return &op{typ: opToBoolean}, s[9:], nil
 	}
 
 	// not builtin (with boundary check)
@@ -1078,6 +1140,123 @@ func parseAtom(s string) (*op, string, error) {
 	}
 
 	return nil, s, fmt.Errorf("unexpected character %q", s[0:1])
+}
+
+func parseVarRef(s string) (*op, string, error) {
+	name, rest := readIdentifier(s[1:])
+	if name == "" {
+		return nil, s, fmt.Errorf("expected variable name after '$'")
+	}
+	node := &op{typ: opVar, name: name}
+	if len(rest) > 0 && rest[0] == '[' {
+		child, remaining, err := parseBracketExpr(rest)
+		if err != nil {
+			return nil, rest, err
+		}
+		node.child = child
+		rest = remaining
+	} else if len(rest) > 0 && rest[0] == '.' {
+		if len(rest) > 1 && isIdentStart(rest[1]) {
+			child, remaining, err := parseFieldChain(rest[1:])
+			if err != nil {
+				return nil, rest, err
+			}
+			node.child = child
+			rest = remaining
+		} else if len(rest) > 1 && rest[1] == '[' {
+			child, remaining, err := parseBracketExpr(rest[1:])
+			if err != nil {
+				return nil, rest, err
+			}
+			node.child = child
+			rest = remaining
+		}
+	} else if len(rest) > 0 && rest[0] == '?' {
+		node.optional = true
+		rest = rest[1:]
+	}
+	return node, rest, nil
+}
+
+func validateVars(node *op, scope map[string]bool) error {
+	if node == nil {
+		return nil
+	}
+	switch node.typ {
+	case opVar:
+		if scope == nil || !scope[node.name] {
+			return fmt.Errorf("$%s is not defined", node.name)
+		}
+		return validateVars(node.child, scope)
+	case opBind:
+		if err := validateVars(node.left, scope); err != nil {
+			return err
+		}
+		next := cloneVarScope(scope)
+		next[node.name] = true
+		return validateVars(node.right, next)
+	case opPipe, opCompare, opAlternative, opAnd, opOr, opPlus, opMinus, opMul, opDiv, opMod, opPow:
+		if err := validateVars(node.left, scope); err != nil {
+			return err
+		}
+		return validateVars(node.right, scope)
+	case opField, opIndex:
+		return validateVars(node.child, scope)
+	case opConstruct:
+		for _, p := range node.pairs {
+			if err := validateVars(p.expr, scope); err != nil {
+				return err
+			}
+		}
+		return nil
+	case opArrayConstruct, opGenerator, opStringInterp:
+		for _, elem := range node.elems {
+			if err := validateVars(elem, scope); err != nil {
+				return err
+			}
+		}
+		return nil
+	case opSelect, opFlatten, opContains, opIsEmpty, opNth, opSortBy, opUniqueBy, opGroupBy, opTest, opMatchRe, opCapture, opScan, opSub, opGSub:
+		if err := validateVars(node.child, scope); err != nil {
+			return err
+		}
+		if err := validateVars(node.left, scope); err != nil {
+			return err
+		}
+		return validateVars(node.right, scope)
+	case opIf:
+		if err := validateVars(node.left, scope); err != nil {
+			return err
+		}
+		if err := validateVars(node.right, scope); err != nil {
+			return err
+		}
+		return validateVars(node.child, scope)
+	case opTry:
+		if err := validateVars(node.left, scope); err != nil {
+			return err
+		}
+		return validateVars(node.right, scope)
+	default:
+		if err := validateVars(node.left, scope); err != nil {
+			return err
+		}
+		if err := validateVars(node.right, scope); err != nil {
+			return err
+		}
+		return validateVars(node.child, scope)
+	}
+}
+
+func cloneVarScope(scope map[string]bool) map[string]bool {
+	if scope == nil {
+		return make(map[string]bool)
+	}
+	out := make(map[string]bool, len(scope)+1)
+	for k, v := range scope {
+		out[k] = v
+	}
+	return out
 }
 
 // parseDotExpr parses identity (.) or field access (.foo, .foo.bar),

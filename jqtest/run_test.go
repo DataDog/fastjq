@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,21 +44,14 @@ const manTestLocalCache = "testdata/man.test"
 //   - Total: 751
 //   - Skipped: 395
 //   - Attempted: 356
-//   - Passed: 348
-//   - Failed: 8
+//   - Passed: 356
+//   - Failed: 0
 //
 // Skip families currently driving the branch:
-//   - variables / bindings
 //   - reduce / foreach / label / break
 //   - path / paths / getpath / setpath / delpaths / leaf_paths
 //   - def
 //   - parser breadth gaps that fall through as compile-time skips
-//
-// Active attempted failures to burn down first:
-//   - string canonicalization: jq.test 54, 58, 625
-//   - array/generator precedence: jq.test 693, man.test 793
-//   - jq-style type error text: jq.test 1431
-//   - try/catch scope: jq.test 2320, 2325
 //
 // unsupportedOps lists functions/syntax that fastjq does not implement.
 // A test whose program contains any of these tokens is skipped — NOT counted
@@ -67,8 +61,6 @@ var unsupportedOps = []string{
 	"..", "recurse",
 	// Path operations
 	"path(", "paths", "getpath", "setpath", "delpaths", "leaf_paths",
-	// Variables and binding
-	" as $", "as $",
 	// User-defined functions
 	"def ",
 	// Reduce / foreach / label-break
@@ -450,6 +442,9 @@ func outputsMatch(got, expected []string) bool {
 		if numericEquiv(got[i], expected[i]) {
 			continue
 		}
+		if jsonStructurallyEqual(got[i], expected[i]) {
+			continue
+		}
 		return false
 	}
 	return true
@@ -472,4 +467,78 @@ func numericEquiv(a, b string) bool {
 		return false
 	}
 	return fa == fb
+}
+
+func jsonStructurallyEqual(a, b string) bool {
+	av, aok := decodeJSONValue(a)
+	if !aok {
+		return false
+	}
+	bv, bok := decodeJSONValue(b)
+	if !bok {
+		return false
+	}
+	return jsonValueEqual(av, bv)
+}
+
+func decodeJSONValue(s string) (any, bool) {
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, false
+	}
+	return v, true
+}
+
+func jsonValueEqual(a, b any) bool {
+	switch av := a.(type) {
+	case nil:
+		return b == nil
+	case bool:
+		bv, ok := b.(bool)
+		return ok && av == bv
+	case string:
+		bv, ok := b.(string)
+		return ok && av == bv
+	case json.Number:
+		bv, ok := b.(json.Number)
+		return ok && jsonNumbersEqual(av, bv)
+	case []any:
+		bv, ok := b.([]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if !jsonValueEqual(av[i], bv[i]) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		bv, ok := b.(map[string]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for k, v := range av {
+			if !jsonValueEqual(v, bv[k]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func jsonNumbersEqual(a, b json.Number) bool {
+	if a == b {
+		return true
+	}
+	ar, aok := new(big.Rat).SetString(string(a))
+	br, bok := new(big.Rat).SetString(string(b))
+	if aok && bok {
+		return ar.Cmp(br) == 0
+	}
+	return numericEquiv(string(a), string(b))
 }

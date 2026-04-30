@@ -113,6 +113,84 @@ func TestPipeIdentityOptimization(t *testing.T) {
 	}
 }
 
+func TestBindAndVarBasic(t *testing.T) {
+	assertQuery(t, `1 as $x | $x`, `null`, `1`)
+	assertQuery(t, `.bar as $x | .foo | . + $x`, `{"foo":3,"bar":4}`, `7`)
+	assertQuery(t, `"x" as $x | "a"+"y" as $y | $x+","+$y`, `null`, `"x,ay"`)
+}
+
+func TestBindAndVarArrayConstruction(t *testing.T) {
+	assertQuery(t, `1 as $x | 2 as $y | [$x,$y,$x]`, `null`, `[1,2,1]`)
+	assertQuery(t, `1 as $x | [$x,$x,$x as $x | $x]`, `null`, `[1,1,1]`)
+}
+
+func TestBindPreservesOriginalInputForBody(t *testing.T) {
+	assertQuery(t, `42 as $x | . | . | . + 432 | $x + 1`, `0`, `43`)
+}
+
+func TestBindMultiOutput(t *testing.T) {
+	p, err := Compile(`.[] as $x | $x + 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.RunAll([]byte(`[1,2,3]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"2", "3", "4"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if string(got[i]) != want[i] {
+			t.Fatalf("result %d: got %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
+func TestBindUndefinedVariableCompileError(t *testing.T) {
+	_, err := Compile(`. as $foo | [$foo, $bar]`)
+	if err == nil {
+		t.Fatal("expected compile error for undefined variable")
+	}
+	if err.Error() != "$bar is not defined" {
+		t.Fatalf("got %q, want %q", err.Error(), "$bar is not defined")
+	}
+}
+
+func TestToBoolean(t *testing.T) {
+	assertQuery(t, `toboolean`, `"true"`, `true`)
+	assertQuery(t, `toboolean`, `"false"`, `false`)
+	assertQuery(t, `toboolean`, `true`, `true`)
+	assertQuery(t, `toboolean`, `false`, `false`)
+}
+
+func TestToBooleanErrors(t *testing.T) {
+	assertQuery(t, `try toboolean catch .`, `null`, `"null (null) cannot be parsed as a boolean"`)
+	assertQuery(t, `try toboolean catch .`, `0`, `"number (0) cannot be parsed as a boolean"`)
+	assertQuery(t, `try toboolean catch .`, `"tru"`, `"string (\"tru\") cannot be parsed as a boolean"`)
+}
+
+func TestTrimBuiltins(t *testing.T) {
+	assertQuery(t, `trim`, `"  abc  "`, `"abc"`)
+	assertQuery(t, `ltrim`, `"  abc  "`, `"abc  "`)
+	assertQuery(t, `rtrim`, `"  abc  "`, `"  abc"`)
+	assertQuery(t, `trim`, "\"\\t\\n abc\\u3000\"", `"abc"`)
+}
+
+func TestTrimBuiltinErrors(t *testing.T) {
+	assertQuery(t, `try trim catch .`, `123`, `"trim input must be a string"`)
+	assertQuery(t, `try ltrim catch .`, `123`, `"trim input must be a string"`)
+	assertQuery(t, `try rtrim catch .`, `123`, `"trim input must be a string"`)
+}
+
+func TestAbsBuiltin(t *testing.T) {
+	assertQuery(t, `abs`, `"abc"`, `"abc"`)
+	assertQuery(t, `abs`, `-10`, `10`)
+	assertQuery(t, `abs`, `-1.1`, `1.1`)
+	assertQuery(t, `abs`, `1000000000000000002`, `1000000000000000002`)
+}
+
 func TestRunWithBuffer(t *testing.T) {
 	p, err := Compile("del(.age)")
 	if err != nil {
