@@ -71,6 +71,9 @@ Use `RunAll` or `RunFunc` to consume multiple outputs. `Run`/`RunWithBuffer` ret
 | `[.name, .age]` | Build array from fields | `{"name":"alice","age":30}` | `["alice",30]` |
 | `[.name]` | Single-element array | `{"name":"alice"}` | `["alice"]` |
 
+Array construction follows jq generator precedence: `[a, b | f]` is parsed as
+`[(a, b) | f]`, not `[a, (b | f)]`.
+
 **Allocation note:** `[.[] | f]` / `map(f)` — when `f` returns an input sub-slice (field access, identity, comparison), the array is built 0-alloc. When `f` constructs new data (object `{…}`, arithmetic, string concat), ~1 alloc per element is needed to prevent result aliasing. `map(.name)` = 0 allocs; `map({name, value})` = ~1 alloc/element.
 
 ### Pipe

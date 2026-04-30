@@ -4,6 +4,38 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — codex/jq-parity suite tracking
+
+### Added
+
+- Added a branch-level jq parity tracking note for `codex/jq-parity`.
+- Recorded the branch baseline before Wave 1: `751` total tests, `395` skipped, `356` attempted, `348` passed, `8` failed.
+- Recorded the intended rollout waves for this branch:
+  - Wave 0: suite tracking and regression coverage
+  - Wave 1: active parity failures and parser/runtime fixes
+  - Wave 2: shared execution context, variables, defs, path ops, and control flow
+  - Wave 3: update/index semantics and high-yield builtin coverage
+  - Wave 4: remaining low-yield parity tail needed to stay above the majority target
+
+### Fixed
+
+- Added regression coverage for the current jq-suite-only mismatches so later runtime/parser work can close them without losing visibility.
+- Fixed all `8` active official jq-suite failures from the branch baseline.
+- Fixed jq-style array/generator precedence for array construction contexts such as `[a, b | f]`.
+- Fixed jq-compatible string canonicalization for emitted string values in the parity cases covered by the official suite.
+- Fixed jq-style field/index error messages for the current attempted suite.
+- Fixed `try ... catch ...` scoping so downstream pipeline errors are no longer caught by an inner `try`.
+
+### Tradeoffs
+
+- This entry is intentionally a coordination checkpoint for a shared topic branch, not a feature release note.
+- Wave 1 brings the official jq suite to `356/356` passing for attempted tests, but it does not reduce the `395` skipped tests yet.
+- The dominant skip families still driving the branch are variables/bindings, stateful control (`reduce`/`foreach`/`label`/`break`), path operations, user-defined functions, and a larger compile-skip tail from parser breadth gaps.
+
+### Benchmark results
+
+- Benchmarks were regenerated after the Wave 1 runtime/parser changes; see `docs/BENCHMARKS.md` for the current numbers.
+
 ## [Unreleased] — Restore 0 allocs/op for all Tier 0 operations
 
 ### Fixed

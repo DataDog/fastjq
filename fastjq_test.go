@@ -891,14 +891,18 @@ func TestLiteralNegative(t *testing.T) { assertQuery(t, "-5", `{}`, "-5") }
 
 // --- Comparisons ---
 
-func TestCompareStringEqual(t *testing.T)      { assertQuery(t, `.name == "alice"`, `{"name":"alice"}`, "true") }
-func TestCompareStringNotEqual(t *testing.T)   { assertQuery(t, `.name == "bob"`, `{"name":"alice"}`, "false") }
-func TestCompareNotEqualOp(t *testing.T)       { assertQuery(t, `.age != 30`, `{"age":25}`, "true") }
-func TestCompareNull(t *testing.T)             { assertQuery(t, `.x == null`, `{"y":1}`, "true") }
-func TestCompareLiteralStrings(t *testing.T)   { assertQuery(t, `"a" == "a"`, `{}`, "true") }
+func TestCompareStringEqual(t *testing.T) {
+	assertQuery(t, `.name == "alice"`, `{"name":"alice"}`, "true")
+}
+func TestCompareStringNotEqual(t *testing.T) {
+	assertQuery(t, `.name == "bob"`, `{"name":"alice"}`, "false")
+}
+func TestCompareNotEqualOp(t *testing.T)             { assertQuery(t, `.age != 30`, `{"age":25}`, "true") }
+func TestCompareNull(t *testing.T)                   { assertQuery(t, `.x == null`, `{"y":1}`, "true") }
+func TestCompareLiteralStrings(t *testing.T)         { assertQuery(t, `"a" == "a"`, `{}`, "true") }
 func TestCompareLiteralStringsNotEqual(t *testing.T) { assertQuery(t, `"a" != "b"`, `{}`, "true") }
-func TestCompareFields(t *testing.T)           { assertQuery(t, `.x == .y`, `{"x":1,"y":1}`, "true") }
-func TestCompareNumberFloat(t *testing.T)      { assertQuery(t, `1.0 == 1`, `{}`, "true") }
+func TestCompareFields(t *testing.T)                 { assertQuery(t, `.x == .y`, `{"x":1,"y":1}`, "true") }
+func TestCompareNumberFloat(t *testing.T)            { assertQuery(t, `1.0 == 1`, `{}`, "true") }
 
 // --- Select ---
 
@@ -1898,10 +1902,10 @@ func TestStringOpsComposed(t *testing.T) {
 
 // --- values ---
 
-func TestValuesPassesNonNull(t *testing.T)  { assertQuery(t, `values`, `{"a":1}`, `{"a":1}`) }
-func TestValuesPassesZero(t *testing.T)     { assertQuery(t, `values`, `0`, `0`) }
-func TestValuesPassesFalse(t *testing.T)    { assertQuery(t, `values`, `false`, `false`) }
-func TestValuesFiltersNull(t *testing.T)    { assertNoOutput(t, `values`, `null`) }
+func TestValuesPassesNonNull(t *testing.T) { assertQuery(t, `values`, `{"a":1}`, `{"a":1}`) }
+func TestValuesPassesZero(t *testing.T)    { assertQuery(t, `values`, `0`, `0`) }
+func TestValuesPassesFalse(t *testing.T)   { assertQuery(t, `values`, `false`, `false`) }
+func TestValuesFiltersNull(t *testing.T)   { assertNoOutput(t, `values`, `null`) }
 func TestValuesInStream(t *testing.T) {
 	// .[] | values filters nulls from a stream
 	p, _ := Compile(`.[] | values`)
@@ -1920,23 +1924,27 @@ func TestValuesObjectStream(t *testing.T) {
 
 // --- in ---
 
-func TestInObjectTrue(t *testing.T)   { assertQuery(t, `"foo" | in({"foo":1,"bar":2})`, `null`, `true`) }
-func TestInObjectFalse(t *testing.T)  { assertQuery(t, `"baz" | in({"foo":1})`, `null`, `false`) }
-func TestInArrayTrue(t *testing.T)    { assertQuery(t, `1 | in([0,1,2])`, `null`, `true`) }
-func TestInArrayFalse(t *testing.T)   { assertQuery(t, `5 | in([0,1,2])`, `null`, `false`) }
-func TestInArrayNeg(t *testing.T)     { assertQuery(t, `-1 | in([0,1,2])`, `null`, `false`) }
+func TestInObjectTrue(t *testing.T)  { assertQuery(t, `"foo" | in({"foo":1,"bar":2})`, `null`, `true`) }
+func TestInObjectFalse(t *testing.T) { assertQuery(t, `"baz" | in({"foo":1})`, `null`, `false`) }
+func TestInArrayTrue(t *testing.T)   { assertQuery(t, `1 | in([0,1,2])`, `null`, `true`) }
+func TestInArrayFalse(t *testing.T)  { assertQuery(t, `5 | in([0,1,2])`, `null`, `false`) }
+func TestInArrayNeg(t *testing.T)    { assertQuery(t, `-1 | in([0,1,2])`, `null`, `false`) }
 func TestInFieldAccess(t *testing.T) {
 	assertQuery(t, `.key | in({"foo":1,"bar":2})`, `{"key":"foo"}`, `true`)
 }
 
 // --- @base64 / @base64d ---
 
-func TestBase64Encode(t *testing.T)        { assertQuery(t, `@base64`, `"hello"`, `"aGVsbG8="`) }
-func TestBase64EncodeSpace(t *testing.T)   { assertQuery(t, `@base64`, `"hello world"`, `"aGVsbG8gd29ybGQ="`) }
-func TestBase64EncodeEmpty(t *testing.T)   { assertQuery(t, `@base64`, `""`, `""`) }
-func TestBase64Decode(t *testing.T)        { assertQuery(t, `@base64d`, `"aGVsbG8="`, `"hello"`) }
-func TestBase64DecodeSpace(t *testing.T)   { assertQuery(t, `@base64d`, `"aGVsbG8gd29ybGQ="`, `"hello world"`) }
-func TestBase64RoundTrip(t *testing.T)     { assertQuery(t, `@base64 | @base64d`, `"hello"`, `"hello"`) }
+func TestBase64Encode(t *testing.T) { assertQuery(t, `@base64`, `"hello"`, `"aGVsbG8="`) }
+func TestBase64EncodeSpace(t *testing.T) {
+	assertQuery(t, `@base64`, `"hello world"`, `"aGVsbG8gd29ybGQ="`)
+}
+func TestBase64EncodeEmpty(t *testing.T) { assertQuery(t, `@base64`, `""`, `""`) }
+func TestBase64Decode(t *testing.T)      { assertQuery(t, `@base64d`, `"aGVsbG8="`, `"hello"`) }
+func TestBase64DecodeSpace(t *testing.T) {
+	assertQuery(t, `@base64d`, `"aGVsbG8gd29ybGQ="`, `"hello world"`)
+}
+func TestBase64RoundTrip(t *testing.T) { assertQuery(t, `@base64 | @base64d`, `"hello"`, `"hello"`) }
 func TestBase64DecodeURLSafe(t *testing.T) {
 	// fastjq extension: accept URL-safe base64 chars (- and _ as alternatives to + and /)
 	// "aGVsbG8=" == "aGVsbG8=" in URL-safe (no difference for "hello")
@@ -1953,16 +1961,16 @@ func TestBase64NoPadding(t *testing.T) {
 
 // --- index / rindex / indices ---
 
-func TestIndexString(t *testing.T)         { assertQuery(t, `index(",")`, `"a,b,c"`, `1`) }
-func TestIndexStringMiss(t *testing.T)     { assertQuery(t, `index("x")`, `"hello"`, `null`) }
-func TestRIndexString(t *testing.T)        { assertQuery(t, `rindex(",")`, `"a,b,c"`, `3`) }
-func TestRIndexStringMiss(t *testing.T)    { assertQuery(t, `rindex("x")`, `"hello"`, `null`) }
-func TestIndicesString(t *testing.T)       { assertQuery(t, `indices(",")`, `"a,b,c"`, `[1,3]`) }
-func TestIndicesStringNone(t *testing.T)   { assertQuery(t, `indices("x")`, `"hello"`, `[]`) }
-func TestIndexArray(t *testing.T)          { assertQuery(t, `index(2)`, `[1,2,3,2,1]`, `1`) }
-func TestRIndexArray(t *testing.T)         { assertQuery(t, `rindex(2)`, `[1,2,3,2,1]`, `3`) }
-func TestIndicesArray(t *testing.T)        { assertQuery(t, `indices(2)`, `[1,2,3,2,1]`, `[1,3]`) }
-func TestIndexArrayMiss(t *testing.T)      { assertQuery(t, `index(9)`, `[1,2,3]`, `null`) }
+func TestIndexString(t *testing.T)       { assertQuery(t, `index(",")`, `"a,b,c"`, `1`) }
+func TestIndexStringMiss(t *testing.T)   { assertQuery(t, `index("x")`, `"hello"`, `null`) }
+func TestRIndexString(t *testing.T)      { assertQuery(t, `rindex(",")`, `"a,b,c"`, `3`) }
+func TestRIndexStringMiss(t *testing.T)  { assertQuery(t, `rindex("x")`, `"hello"`, `null`) }
+func TestIndicesString(t *testing.T)     { assertQuery(t, `indices(",")`, `"a,b,c"`, `[1,3]`) }
+func TestIndicesStringNone(t *testing.T) { assertQuery(t, `indices("x")`, `"hello"`, `[]`) }
+func TestIndexArray(t *testing.T)        { assertQuery(t, `index(2)`, `[1,2,3,2,1]`, `1`) }
+func TestRIndexArray(t *testing.T)       { assertQuery(t, `rindex(2)`, `[1,2,3,2,1]`, `3`) }
+func TestIndicesArray(t *testing.T)      { assertQuery(t, `indices(2)`, `[1,2,3,2,1]`, `[1,3]`) }
+func TestIndexArrayMiss(t *testing.T)    { assertQuery(t, `index(9)`, `[1,2,3]`, `null`) }
 func TestIndexInPipe(t *testing.T) {
 	assertQuery(t, `.path | index("/")`, `{"path":"/api/users"}`, `0`)
 }
@@ -1986,28 +1994,32 @@ func TestDebugInPipe(t *testing.T) {
 
 // --- slice .[n:m] ---
 
-func TestSliceArray(t *testing.T)         { assertQuery(t, ".[2:4]", `[0,1,2,3,4]`, `[2,3]`) }
-func TestSliceArrayFrom(t *testing.T)     { assertQuery(t, ".[2:]", `[0,1,2,3,4]`, `[2,3,4]`) }
-func TestSliceArrayTo(t *testing.T)       { assertQuery(t, ".[:3]", `[0,1,2,3,4]`, `[0,1,2]`) }
-func TestSliceArrayAll(t *testing.T)      { assertQuery(t, ".[:]", `[0,1,2,3,4]`, `[0,1,2,3,4]`) }
-func TestSliceArrayNegFrom(t *testing.T)  { assertQuery(t, ".[-2:]", `[0,1,2,3,4]`, `[3,4]`) }
-func TestSliceArrayNegTo(t *testing.T)    { assertQuery(t, ".[:-1]", `[0,1,2,3,4]`, `[0,1,2,3]`) }
-func TestSliceArrayBothNeg(t *testing.T)  { assertQuery(t, ".[-3:-1]", `[0,1,2,3,4]`, `[2,3]`) }
-func TestSliceArrayEmpty(t *testing.T)    { assertQuery(t, ".[3:3]", `[0,1,2,3,4]`, `[]`) }
-func TestSliceString(t *testing.T)        { assertQuery(t, ".[0:5]", `"hello world"`, `"hello"`) }
-func TestSliceStringFrom(t *testing.T)    { assertQuery(t, ".[6:]", `"hello world"`, `"world"`) }
-func TestSliceStringNeg(t *testing.T)     { assertQuery(t, ".[-5:]", `"hello world"`, `"world"`) }
-func TestSliceStringEscape(t *testing.T)  { assertQuery(t, ".[0:3]", `"a\nb\nc"`, `"a\nb"`) } // escape = 1 char
+func TestSliceArray(t *testing.T)        { assertQuery(t, ".[2:4]", `[0,1,2,3,4]`, `[2,3]`) }
+func TestSliceArrayFrom(t *testing.T)    { assertQuery(t, ".[2:]", `[0,1,2,3,4]`, `[2,3,4]`) }
+func TestSliceArrayTo(t *testing.T)      { assertQuery(t, ".[:3]", `[0,1,2,3,4]`, `[0,1,2]`) }
+func TestSliceArrayAll(t *testing.T)     { assertQuery(t, ".[:]", `[0,1,2,3,4]`, `[0,1,2,3,4]`) }
+func TestSliceArrayNegFrom(t *testing.T) { assertQuery(t, ".[-2:]", `[0,1,2,3,4]`, `[3,4]`) }
+func TestSliceArrayNegTo(t *testing.T)   { assertQuery(t, ".[:-1]", `[0,1,2,3,4]`, `[0,1,2,3]`) }
+func TestSliceArrayBothNeg(t *testing.T) { assertQuery(t, ".[-3:-1]", `[0,1,2,3,4]`, `[2,3]`) }
+func TestSliceArrayEmpty(t *testing.T)   { assertQuery(t, ".[3:3]", `[0,1,2,3,4]`, `[]`) }
+func TestSliceString(t *testing.T)       { assertQuery(t, ".[0:5]", `"hello world"`, `"hello"`) }
+func TestSliceStringFrom(t *testing.T)   { assertQuery(t, ".[6:]", `"hello world"`, `"world"`) }
+func TestSliceStringNeg(t *testing.T)    { assertQuery(t, ".[-5:]", `"hello world"`, `"world"`) }
+func TestSliceStringEscape(t *testing.T) { assertQuery(t, ".[0:3]", `"a\nb\nc"`, `"a\nb"`) } // escape = 1 char
 func TestSliceInPipe(t *testing.T) {
 	assertQuery(t, `.items[1:3]`, `{"items":[10,20,30,40]}`, `[20,30]`)
 }
 
 // --- + (plus) ---
 
-func TestPlusStrings(t *testing.T)     { assertQuery(t, `"hello" + " world"`, `{}`, `"hello world"`) }
-func TestPlusStringField(t *testing.T) { assertQuery(t, `.a + .b`, `{"a":"foo","b":"bar"}`, `"foobar"`) }
-func TestPlusArrays(t *testing.T)      { assertQuery(t, `[1,2] + [3,4]`, `{}`, `[1,2,3,4]`) }
-func TestPlusArrayField(t *testing.T)  { assertQuery(t, `.a + .b`, `{"a":[1,2],"b":[3,4]}`, `[1,2,3,4]`) }
+func TestPlusStrings(t *testing.T) { assertQuery(t, `"hello" + " world"`, `{}`, `"hello world"`) }
+func TestPlusStringField(t *testing.T) {
+	assertQuery(t, `.a + .b`, `{"a":"foo","b":"bar"}`, `"foobar"`)
+}
+func TestPlusArrays(t *testing.T) { assertQuery(t, `[1,2] + [3,4]`, `{}`, `[1,2,3,4]`) }
+func TestPlusArrayField(t *testing.T) {
+	assertQuery(t, `.a + .b`, `{"a":[1,2],"b":[3,4]}`, `[1,2,3,4]`)
+}
 func TestPlusNumbers(t *testing.T)     { assertQuery(t, `.a + .b`, `{"a":1,"b":2}`, `3`) }
 func TestPlusNullLeft(t *testing.T)    { assertQuery(t, `null + "x"`, `{}`, `"x"`) }
 func TestPlusNullRight(t *testing.T)   { assertQuery(t, `"a" + null`, `{}`, `"a"`) }
@@ -2023,16 +2035,16 @@ func TestPlusPrecedence(t *testing.T) {
 
 // --- add ---
 
-func TestAddNumbers(t *testing.T)            { assertQuery(t, "add", `[1,2,3,4,5]`, `15`) }
-func TestAddStrings(t *testing.T)            { assertQuery(t, "add", `["a","b","c"]`, `"abc"`) }
-func TestAddArrays(t *testing.T)             { assertQuery(t, "add", `[[1,2],[3,4]]`, `[1,2,3,4]`) }
-func TestAddEmpty(t *testing.T)              { assertQuery(t, "add", `[]`, `null`) }
-func TestAddNull(t *testing.T)               { assertQuery(t, "add", `null`, `null`) }
-func TestAddNullElements(t *testing.T)       { assertQuery(t, "add", `[null,null]`, `null`) }
-func TestAddFloats(t *testing.T)             { assertQuery(t, "add", `[1.5,2.5]`, `4`) }
-func TestAddMixedWithNull(t *testing.T)      { assertQuery(t, "add", `[null,1,2]`, `3`) }
-func TestAddSingleNumber(t *testing.T)       { assertQuery(t, "add", `[42]`, `42`) }
-func TestAddSingleString(t *testing.T)       { assertQuery(t, "add", `["hello"]`, `"hello"`) }
+func TestAddNumbers(t *testing.T)       { assertQuery(t, "add", `[1,2,3,4,5]`, `15`) }
+func TestAddStrings(t *testing.T)       { assertQuery(t, "add", `["a","b","c"]`, `"abc"`) }
+func TestAddArrays(t *testing.T)        { assertQuery(t, "add", `[[1,2],[3,4]]`, `[1,2,3,4]`) }
+func TestAddEmpty(t *testing.T)         { assertQuery(t, "add", `[]`, `null`) }
+func TestAddNull(t *testing.T)          { assertQuery(t, "add", `null`, `null`) }
+func TestAddNullElements(t *testing.T)  { assertQuery(t, "add", `[null,null]`, `null`) }
+func TestAddFloats(t *testing.T)        { assertQuery(t, "add", `[1.5,2.5]`, `4`) }
+func TestAddMixedWithNull(t *testing.T) { assertQuery(t, "add", `[null,1,2]`, `3`) }
+func TestAddSingleNumber(t *testing.T)  { assertQuery(t, "add", `[42]`, `42`) }
+func TestAddSingleString(t *testing.T)  { assertQuery(t, "add", `["hello"]`, `"hello"`) }
 func TestAddInPipe(t *testing.T) {
 	assertQuery(t, `[.[] | .x] | add`, `[{"x":1},{"x":2},{"x":3}]`, `6`)
 }
@@ -3708,6 +3720,61 @@ func TestURIEncodeNewline(t *testing.T) {
 	assertQuery(t, `@uri`, `"\n"`, `"%0A"`)
 }
 
+// --- jq official-suite parity regressions (current active failures on codex/jq-parity) ---
+
+func TestJQParityStringLiteralCanonicalEscapes(t *testing.T) {
+	// jq.test line 54
+	assertQuery(t, `"Aa\r\n\t\b\f\u03bc"`, `null`, `"Aa\u000d\u000a\u0009\u0008\u000c\u03bc"`)
+}
+
+func TestJQParityIdentityCanonicalEscapes(t *testing.T) {
+	// jq.test line 58
+	assertQuery(t, `.`, `"Aa\r\n\t\b\f\u03bc"`, `"Aa\u000d\u000a\u0009\u0008\u000c\u03bc"`)
+}
+
+func TestJQParityStringConcatCanonicalizesEscapedSpace(t *testing.T) {
+	// jq.test line 625
+	assertQuery(t, `"\u0000\u0020\u0000" + .`, `"\u0000\u0020\u0000"`, `"\u0000 \u0000\u0000 \u0000"`)
+}
+
+func TestJQParityArrayGeneratorPrecedenceWithNaNModulo(t *testing.T) {
+	// jq.test line 693: jq parses this as [(nan % 1), ((1 % nan) | isnan)]
+	assertQuery(t, `[nan % 1, 1 % nan | isnan]`, `null`, `[true,true]`)
+}
+
+func TestJQParityTryCatchReportsJQStyleFieldAccessMessage(t *testing.T) {
+	// jq.test line 1431
+	assertQuery(t,
+		`[.[]|try if . == 0 then error("foo") elif . == 1 then .a elif . == 2 then empty else . end catch .]`,
+		`[0,1,2,3]`,
+		`["foo","Cannot index number with string \"a\"",3]`,
+	)
+}
+
+func TestJQParityOuterCatchReceivesOriginalPayload(t *testing.T) {
+	// jq.test line 2320
+	assertQueryAll(t,
+		`try (["hi","ho"]|.[]|(try . catch (if .=="ho" then "BROKEN"|error else empty end)) | if .=="ho" then error else "\(.) there!" end) catch "caught outside \(.)"`,
+		`null`,
+		`"hi there!"`,
+		`"caught outside ho"`,
+	)
+}
+
+func TestJQParityInnerTryDoesNotCatchDownstreamPipelineErrors(t *testing.T) {
+	// jq.test line 2325
+	assertQueryAll(t,
+		`.[]|(try . catch (if .=="ho" then "BROKEN"|error else empty end)) | if .=="ho" then error else "\(.) there!" end`,
+		`["hi","ho"]`,
+		`"hi there!"`,
+	)
+}
+
+func TestJQParityArrayConstructPipePrecedenceWithNot(t *testing.T) {
+	// man.test line 793: jq parses this as [(true, false) | not]
+	assertQuery(t, `[true, false | not]`, `null`, `[false,true]`)
+}
+
 // --- contains() / inside() ---
 
 func TestContainsStringSubstring(t *testing.T) {
@@ -3855,7 +3922,7 @@ func TestMathAtan(t *testing.T) {
 }
 
 func TestMathLog(t *testing.T) {
-	assertQuery(t, `log`, `1`, `0`)    // ln(1) = 0
+	assertQuery(t, `log`, `1`, `0`)       // ln(1) = 0
 	assertQuery(t, `exp | log`, `1`, `1`) // round-trip
 }
 
@@ -3901,7 +3968,7 @@ func TestMathAsinAcos(t *testing.T) {
 }
 
 func TestMathLogb(t *testing.T) {
-	assertQuery(t, `logb`, `8`, `3`)  // 2^3 = 8
+	assertQuery(t, `logb`, `8`, `3`) // 2^3 = 8
 	assertQuery(t, `logb`, `1`, `0`)
 }
 
@@ -3912,15 +3979,15 @@ func TestMathNearbyint(t *testing.T) {
 }
 
 func TestMathTgamma(t *testing.T) {
-	assertQuery(t, `tgamma`, `1`, `1`) // Γ(1) = 1
+	assertQuery(t, `tgamma`, `1`, `1`)  // Γ(1) = 1
 	assertQuery(t, `tgamma`, `5`, `24`) // Γ(5) = 4! = 24
 }
 
 func TestMathNaNInfOutput(t *testing.T) {
 	// NaN/Inf results are output as null to preserve valid JSON output constraint.
-	assertQuery(t, `sqrt`, `-1`, `null`)   // sqrt of negative → null
-	assertQuery(t, `log`, `-1`, `null`)    // log of negative → null
-	assertQuery(t, `asin`, `2`, `null`)    // asin out of domain → null
+	assertQuery(t, `sqrt`, `-1`, `null`) // sqrt of negative → null
+	assertQuery(t, `log`, `-1`, `null`)  // log of negative → null
+	assertQuery(t, `asin`, `2`, `null`)  // asin out of domain → null
 }
 
 func TestMathJ0J1(t *testing.T) {

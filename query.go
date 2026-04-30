@@ -120,7 +120,7 @@ const (
 	opGSub    // gsub(re; "literal")          — replace all matches
 	// range — Tier 2 (1 alloc per generated value, proportional to output count)
 	opRange // range(n) / range(from;to) / range(from;to;step)
-	         // left=from, right=to, child=step (nil → step 1)
+	// left=from, right=to, child=step (nil → step 1)
 	// Sort / unique / group — Tier 2 (allocate O(n) index proportional to collection size)
 	opSort      // sort
 	opSortBy    // sort_by(f) — child=key function
@@ -158,21 +158,21 @@ type pair struct {
 
 // op is a node in the query AST.
 type op struct {
-	typ      opType
-	field    string  // for opField
-	fields   []op    // for opDelete: list of field-access/index paths to delete
-	left     *op     // for opPipe, opCompare, opAlternative, opNth
-	right    *op     // for opPipe, opCompare, opAlternative
-	child    *op     // for opField chaining, opSelect condition, opIsEmpty, opNth body
-	index    int     // for opIndex: array index (negative = from end)
-	pairs           []pair // for opConstruct: {key: expr} pairs
-	multiValuePairs bool   // for opConstruct: true if any pair expr may produce >1 output
-	elems    []*op   // for opArrayConstruct, opStringInterp: expressions
-	segs     [][]byte     // for opStringInterp: literal segments between expressions
-	literal  []byte       // for opLiteral: raw JSON bytes
-	re       *regexp.Regexp // for regex ops (opTest/opMatchRe/opCapture/opScan/opSub/opGSub)
-	cmpOp    cmpOperator  // for opCompare: comparison operator
-	optional bool         // for opField/opIndex/opIterator: suppress errors
+	typ             opType
+	field           string         // for opField
+	fields          []op           // for opDelete: list of field-access/index paths to delete
+	left            *op            // for opPipe, opCompare, opAlternative, opNth
+	right           *op            // for opPipe, opCompare, opAlternative
+	child           *op            // for opField chaining, opSelect condition, opIsEmpty, opNth body
+	index           int            // for opIndex: array index (negative = from end)
+	pairs           []pair         // for opConstruct: {key: expr} pairs
+	multiValuePairs bool           // for opConstruct: true if any pair expr may produce >1 output
+	elems           []*op          // for opArrayConstruct, opStringInterp: expressions
+	segs            [][]byte       // for opStringInterp: literal segments between expressions
+	literal         []byte         // for opLiteral: raw JSON bytes
+	re              *regexp.Regexp // for regex ops (opTest/opMatchRe/opCapture/opScan/opSub/opGSub)
+	cmpOp           cmpOperator    // for opCompare: comparison operator
+	optional        bool           // for opField/opIndex/opIterator: suppress errors
 }
 
 // parse compiles a jq query string into an AST.
@@ -218,11 +218,34 @@ func parsePipeExpr(s string) (*op, string, error) {
 	return result, rest, nil
 }
 
-// parseGeneratorExpr parses a comma-separated sequence of pipe expressions.
-// Used for generator bodies like `limit(1; a, b)` where `a, b` produces multiple outputs.
-// Returns a single op if there is only one expression, or an opGenerator if there are multiple.
+// parseGeneratorExpr parses generator syntax in contexts where commas produce
+// multiple outputs and bind tighter than pipes. This matches jq's parsing for
+// forms like `[a, b | f]`, which is `[(a, b) | f]`, not `[a, (b | f)]`.
 func parseGeneratorExpr(s string) (*op, string, error) {
-	first, rest, err := parsePipeExpr(s)
+	first, rest, err := parseGeneratorTerm(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+
+	for strings.HasPrefix(rest, "|") {
+		rest = strings.TrimSpace(rest[1:])
+		right, remainder, err := parseGeneratorTerm(rest)
+		if err != nil {
+			return nil, remainder, err
+		}
+		first = &op{typ: opPipe, left: first, right: right}
+		rest = strings.TrimSpace(remainder)
+	}
+
+	return first, rest, nil
+}
+
+// parseGeneratorTerm parses a comma-separated generator term where each element
+// is a regular expression operand. Returns a single op if there is only one
+// element, or an opGenerator if there are multiple.
+func parseGeneratorTerm(s string) (*op, string, error) {
+	first, rest, err := parseExpr(s)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -233,7 +256,7 @@ func parseGeneratorExpr(s string) (*op, string, error) {
 	elems := []*op{first}
 	for len(rest) > 0 && rest[0] == ',' {
 		rest = strings.TrimSpace(rest[1:])
-		next, rest2, err := parsePipeExpr(rest)
+		next, rest2, err := parseExpr(rest)
 		if err != nil {
 			return nil, rest2, err
 		}
@@ -1117,7 +1140,6 @@ func parseFieldChain(s string) (*op, string, error) {
 	return node, rest, nil
 }
 
-
 // parseAnyAll parses any/all with an optional (expr) argument.
 // s is the text after "any"/"all" has been consumed.
 // Supports both one-arg any(expr) and two-arg any(gen; cond) forms.
@@ -1636,6 +1658,7 @@ func parseConstruct(s string) (*op, string, error) {
 }
 
 // parseArrayConstruct parses array construction: [.foo, .bar].
+// Array bodies are generator contexts, so commas bind tighter than pipes.
 // Assumes s starts with '['.
 func parseArrayConstruct(s string) (*op, string, error) {
 	s = s[1:] // skip '['
@@ -1657,7 +1680,7 @@ func parseArrayConstruct(s string) (*op, string, error) {
 			s = strings.TrimSpace(s[1:])
 		}
 
-		expr, remaining, err := parsePipeExpr(s)
+		expr, remaining, err := parseGeneratorExpr(s)
 		if err != nil {
 			return nil, remaining, fmt.Errorf("in array construction: %w", err)
 		}
@@ -1673,8 +1696,8 @@ func parseArrayConstruct(s string) (*op, string, error) {
 // If the string contains \(expr) interpolation sequences, it returns
 // opStringInterp; otherwise opLiteral.
 func parseStringLiteral(s string) (*op, string, error) {
-	var segs [][]byte  // literal segments
-	var exprs []*op    // interpolated expressions
+	var segs [][]byte // literal segments
+	var exprs []*op   // interpolated expressions
 
 	i := 1 // skip opening '"'
 	segStart := i
@@ -1798,8 +1821,9 @@ func isDigit(ch byte) bool {
 // parseTry parses: try expr [catch handler]
 // s is the text after "try" has been consumed.
 // The body is parsed with parseOr (NOT parseAlt/parseExpr), so:
-//   try .a | .b         →  (try .a) | .b   (pipe handled above)
-//   try .a // "default" →  (try .a) // "default"   (// handled above)
+//
+//	try .a | .b         →  (try .a) | .b   (pipe handled above)
+//	try .a // "default" →  (try .a) // "default"   (// handled above)
 func parseTry(s string) (*op, string, error) {
 	s = strings.TrimSpace(s)
 	body, rest, err := parseOr(s)

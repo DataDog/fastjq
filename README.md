@@ -148,18 +148,11 @@ fastjq is validated against two official jq test files (`go test ./jqtest/`).
 
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
-| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 301 | 220 | **213 (96.8%)** | 7 |
-| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 94 | 136 | **135 (99.3%)** | 1 |
-| **Combined** | **751** | **395** | **356** | **348 (97.8%)** | **8** |
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 301 | 220 | **220 (100.0%)** | 0 |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 94 | 136 | **136 (100.0%)** | 0 |
+| **Combined** | **751** | **395** | **356** | **356 (100.0%)** | **0** |
 
-The 8 failures are all known, intentional differences — not bugs:
-
-- **3 (jq.test — string normalisation)**: jq normalises escape sequences (`\r` → `\u000d`, `\u0020` → literal space); fastjq passes bytes through unchanged (zero-copy constraint).
-- **3 (jq.test — architectural)**: Error message format; `try body catch h` catches errors from the entire callback chain not just the body (see CHANGELOG for details).
-- **1 (jq.test — parser precedence)**: `[nan % 1, 1 % nan | isnan]` — jq parses as `[(a,b)|f]`; fastjq parses as `[a,(b|f)]`.
-- **1 (man.test)**: `[a, b | f]` parses as `[a, (b|f)]` — same parser precedence difference.
-
-The skipped tests cover operations not yet implemented: recursive descent (`..`), path operations, `reduce`/`foreach`, string interpolation (jq's `onig.test` uses PCRE/Oniguruma syntax), date functions, `env`, and others listed in the [Limitations](#limitations) section.
+All currently attempted official jq tests pass on this branch. The remaining skipped tests are for still-unimplemented families such as recursive descent (`..`), path operations, variable binding, `reduce`/`foreach`, user-defined functions, date functions, `env`, and other items listed in the [Limitations](#limitations) section.
 
 ## Limitations
 
@@ -172,20 +165,14 @@ The skipped tests cover operations not yet implemented: recursive descent (`..`)
 **`map(f)` allocates when `f` constructs new data** (Tier 1 — proportional to output).
 `map(.name)` is 0 allocs (field access returns an input sub-slice). `map({name, price})` allocates ~1 buffer per element to prevent result aliasing. Still 5–8x fewer allocations than gojq.
 
-**String escape sequences pass through unchanged.**
-fastjq does not normalise string escapes on output (`\r` stays `\r`, not `\u000d`). Re-encoding every string would violate the zero-copy constraint.
+**String output is compact, canonical JSON.**
+Escaped control characters are emitted in jq-compatible compact JSON form when a string value is produced as output.
 
 **Regex uses Go RE2, not PCRE/Oniguruma.**
 Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are unsupported. `test(re)` is 0-alloc; `match`/`capture` alloc one `[]int` on a hit; `scan`/`gsub` alloc per match. Replacement strings in `sub`/`gsub` are literals.
 
 **`@format "template"` combined syntax not supported.**
 `@html "<b>\(.)</b>"` is not yet implemented. Plain `"\(.field)"` and standalone `@html`, `@csv`, `@sh`, etc. all work.
-
-**try-catch catches errors from the full callback chain, not just the body.**
-`(try . catch h) | right` — if `right` errors, the catch fires. jq scopes the catch to the body only.
-
-**`[a, b | f]` parses as `[a, (b|f)]`.**
-jq treats this as `[(a,b) | f]`. Fastjq parses array elements independently.
 
 **No recursive descent** (`..|..` / `recurse`) — allocations scale with input depth, not output. Permanently rejected.
 

@@ -146,6 +146,9 @@ Operator precedence is implemented via a function call chain:
 `parseCmp` → `parseAtom`. Pipe (`|`) is loosest. Then alternative (`//`),
 `or`, `and`, comparison, then atoms. No precedence table needed.
 
+Array construction uses a generator-aware variant so jq forms like
+`[a, b | f]` parse as `[(a, b) | f]` rather than `[a, (b | f)]`.
+
 ### 8. Literals Store Raw JSON Bytes
 
 Literals like `"error"`, `42`, `null` store raw JSON bytes (`[]byte`) at
@@ -222,6 +225,18 @@ allocate. For strings it's a pure byte-range scan.
 `add` on an array of objects uses last-wins deduplication with first-occurrence
 key ordering. Keys appear in the order of their first occurrence across all
 objects; the value used is the last one seen.
+
+### 20. Canonical String Emission
+
+When a string value is emitted as output, fastjq canonicalizes its JSON string
+escaping so the public result stays compact and jq-compatible for control
+characters and normalized escapes.
+
+### 21. try-catch Body Scoping
+
+`try expr catch handler` catches errors thrown while evaluating `expr` itself.
+Errors from downstream pipeline stages propagate normally instead of being
+captured by the inner `try`.
 
 ## File Structure
 

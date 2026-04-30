@@ -423,7 +423,9 @@ func jsonEqual(a, b []byte) bool {
 		aContent := sa.readString()
 		sb := &scanner{data: b}
 		bContent := sb.readString()
-		return bytesEqual(aContent, bContent)
+		aDecoded := decodeJSONStringContent(nil, aContent)
+		bDecoded := decodeJSONStringContent(nil, bContent)
+		return bytesEqual(aDecoded, bDecoded)
 	}
 
 	// Booleans and null: first byte determines identity

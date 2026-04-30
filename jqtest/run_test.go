@@ -32,11 +32,33 @@ import (
 	"github.com/brianfloersch/fastjq"
 )
 
-const jqTestURL         = "https://raw.githubusercontent.com/jqlang/jq/master/tests/jq.test"
-const jqTestLocalCache  = "testdata/jq.test"
-const manTestURL        = "https://raw.githubusercontent.com/jqlang/jq/master/tests/man.test"
+const jqTestURL = "https://raw.githubusercontent.com/jqlang/jq/master/tests/jq.test"
+const jqTestLocalCache = "testdata/jq.test"
+const manTestURL = "https://raw.githubusercontent.com/jqlang/jq/master/tests/man.test"
 const manTestLocalCache = "testdata/man.test"
 
+// codex/jq-parity tracking snapshot (baseline on 2026-04-30)
+//
+// Official-suite baseline for this branch:
+//   - Total: 751
+//   - Skipped: 395
+//   - Attempted: 356
+//   - Passed: 348
+//   - Failed: 8
+//
+// Skip families currently driving the branch:
+//   - variables / bindings
+//   - reduce / foreach / label / break
+//   - path / paths / getpath / setpath / delpaths / leaf_paths
+//   - def
+//   - parser breadth gaps that fall through as compile-time skips
+//
+// Active attempted failures to burn down first:
+//   - string canonicalization: jq.test 54, 58, 625
+//   - array/generator precedence: jq.test 693, man.test 793
+//   - jq-style type error text: jq.test 1431
+//   - try/catch scope: jq.test 2320, 2325
+//
 // unsupportedOps lists functions/syntax that fastjq does not implement.
 // A test whose program contains any of these tokens is skipped — NOT counted
 // as a failure. Keep this list tight: only skip what we genuinely don't support.
