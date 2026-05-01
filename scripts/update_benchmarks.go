@@ -112,7 +112,7 @@ var tableRows = []row{
 	{"`pick(.field_0, .field_2)`", "Small (~100B)", "Small_Pick", "Small_Pick"},
 	{"`INDEX(range(5)... )`", "null", "Small_INDEX", "Small_INDEX"},
 	{"`JOIN({...}; .[0]|tostring)`", "3-pair array", "Small_JOIN", "Small_JOIN"},
-	{"`have_decnum`", "null", "Small_HaveDecnum", "Small_HaveDecnum"},
+	{"`have_decnum`", "null", "Small_HaveDecnum", ""},
 	{"`object merge .a + .b`", "Small (~100B)", "Small_ObjectMerge", "Small_ObjectMerge"},
 	// Type conversion
 	{"`tojson`", "Small (~100B)", "Small_ToJSON", "Small_ToJSON"},
@@ -194,6 +194,26 @@ var tableRows = []row{
 type result struct {
 	ns     float64
 	allocs int
+}
+
+func mergeResults(sets ...map[string]result) map[string]result {
+	merged := make(map[string]result)
+	for _, set := range sets {
+		for k, v := range set {
+			merged[k] = v
+		}
+	}
+	return merged
+}
+
+func extractBenchLines(output string) []string {
+	var lines []string
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "Benchmark") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 type cliRow struct {
@@ -464,24 +484,38 @@ func buildCLISection(cliVersion string, rows []cliRow) string {
 func main() {
 	fmt.Fprintln(os.Stderr, "Running benchmark suite (~3 minutes)...")
 
-	out, _ := exec.Command(
+	fastjqCmd := exec.Command(
 		"go", "test", "-run=^$", "-bench=.", "-benchmem", "-count=1",
-	).CombinedOutput()
+	)
+	fastjqOut, err := fastjqCmd.CombinedOutput()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, string(fastjqOut))
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
-	results := parseBenchmarks(string(out))
+	compareCmd := exec.Command(
+		"go", "test", "-run=^$", "-bench=.", "-benchmem", "-count=1",
+	)
+	compareCmd.Dir = "compare"
+	compareOut, err := compareCmd.CombinedOutput()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, string(compareOut))
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	results := mergeResults(parseBenchmarks(string(fastjqOut)), parseBenchmarks(string(compareOut)))
 	if len(results) == 0 {
 		fmt.Fprintln(os.Stderr, "error: no benchmark lines found")
-		fmt.Fprint(os.Stderr, string(out))
+		fmt.Fprint(os.Stderr, string(fastjqOut))
+		fmt.Fprint(os.Stderr, string(compareOut))
 		os.Exit(1)
 	}
 
 	// Build Raw Output block.
-	var benchLines []string
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasPrefix(line, "Benchmark") {
-			benchLines = append(benchLines, line)
-		}
-	}
+	fastjqBenchLines := extractBenchLines(string(fastjqOut))
+	compareBenchLines := extractBenchLines(string(compareOut))
 	goVerOut, _ := exec.Command("go", "version").Output()
 	goVer := "unknown"
 	if fields := strings.Fields(string(goVerOut)); len(fields) >= 3 {
@@ -490,12 +524,14 @@ func main() {
 	date := time.Now().Format("2006-01-02")
 
 	rawBlock := fmt.Sprintf(
-		"Apple M4 Max, %s, `go test -bench=. -benchmem`. Updated %s. "+
+		"Apple M4 Max, %s. Updated %s. "+
+			"fastjq benchmarks: `go test -bench=. -benchmem`. "+
+			"gojq comparison benchmarks: `(cd compare && go test -bench=. -benchmem)`. "+
 			"Note: some first-run entries show spurious allocs "+
 			"(e.g. `KeysUnsorted` 3 allocs, `First` 1 alloc) due to benchmark "+
 			"calibration warmup — confirmed 0 allocs on repeat runs.\n\n"+
-			"```\n%s\n```\n",
-		goVer, date, strings.Join(benchLines, "\n"),
+			"```text\n# fastjq root module\n%s\n\n# gojq comparison module\n%s\n```\n",
+		goVer, date, strings.Join(fastjqBenchLines, "\n"), strings.Join(compareBenchLines, "\n"),
 	)
 
 	content, err := os.ReadFile("docs/BENCHMARKS.md")
@@ -538,5 +574,5 @@ func main() {
 	}
 
 	fmt.Fprintf(os.Stderr, "BENCHMARKS.md updated (%d benchmarks, %d table rows).\n",
-		len(benchLines), len(tableRows))
+		len(fastjqBenchLines)+len(compareBenchLines), len(tableRows))
 }

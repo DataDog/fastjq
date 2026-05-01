@@ -24,10 +24,10 @@ var (
 	reComplex = regexp.MustCompile(`(?i)^(error|warn|fatal):\s+(.+)$`)
 	reCapture = regexp.MustCompile(`(\w+)@(\w+)\.(\w+)`)
 
-	inputMatch    = []byte(`"error: connection timeout after 30s"`)
-	inputNoMatch  = []byte(`"info: all systems normal"`)
-	inputCapture  = []byte(`"user@example.com"`)
-	inputLong     = []byte(`"this is a longer string that does not match the pattern and requires scanning the full thing"`)
+	inputMatch   = []byte(`"error: connection timeout after 30s"`)
+	inputNoMatch = []byte(`"info: all systems normal"`)
+	inputCapture = []byte(`"user@example.com"`)
+	inputLong    = []byte(`"this is a longer string that does not match the pattern and requires scanning the full thing"`)
 )
 
 // --- test(re) — re.Match ---
@@ -243,22 +243,6 @@ func BenchmarkFastjq_Small_MatchRe_Miss(b *testing.B) {
 	benchFastjqObj(b, `match("(\w+)@(\w+\.\w+)")`, []byte(`"not an email address"`))
 }
 
-func BenchmarkGojq_Small_TestRe_Hit(b *testing.B) {
-	benchGojqObj(b, `select(test("error"))`, []byte(`"error: connection timeout after 30s"`))
-}
-
-func BenchmarkGojq_Small_TestRe_Miss(b *testing.B) {
-	benchGojqObj(b, `select(test("error"))`, []byte(`"info: all systems normal, nothing to report"`))
-}
-
-func BenchmarkGojq_Small_MatchRe_Hit(b *testing.B) {
-	benchGojqObj(b, `match("(\\w+)@(\\w+\\.\\w+)")`, []byte(`"user@example.com"`))
-}
-
-func BenchmarkGojq_Small_MatchRe_Miss(b *testing.B) {
-	benchGojqObj(b, `match("(\\w+)@(\\w+\\.\\w+)")`, []byte(`"not an email address"`))
-}
-
 // --- Correctness tests for capture(re) ---
 
 func TestRegexCapture_Named(t *testing.T) {
@@ -417,24 +401,4 @@ func BenchmarkFastjq_Small_GSubRe_Hit(b *testing.B) {
 
 func BenchmarkFastjq_Small_GSubRe_Miss(b *testing.B) {
 	benchFastjqObj(b, `gsub("[0-9]+"; "NUM")`, []byte(`"info: all systems normal"`))
-}
-
-func BenchmarkGojq_Small_CaptureRe_Hit(b *testing.B) {
-	benchGojqObj(b, `capture("(?P<user>\\w+)@(?P<domain>[\\w.]+)")`, []byte(`"alice@example.com"`))
-}
-
-func BenchmarkGojq_Small_CaptureRe_Miss(b *testing.B) {
-	benchGojqObj(b, `capture("(?P<user>\\w+)@(?P<domain>[\\w.]+)")`, []byte(`"not an email address"`))
-}
-
-func BenchmarkGojq_Small_ScanRe_NoGroups(b *testing.B) {
-	benchGojqObj(b, `[scan("[0-9]+")]`, []byte(`"foo123bar456baz789"`))
-}
-
-func BenchmarkGojq_Small_SubRe_Hit(b *testing.B) {
-	benchGojqObj(b, `sub("error"; "warning")`, []byte(`"error: connection timeout after 30s"`))
-}
-
-func BenchmarkGojq_Small_GSubRe_Hit(b *testing.B) {
-	benchGojqObj(b, `gsub("[0-9]+"; "NUM")`, []byte(`"user 12345 logged in at 09:30:00"`))
 }
