@@ -34,13 +34,13 @@ The core tier covers the full hot path for log processing. For operations that d
 
 | Operation | Input | fastjq | gojq | Speedup | allocs |
 |-----------|-------|--------|------|---------|--------|
-| `select(.f == "x")` | Small (~100B) | 0.104 µs | 1.66 µs | **16x** | 0 |
-| `select(.f == "x")`¹ | Large (~100KB) | 33 µs | 769 µs | **24x** | 0 |
-| `.field` | Small (~100B) | 0.083 µs | 0.94 µs | **11x** | 0 |
-| `.field` | Large (~100KB) | 7.7 µs | 573 µs | **75x** | 0 |
-| `del(.f)` | Large (~100KB) | 33 µs | 790 µs | **24x** | 0 |
-| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 33 µs | 774 µs | **24x** | 0 |
-| `map(.name)` | 200-elem array (~6KB) | 13 µs | 91 µs | **7x** | 0 |
+| `select(.f == "x")` | Small (~100B) | 0.130 µs | 1.73 µs | **13x** | 0 |
+| `select(.f == "x")`¹ | Large (~100KB) | 32.9 µs | 786 µs | **24x** | 0 |
+| `.field` | Small (~100B) | 0.085 µs | 0.986 µs | **12x** | 0 |
+| `.field` | Large (~100KB) | 7.50 µs | 587 µs | **78x** | 0 |
+| `del(.f)` | Large (~100KB) | 33.7 µs | 817 µs | **24x** | 0 |
+| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 33.6 µs | 799 µs | **24x** | 0 |
+| `map(.name)` | 200-elem array (~6KB) | 12.9 µs | 93.7 µs | **7.3x** | 6 |
 | `min_by(.value)` | 100-elem array (~3KB) | 8.2 µs | 54 µs | **6.6x** | 0 |
 | `.a * .b` (multiply) | Small (~100B) | 0.064 µs | 0.70 µs | **11x** | 0 |
 | `first(.[] \| select(. > 100))` | 200-int array | 3.5 µs | 1.4 µs | **0.4x**² | 0 |
@@ -48,7 +48,7 @@ The core tier covers the full hot path for log processing. For operations that d
 ¹ Large select uses the last field in a 200-field object — fastjq scans the full document, no early-exit advantage.
 ² gojq wins on small arrays of raw integers: after unmarshal, element access is native Go slice operations.
 
-The speedup is largest on small inputs where gojq's marshal/unmarshal overhead dominates. On large inputs fastjq is 18–75x faster thanks to SIMD-accelerated string scanning. The exception is small primitive integer arrays, where gojq's in-memory representation wins.
+The speedup is largest on small inputs where gojq's marshal/unmarshal overhead dominates. On large inputs fastjq is roughly 19–78x faster thanks to SIMD-accelerated string scanning. The exception is small primitive integer arrays, where gojq's in-memory representation wins.
 
 ### vs jq CLI (JSONL throughput, 100K lines, ~11MB, Apple M4 Max, jq 1.8.1)
 
@@ -56,21 +56,21 @@ Both tools validate JSON. fastjq calls `json.Valid()` before processing each rec
 
 | Operation | Input | jq (s) | fastjq (s) | Speedup |
 |-----------|-------|--------|------------|---------|
-| `.` (identity) | small | 0.356 | 0.052 | **6.8x** |
-| `.field` | small | 0.152 | 0.051 | **3x** |
-| `.field` | large (~16MB, 100 lines) | 0.091 | 0.043 | **2.1x** |
-| `del(.field)` | small | 0.383 | 0.061 | **6.3x** |
-| `{field_0, field_2}` (construct) | small | 0.252 | 0.060 | **4.2x** |
-| `select(.f == "x")` (all match) | small | 0.408 | 0.049 | **8.3x** |
-| `select(.f == "x")` (none match) | small | 0.143 | 0.050 | **2.9x** |
-| `.field // "default"` | small | 0.164 | 0.050 | **3.3x** |
-| `select(.f \| ascii_downcase == "x")` | small | 0.655 | 0.065 | **10x** |
-| `select(.f \| startswith("x"))` | small | 0.377 | 0.059 | **6.4x** |
-| `select(has("field"))` | small | 0.359 | 0.051 | **7x** |
-| `to_entries` | small | 0.746 | 0.066 | **11x** |
-| `keys_unsorted` | small | 0.244 | 0.057 | **4.3x** |
+| `.` (identity) | small | 0.368 | 0.059 | **6.2x** |
+| `.field` | small | 0.165 | 0.049 | **3.4x** |
+| `.field` | large (~16MB, 100 lines) | 0.092 | 0.044 | **2.1x** |
+| `del(.field)` | small | 0.381 | 0.065 | **5.9x** |
+| `{field_0, field_2}` (construct) | small | 0.263 | 0.060 | **4.4x** |
+| `select(.f == "x")` (all match) | small | 0.388 | 0.057 | **6.8x** |
+| `select(.f == "x")` (none match) | small | 0.152 | 0.059 | **2.6x** |
+| `.field // "default"` | small | 0.177 | 0.052 | **3.4x** |
+| `select(.f \| ascii_downcase == "x")` | small | 0.693 | 0.061 | **11.4x** |
+| `select(.f \| startswith("x"))` | small | 0.383 | 0.053 | **7.2x** |
+| `select(has("field"))` | small | 0.380 | 0.052 | **7.3x** |
+| `to_entries` | small | 0.739 | 0.069 | **10.7x** |
+| `keys_unsorted` | small | 0.259 | 0.060 | **4.3x** |
 
-**Without validation** (using `RunWithBuffer`/`RunFunc` directly on known-valid inputs), the Go library benchmarks show **13–75x** speedups — see the table at the top of this section and [BENCHMARKS.md](docs/BENCHMARKS.md) for the full comparison.
+**Without validation** (using `RunWithBuffer`/`RunFunc` directly on known-valid inputs), the Go library benchmarks show roughly **12–78x** speedups on the common access/filter/delete slice — see the table at the top of this section and [BENCHMARKS.md](docs/BENCHMARKS.md) for the full comparison.
 
 ## Try it out (CLI)
 
@@ -125,75 +125,33 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 
 ## Supported Operations
 
-fastjq supports a large targeted subset of jq. The complete reference with examples is in [SYNTAX.md](docs/SYNTAX.md).
-
-**Quick summary by category:**
-
-- **Access:** `.`, `.foo`, `.[0]`, `.[]`, `.[n:m]`, `.foo?`, chained access
-- **Modification:** `del(.foo)`, `del(.[n:m])`, `{name, a: .b}`, `[.a, .b]`
-- **Control flow:** `\|`, `select`, `if-elif-else`, `try-catch`, `//`, `empty`, `"\(expr)"`
-- **Arithmetic:** `+`, `-`, `*`, `/`, `%`, `add`, `floor`, `ceil`, `round`, `nearbyint`
-- **Math:** `sqrt`, `log`, `exp`, `sin`, `cos`, `atan`, `tgamma`, `j0`, `pow(x;y)`, and 15 more — all zero-alloc
-- **Special values:** `nan`, `infinite`, `-nan`, `-infinite`; `isnan`, `isinfinite`, `isfinite`, `isnormal`; `nan`/`infinite` output as `null` (JSON-safe)
-- **Arrays:** `map`, `flatten`, `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `min/max`, `min_by/max_by`, `any/all`, `first/last`, `limit`, `nth`, `isempty`, `values`, type filters, `index/indices`
-- **Strings:** `split/join`, `ascii_downcase/upcase`, `startswith/endswith`, `ltrimstr/rtrimstr`, `"\(expr)"` interpolation, `explode`, `implode`
-- **Format strings:** `@base64/d`, `@uri/d`, `@html`, `@csv`, `@tsv`, `@sh`, `@text`, `@json`
-- **Regex (Go RE2):** `test(re)` *(0 allocs)*, `match(re)`, `capture(re)`, `scan(re)`, `sub(re; s)`, `gsub(re; s)`
-- **Objects:** `to_entries`, `from_entries`, `keys_unsorted`, `length`, `has`, `in`, `contains`, `inside`
-- **Type:** `type`, `tojson/fromjson`, `tostring/tonumber`, `debug`, `error`
+fastjq supports most of jq's library-oriented surface and passes all attempted tests in the upstream five-file library harness below. See [SYNTAX.md](docs/SYNTAX.md) for the complete operation list, examples, allocation notes, and the remaining deferred features.
 
 ## Official jq test suite coverage
 
-fastjq is validated against two official jq test files (`go test ./jqtest/`).
+fastjq is validated against five upstream jq library-focused test files (`go test ./jqtest/`).
 
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
-| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 301 | 220 | **213 (96.8%)** | 7 |
-| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 94 | 136 | **135 (99.3%)** | 1 |
-| **Combined** | **751** | **395** | **356** | **348 (97.8%)** | **8** |
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 25 | 496 | **496 (100.0%)** | 0 |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 7 | 223 | **223 (100.0%)** | 0 |
+| [`tests/optional.test`](https://github.com/jqlang/jq/blob/master/tests/optional.test) | 2 | 0 | 2 | **2 (100.0%)** | 0 |
+| [`tests/base64.test`](https://github.com/jqlang/jq/blob/master/tests/base64.test) | 10 | 0 | 10 | **10 (100.0%)** | 0 |
+| [`tests/uri.test`](https://github.com/jqlang/jq/blob/master/tests/uri.test) | 20 | 0 | 20 | **20 (100.0%)** | 0 |
+| **Combined** | **783** | **32** | **751** | **751 (100.0%)** | **0** |
 
-The 8 failures are all known, intentional differences — not bugs:
-
-- **3 (jq.test — string normalisation)**: jq normalises escape sequences (`\r` → `\u000d`, `\u0020` → literal space); fastjq passes bytes through unchanged (zero-copy constraint).
-- **3 (jq.test — architectural)**: Error message format; `try body catch h` catches errors from the entire callback chain not just the body (see CHANGELOG for details).
-- **1 (jq.test — parser precedence)**: `[nan % 1, 1 % nan | isnan]` — jq parses as `[(a,b)|f]`; fastjq parses as `[a,(b|f)]`.
-- **1 (man.test)**: `[a, b | f]` parses as `[a, (b|f)]` — same parser precedence difference.
-
-The skipped tests cover operations not yet implemented: recursive descent (`..`), path operations, `reduce`/`foreach`, string interpolation (jq's `onig.test` uses PCRE/Oniguruma syntax), date functions, `env`, and others listed in the [Limitations](#limitations) section.
+All 751 attempted cases pass. The remaining 32 skips are limited to full decimal semantics (`have_decnum`), module/import helpers, and host-boundary helpers like `input`, `env`, and `stderr`.
 
 ## Limitations
-
-**`select` conditions must be single-valued.**
-`select(.items[] == "x")` silently tests only the first element. Use `any(.[]; . == "x")` instead.
-
-**`.field` on non-object types errors — use `.field?` for null-safe access.**
-`null | .field` returns `null` (matching jq). Other non-object types (`1 | .field`, `"s" | .field`) return an error. Use `.a?.b?` to suppress errors on any type.
-
-**`map(f)` allocates when `f` constructs new data** (Tier 1 — proportional to output).
-`map(.name)` is 0 allocs (field access returns an input sub-slice). `map({name, price})` allocates ~1 buffer per element to prevent result aliasing. Still 5–8x fewer allocations than gojq.
-
-**String escape sequences pass through unchanged.**
-fastjq does not normalise string escapes on output (`\r` stays `\r`, not `\u000d`). Re-encoding every string would violate the zero-copy constraint.
 
 **Regex uses Go RE2, not PCRE/Oniguruma.**
 Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are unsupported. `test(re)` is 0-alloc; `match`/`capture` alloc one `[]int` on a hit; `scan`/`gsub` alloc per match. Replacement strings in `sub`/`gsub` are literals.
 
-**`@format "template"` combined syntax not supported.**
-`@html "<b>\(.)</b>"` is not yet implemented. Plain `"\(.field)"` and standalone `@html`, `@csv`, `@sh`, etc. all work.
-
-**try-catch catches errors from the full callback chain, not just the body.**
-`(try . catch h) | right` — if `right` errors, the catch fires. jq scopes the catch to the body only.
-
-**`[a, b | f]` parses as `[a, (b|f)]`.**
-jq treats this as `[(a,b) | f]`. Fastjq parses array elements independently.
-
-**No recursive descent** (`..|..` / `recurse`) — allocations scale with input depth, not output. Permanently rejected.
-
 **`nan`/`infinite` are supported but serialize to `null` at output.** `nan | type` = `"number"`, `nan | isnan` = `true`, `infinite * -1 < 0` = `true`. `nan` and `infinite` values convert to JSON `null` at the API boundary. Values inside arrays/objects are also normalized to `null`.
 
-**Not yet implemented:** `path`, `getpath`, `setpath`, `delpaths`, `reduce`, `foreach`, `label-break`, variable binding (`as $x`), user-defined functions (`def`), `hypot(x;y)`, `fma(x;y;z)`.
+**Not supported:** module/import syntax and `modulemeta` (they need filesystem-backed resolution and module-loading semantics that break the current pure library boundary); host-boundary helpers such as `input`, `inputs`, `env`, `$ENV`, and `stderr` (they depend on process state or stdin rather than pure input bytes); and full decimal-mode semantics behind `have_decnum` (they need a different numeric runtime than the current float-based executor).
 
-**Output is always compact JSON.** fastjq never panics — malformed input may produce wrong results but the process is always safe.
+**Compatibility aliases:** fastjq accepts historical jq names `leaf_paths` and `date` for parity convenience. Current jq 1.8.1 does not expose those names directly; `leaf_paths` maps to `paths(scalars)` semantics and `date` maps to `todate`.
 
 See [SYNTAX.md](docs/SYNTAX.md) for the full allocation-tiered roadmap.
 

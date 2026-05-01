@@ -6,14 +6,8 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"runtime"
 	"sort"
 	"strconv"
-	"strings"
-	"sync"
-	"time"
-	"unicode"
-	"unicode/utf8"
 )
 
 var (
@@ -21,12 +15,6 @@ var (
 	errExpectedArrayIndex  = errors.New("expected array for index access")
 	errExpectedIterable    = errors.New("expected array or object for .[]")
 	errBreak               = errors.New("stop iteration") // sentinel for first/limit
-)
-
-const (
-	jsonParseDepthLimit         = 10000
-	jsonStringifySkipDepthLimit = jsonParseDepthLimit + 1
-	maxArrayUpdateIndex         = 1 << 20
 )
 
 // jsonError carries a JSON value thrown by the `error` builtin.
@@ -38,48 +26,11 @@ type jsonError struct {
 
 func (e *jsonError) Error() string { return string(e.payload) }
 
-// downstreamError marks an error returned by the callback chain outside the
-// lexical scope of a try body, so opTry can propagate it instead of catching it.
-type downstreamError struct {
-	err error
-}
-
-func (e *downstreamError) Error() string { return e.err.Error() }
-
-type transparentError struct {
-	err error
-}
-
-func (e *transparentError) Error() string { return e.err.Error() }
-
-type breakSignal struct {
-	label string
-}
-
-func (e *breakSignal) Error() string { return "break $" + e.label }
-
 // bTrue / bFalse / bNull are package-level literals returned directly when buf == nil,
 // avoiding heap allocation for boolean and null results in zero-scratch evaluation paths.
 var bTrue = []byte("true")
 var bFalse = []byte("false")
 var bNull = []byte("null")
-
-var (
-	tryScopeMu         sync.Mutex
-	tryScopeByGID      = make(map[uint64]int)
-	optionalScopeMu    sync.Mutex
-	optionalScopeByGID = make(map[uint64]int)
-	indexScopeMu       sync.Mutex
-	indexScopeByGID    = make(map[uint64][][]byte)
-)
-
-func isControlFlowError(err error) bool {
-	if err == errBreak {
-		return true
-	}
-	var bs *breakSignal
-	return errors.As(err, &bs)
-}
 
 // execMulti executes an op against input, calling fn for each result.
 // Single-output ops call fn once. Iterators call fn per element.
@@ -102,66 +53,10 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(result)
 	case opPipe:
 		return execPipeMulti(node, input, buf, fn)
-	case opApply:
-		return execApplyMulti(node, input, buf, fn)
-	case opBind:
-		baseCtx := currentExecContext()
-		return execMulti(node.left, input, nil, func(bound []byte) error {
-			if node.pattern != nil && len(node.altPatterns) > 0 {
-				return execBindAlternatives(baseCtx, node, input, bound, fn)
-			}
-			nextCtx, err := bindOpValue(baseCtx, node, bound)
-			if err != nil {
-				return err
-			}
-			return withExecContext(nextCtx, func() error {
-				return execMulti(node.right, input, buf, fn)
-			})
-		})
-	case opLabel:
-		err := execMulti(node.child, input, buf, fn)
-		var bs *breakSignal
-		if errors.As(err, &bs) && bs.label == node.name {
-			return nil
-		}
-		return err
-	case opBreakOp:
-		return &breakSignal{label: node.name}
-	case opVar:
-		if node.name == "__loc__" {
-			value := []byte(`{"file":"<top-level>","line":1}`)
-			if node.child != nil {
-				return execMulti(node.child, value, buf, fn)
-			}
-			if buf == nil {
-				return fn(value[:len(value):len(value)])
-			}
-			return fn(append(buf, value...))
-		}
-		ctx := currentExecContext()
-		value, ok := ctx.lookupVar(node.name)
-		if !ok {
-			return fmt.Errorf("$%s is not defined", node.name)
-		}
-		if node.child != nil {
-			return execMulti(node.child, value, buf, fn)
-		}
-		if buf == nil {
-			return fn(value[:len(value):len(value)])
-		}
-		return fn(append(buf, value...))
 	case opIndex:
 		return execIndexMulti(node, input, buf, fn)
-	case opIndexExpr:
-		return execIndexExprMulti(node, input, buf, fn)
 	case opIterator:
 		return execIterator(node, input, buf, fn)
-	case opRecursiveDescent:
-		return execRecursiveDescent(input, buf, fn)
-	case opRecurse:
-		return execRecurse(node, input, buf, fn)
-	case opWalk:
-		return execWalk(node, input, buf, fn)
 	case opConstruct:
 		if node.multiValuePairs {
 			return execConstructMulti(node, input, buf, fn)
@@ -178,7 +73,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(result)
 	case opLiteral:
-		return fn(normalizeOutputValue(node.literal, buf))
+		return fn(append(buf, node.literal...))
 	case opTypeBuiltin:
 		return execType(input, buf, fn)
 	case opCompare:
@@ -192,50 +87,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return fn(append(buf, "true"...))
 		}
 		return fn(append(buf, "false"...))
-	case opOptional:
-		if node.child != nil && node.child.typ == opRepeat {
-			err := withOptionalScope(func() error {
-				return execMulti(node.child, input, buf, fn)
-			})
-			if err != nil {
-				var bs *breakSignal
-				if errors.As(err, &bs) {
-					return err
-				}
-				return nil
-			}
-			return nil
-		}
-		var outputs [][]byte
-		err := withOptionalScope(func() error {
-			return execMulti(node.child, input, nil, func(result []byte) error {
-				outputs = append(outputs, cloneExecBytes(result))
-				return nil
-			})
-		})
-		if err != nil {
-			var bs *breakSignal
-			if errors.As(err, &bs) {
-				return err
-			}
-			return nil
-		}
-		for _, out := range outputs {
-			if err := fn(append(buf[:0], out...)); err != nil {
-				return err
-			}
-		}
-		return nil
-	case opNeg:
-		return execNeg(node, input, buf, fn)
 	case opLength:
 		return execLength(input, buf, fn)
-	case opAbs:
-		result, err := execAbs(input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
 	case opToEntries:
 		result, err := execToEntries(input, buf)
 		if err != nil {
@@ -263,119 +116,12 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execLast(node, input, buf, fn)
 	case opLimit:
 		return execLimit(node, input, buf, fn)
-	case opSkip:
-		return execSkip(node, input, buf, fn)
-	case opReduce:
-		return execReduce(node, input, buf, fn)
-	case opForeach:
-		return execForeach(node, input, buf, fn)
-	case opWhile:
-		return execWhile(node, input, buf, fn)
-	case opRepeat:
-		return execRepeat(node, input, buf, fn)
-	case opUntil:
-		result, err := execUntil(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opDefScope:
-		return execDefScope(node, input, buf, fn)
-	case opCall:
-		return execCall(node, input, buf, fn)
-	case opAssign:
-		return execAssign(node, input, buf, fn)
-	case opUpdate:
-		return execUpdate(node, input, buf, fn)
-	case opUpdateAlt:
-		return execUpdateAlt(node, input, buf, fn)
-	case opUpdateMath:
-		return execUpdateMath(node, input, buf, fn)
-	case opPath:
-		return execPath(node, input, buf, fn)
-	case opPick:
-		result, err := execPick(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opKeys:
-		result, err := execKeys(input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opPaths:
-		return execPaths(node, input, buf, fn)
-	case opGetPath:
-		return execGetPath(node, input, buf, fn)
-	case opSetPath:
-		result, err := execSetPath(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opDelPaths:
-		result, err := execDelPaths(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
 	case opKeysUnsorted:
 		result, err := execKeysUnsorted(input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
-	case opBuiltins:
-		result := execBuiltins(buf)
-		return fn(result)
-	case opHaveDecnum:
-		return fn(append(buf, "false"...))
-	case opStrftime:
-		return execStrftimeBuiltin(node, input, buf, false, fn)
-	case opStrfLocaltime:
-		return execStrftimeBuiltin(node, input, buf, true, fn)
-	case opStrptime:
-		return execStrptimeBuiltin(node, input, buf, fn)
-	case opMktime:
-		result, err := execMktime(input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opGmtime:
-		result, err := execGmtime(input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opFromdate:
-		result, err := execFromdate(input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opTodate:
-		result, err := execTodate(input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opNow:
-		return fn(execNow(buf))
-	case opToStream:
-		return execToStream(input, buf, fn)
-	case opTruncateStream:
-		return execTruncateStream(node, input, buf, fn)
-	case opFromStream:
-		result, err := execFromStream(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opCombinations:
-		return execCombinations(node, input, buf, fn)
 	case opAny:
 		return execAnyAll(node, input, buf, fn, false)
 	case opAll:
@@ -383,11 +129,11 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opAdd:
 		return execAdd(input, buf, fn)
 	case opIndex1:
-		return execFindIndexMulti(node, input, buf, fn, false, false)
+		return fn(execFindIndex(node, input, buf, false, false))
 	case opRIndex1:
-		return execFindIndexMulti(node, input, buf, fn, true, false)
+		return fn(execFindIndex(node, input, buf, true, false))
 	case opIndicesN:
-		return execFindIndexMulti(node, input, buf, fn, false, true)
+		return fn(execFindIndex(node, input, buf, false, true))
 	case opDebug:
 		execDebug(input)
 		return fn(input)
@@ -407,36 +153,10 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execValues(input, buf, fn)
 	case opIn:
 		return fn(execIn(node, input, buf))
-	case opINBuiltin:
-		result, err := execINBuiltin(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opINDEXBuiltin:
-		result, err := execINDEXBuiltin(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opJOINBuiltin:
-		result, err := execJOINBuiltin(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
 	case opSlice:
 		result, err := execSlice(node, input, buf)
 		if err != nil {
 			return err
-		}
-		if result == nil {
-			return nil
-		}
-		if node.child != nil {
-			return withIndexScope(chainedIndexScope(input), func() error {
-				return execMulti(node.child, result, buf, fn)
-			})
 		}
 		return fn(result)
 	case opPlus:
@@ -466,14 +186,6 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return joinErr
 		}
 		return fn(result)
-	case opTrimStr:
-		result, err := execTrimStrBoth(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opBsearch:
-		return execBsearch(node, input, buf, fn)
 	case opAsciiDowncase:
 		result, err := execAsciiCase(input, buf, false)
 		if err != nil {
@@ -498,18 +210,6 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
-	case opUTF8ByteLength:
-		result, err := execUTF8ByteLength(input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opReverse:
-		result, err := execReverse(input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
 	case opIsNaN:
 		return fn(execIsNaN(input, buf))
 	case opIsInfinite:
@@ -524,52 +224,14 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
-	case opHypot:
-		result, err := execHypot(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opFMA:
-		result, err := execFMA(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
 	case opStartsWith:
 		return fn(execStringPredicate(input, buf, node.field, true, false))
 	case opEndsWith:
 		return fn(execStringPredicate(input, buf, node.field, false, true))
-	case opTrim:
-		result, err := execTrim(input, buf, trimBoth)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opLtrim:
-		result, err := execTrim(input, buf, trimLeft)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opRtrim:
-		result, err := execTrim(input, buf, trimRight)
-		if err != nil {
-			return err
-		}
-		return fn(result)
 	case opLtrimStr:
-		result, err := execTrimStr(node, input, buf, true)
-		if err != nil {
-			return err
-		}
-		return fn(result)
+		return fn(execTrimStr(input, buf, node.field, true))
 	case opRtrimStr:
-		result, err := execTrimStr(node, input, buf, false)
-		if err != nil {
-			return err
-		}
-		return fn(result)
+		return fn(execTrimStr(input, buf, node.field, false))
 	case opEmpty:
 		return nil // produce zero outputs — never call fn
 	case opHas:
@@ -598,16 +260,16 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 				return fn(result)
 			})
 		}
-		var leftVals [][]byte
-		if err := execMulti(node.left, input, nil, func(leftVal []byte) error {
-			leftVals = append(leftVals, leftVal)
+		var rightVals [][]byte
+		if err := execMulti(node.right, input, nil, func(rightVal []byte) error {
+			rightVals = append(rightVals, rightVal)
 			return nil
 		}); err != nil {
 			return err
 		}
-		return execMulti(node.right, input, nil, func(rightVal []byte) error {
-			for _, lv := range leftVals {
-				result, err := execArithValues(node.typ, lv, rightVal, buf)
+		return execMulti(node.left, input, nil, func(leftVal []byte) error {
+			for _, rv := range rightVals {
+				result, err := execArithValues(node.typ, leftVal, rv, buf)
 				if err != nil {
 					return err
 				}
@@ -660,33 +322,36 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(result)
 	case opTry:
-		wrappedFn := func(result []byte) error {
-			if err := fn(result); err != nil {
-				return &downstreamError{err: err}
-			}
-			return nil
-		}
-		err := withTryScope(func() error {
-			return execMulti(node.left, input, buf, wrappedFn)
-		})
-		if err == nil {
-			return nil
-		}
-		if de, ok := err.(*downstreamError); ok {
-			return de.err
-		}
-		if isControlFlowError(err) {
+		err := execMulti(node.left, input, buf, fn)
+		if err == nil || err == errBreak {
 			return err
 		}
 		// Real error — suppress or run catch handler
 		if node.right == nil {
 			return nil
 		}
-		err = execMulti(node.right, catchInputFromError(err), buf, wrappedFn)
-		if de, ok := err.(*downstreamError); ok {
-			return de.err
+		// Determine what to pass to the catch handler.
+		// If the error was thrown by jq's `error` builtin, pass the raw JSON value.
+		// Otherwise, wrap the error message as a JSON string.
+		var catchInput []byte
+		if je, ok := err.(*jsonError); ok {
+			catchInput = je.payload
+		} else {
+			// Build error message as JSON string (exceptional path, alloc is fine)
+			msg := make([]byte, 0, 64)
+			msg = append(msg, '"')
+			for _, b := range []byte(err.Error()) {
+				if b == '"' {
+					msg = append(msg, '\\', '"')
+				} else if b == '\\' {
+					msg = append(msg, '\\', '\\')
+				} else {
+					msg = append(msg, b)
+				}
+			}
+			catchInput = append(msg, '"')
 		}
-		return err
+		return execMulti(node.right, catchInput, buf, fn)
 	case opToJSON:
 		return fn(execToJSON(input, buf))
 	case opFromJSON:
@@ -699,12 +364,6 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(execToString(input, buf))
 	case opToNumber:
 		result, err := execToNumber(input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	case opToBoolean:
-		result, err := execToBoolean(input, buf)
 		if err != nil {
 			return err
 		}
@@ -817,17 +476,37 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return &jsonError{payload: payload}
 	case opStringInterp:
-		result, err := execStringTemplate(node, input, buf)
-		if err != nil {
-			return err
+		// String interpolation "\(expr1)...\(expr2)".
+		// Each segs[i] is a literal segment; each elems[i] is an expression.
+		// Segments and expressions are interleaved: segs[0] expr[0] segs[1] ... segs[n].
+		buf = append(buf, '"')
+		for i, expr := range node.elems {
+			buf = append(buf, node.segs[i]...)
+			result, err := execSingle(expr, input, nil)
+			if err != nil {
+				return err
+			}
+			result = trimWhitespace(result)
+			if len(result) > 0 && result[0] == '"' {
+				// JSON string: embed raw content bytes (already valid JSON string content).
+				sc := scanner{data: result}
+				buf = append(buf, sc.readString()...)
+			} else {
+				// Non-string (number, bool, null, object, array): embed bytes, escaping " and \.
+				for _, b := range result {
+					if b == '"' {
+						buf = append(buf, '\\', '"')
+					} else if b == '\\' {
+						buf = append(buf, '\\', '\\')
+					} else {
+						buf = append(buf, b)
+					}
+				}
+			}
 		}
-		return fn(result)
-	case opFormatTemplate:
-		result, err := execFormatTemplate(node, input, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
+		buf = append(buf, node.segs[len(node.elems)]...) // final literal segment
+		buf = append(buf, '"')
+		return fn(buf)
 	case opIsEmpty:
 		// isempty(expr): true if expr produces no outputs, false otherwise.
 		produced := false
@@ -853,7 +532,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		nInt := int(nf)
 		if nInt < 0 {
-			return fmt.Errorf("nth doesn't support negative indices")
+			return nil
 		}
 		count := 0
 		var found []byte
@@ -920,38 +599,18 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	switch node.typ {
 	case opLiteral:
-		return normalizeOutputValue(node.literal, buf), nil
+		// When buf is nil, return the compile-time literal bytes directly (zero-alloc).
+		// Safe since callers only read the result, never append beyond len.
+		if buf == nil {
+			return node.literal, nil
+		}
+		return append(buf, node.literal...), nil
 	case opIdentity:
 		return execIdentity(input, buf)
 	case opField:
 		return execField(node, input, buf)
 	case opIndex:
 		return execIndex(node, input, buf)
-	case opIndexExpr:
-		return execIndexExpr(node, input, buf)
-	case opVar:
-		if node.name == "__loc__" {
-			value := []byte(`{"file":"<top-level>","line":1}`)
-			if node.child != nil {
-				return exec(node.child, value, buf)
-			}
-			if buf == nil {
-				return value[:len(value):len(value)], nil
-			}
-			return append(buf, value...), nil
-		}
-		ctx := currentExecContext()
-		value, ok := ctx.lookupVar(node.name)
-		if !ok {
-			return nil, fmt.Errorf("$%s is not defined", node.name)
-		}
-		if node.child != nil {
-			return execSingle(node.child, value, buf)
-		}
-		if buf == nil {
-			return value[:len(value):len(value)], nil
-		}
-		return append(buf, value...), nil
 	case opTypeBuiltin:
 		return execTypeSingle(input, buf)
 	case opCompare:
@@ -1017,99 +676,19 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			return bFalse, nil
 		}
 		return append(buf, "false"...), nil
-	case opOptional:
-		result, err := execSingle(node.child, input, buf)
-		if err != nil {
-			if buf == nil {
-				return bNull, nil
-			}
-			return append(buf[:0], "null"...), nil
-		}
-		return result, nil
-	case opNeg:
-		return execNegSingle(node, input, buf)
 	case opLength:
 		return execLengthSingle(input, buf)
-	case opAbs:
-		return execAbs(input, buf)
 	case opToEntries:
 		return execToEntries(input, buf)
 	case opFromEntries:
 		return execFromEntries(input, buf)
 	case opFirst:
-		return execFirstResult(node, input, buf)
+		// exec already returns the first result via execMulti
+		return exec(node.child, input, buf)
 	case opLast:
 		return execLastSingle(node, input, buf)
-	case opSkip:
-		return execFirstResult(node, input, buf)
-	case opReduce:
-		return execFirstResult(node, input, buf)
-	case opForeach:
-		return execFirstResult(node, input, buf)
-	case opWhile:
-		return execFirstResult(node, input, buf)
-	case opRepeat:
-		return execFirstResult(node, input, buf)
-	case opRecursiveDescent:
-		return execFirstResult(node, input, buf)
-	case opRecurse:
-		return execFirstResult(node, input, buf)
-	case opWalk:
-		return execFirstResult(node, input, buf)
-	case opUntil:
-		return execUntil(node, input, buf)
-	case opDefScope:
-		return execFirstResult(node, input, buf)
-	case opCall:
-		return execFirstResult(node, input, buf)
-	case opAssign:
-		return execFirstResult(node, input, buf)
-	case opUpdate:
-		return execFirstResult(node, input, buf)
-	case opUpdateAlt:
-		return execFirstResult(node, input, buf)
-	case opUpdateMath:
-		return execFirstResult(node, input, buf)
-	case opPath:
-		return execFirstResult(node, input, buf)
-	case opKeys:
-		return execKeys(input, buf)
-	case opPaths:
-		return execFirstResult(node, input, buf)
-	case opPick:
-		return execPick(node, input, buf)
-	case opGetPath:
-		return execFirstResult(node, input, buf)
-	case opSetPath:
-		return execSetPath(node, input, buf)
-	case opDelPaths:
-		return execDelPaths(node, input, buf)
 	case opKeysUnsorted:
 		return execKeysUnsorted(input, buf)
-	case opBuiltins:
-		return execBuiltins(buf), nil
-	case opHaveDecnum:
-		return append(buf, "false"...), nil
-	case opStrftime, opStrfLocaltime, opStrptime:
-		return execFirstResult(node, input, buf)
-	case opMktime:
-		return execMktime(input, buf)
-	case opGmtime:
-		return execGmtime(input, buf)
-	case opFromdate:
-		return execFromdate(input, buf)
-	case opTodate:
-		return execTodate(input, buf)
-	case opNow:
-		return execNow(buf), nil
-	case opToStream:
-		return execFirstResult(node, input, buf)
-	case opTruncateStream:
-		return execFirstResult(node, input, buf)
-	case opFromStream:
-		return execFromStream(node, input, buf)
-	case opCombinations:
-		return execFirstResult(node, input, buf)
 	case opAny:
 		return execAnyAllSingle(node, input, buf, false)
 	case opAll:
@@ -1140,33 +719,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return append(buf, input...), nil
 	case opIn:
 		return execIn(node, input, buf), nil
-	case opINBuiltin:
-		return execINBuiltin(node, input, buf)
-	case opINDEXBuiltin:
-		return execINDEXBuiltin(node, input, buf)
-	case opJOINBuiltin:
-		return execJOINBuiltin(node, input, buf)
 	case opSlice:
-		result, err := execSlice(node, input, buf)
-		if err != nil {
-			return nil, err
-		}
-		if result == nil {
-			if buf == nil {
-				return bNull, nil
-			}
-			return append(buf, "null"...), nil
-		}
-		if node.child != nil {
-			var out []byte
-			err := withIndexScope(chainedIndexScope(input), func() error {
-				var execErr error
-				out, execErr = execSingle(node.child, result, buf)
-				return execErr
-			})
-			return out, err
-		}
-		return result, nil
+		return execSlice(node, input, buf)
 	case opPlus:
 		return execPlusSingle(node, input, buf)
 	case opFlatten:
@@ -1175,8 +729,6 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execSplit(input, buf, node.field), nil
 	case opJoin:
 		return execJoin(input, buf, node.field)
-	case opBsearch:
-		return execFirstResult(node, input, buf)
 	case opAsciiDowncase:
 		return execAsciiCase(input, buf, false)
 	case opAsciiUpcase:
@@ -1185,26 +737,14 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execStringPredicate(input, buf, node.field, true, false), nil
 	case opEndsWith:
 		return execStringPredicate(input, buf, node.field, false, true), nil
-	case opTrim:
-		return execTrim(input, buf, trimBoth)
-	case opLtrim:
-		return execTrim(input, buf, trimLeft)
-	case opRtrim:
-		return execTrim(input, buf, trimRight)
-	case opTrimStr:
-		return execTrimStrBoth(node, input, buf)
 	case opLtrimStr:
-		return execTrimStr(node, input, buf, true)
+		return execTrimStr(input, buf, node.field, true), nil
 	case opRtrimStr:
-		return execTrimStr(node, input, buf, false)
+		return execTrimStr(input, buf, node.field, false), nil
 	case opExplode:
 		return execExplode(input, buf)
 	case opImplode:
 		return execImplode(input, buf)
-	case opUTF8ByteLength:
-		return execUTF8ByteLength(input, buf)
-	case opReverse:
-		return execReverse(input, buf)
 	case opIsNaN:
 		return execIsNaN(input, buf), nil
 	case opIsInfinite:
@@ -1215,10 +755,6 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execIsNormal(input, buf), nil
 	case opPow:
 		return execPow(node, input, buf)
-	case opHypot:
-		return execHypot(node, input, buf)
-	case opFMA:
-		return execFMA(node, input, buf)
 	case opMinus, opMul, opDiv, opMod:
 		return execArith(node, input, buf)
 	case opMin, opMinBy:
@@ -1269,49 +805,17 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			return execSingle(node.right, intermediate, buf)
 		}
 		return execFirstResult(node, input, buf)
-	case opApply:
-		if isSingleOutputOp(node.left) {
-			intermediate, err := execSingle(node.left, input, nil)
-			if err != nil {
-				return nil, err
-			}
-			var result []byte
-			err = withIndexScope(chainedIndexScope(input), func() error {
-				var execErr error
-				result, execErr = execSingle(node.right, intermediate, buf)
-				return execErr
-			})
-			return result, err
-		}
-		return execFirstResult(node, input, buf)
 
 	case opSelect:
-		if isSingleOutputOp(node.child) {
-			// Pass buf as scratch so condition expressions (e.g. ascii_downcase, construct)
-			// don't need to allocate their own buffer. condVal may be written into buf,
-			// but we only test truthiness and then reset buf for the actual output.
-			condVal, err := execSingle(node.child, input, buf)
-			if err != nil {
-				return nil, err
-			}
-			if isFalsy(condVal) {
-				return nil, nil // condition false — no output
-			}
-		} else {
-			foundTruthy := false
-			err := execMulti(node.child, input, nil, func(condVal []byte) error {
-				if isFalsy(condVal) {
-					return nil
-				}
-				foundTruthy = true
-				return errBreak
-			})
-			if err != nil && err != errBreak {
-				return nil, err
-			}
-			if !foundTruthy {
-				return nil, nil
-			}
+		// Pass buf as scratch so condition expressions (e.g. ascii_downcase, construct)
+		// don't need to allocate their own buffer. condVal may be written into buf,
+		// but we only test truthiness and then reset buf for the actual output.
+		condVal, err := execSingle(node.child, input, buf)
+		if err != nil {
+			return nil, err
+		}
+		if isFalsy(condVal) {
+			return nil, nil // condition false — no output
 		}
 		if buf == nil {
 			return input[:len(input):len(input)], nil
@@ -1375,28 +879,63 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execSingle(node.right, input, buf)
 
 	case opTry:
-		var result []byte
-		err := withTryScope(func() error {
-			var execErr error
-			result, execErr = execSingle(node.left, input, buf)
-			return execErr
-		})
+		result, err := execSingle(node.left, input, buf)
 		if err == nil {
 			return result, nil
 		}
-		if isControlFlowError(err) {
+		if err == errBreak {
 			return nil, err // propagate break signal
 		}
 		// Error: suppress or run catch handler.
 		if node.right == nil {
 			return nil, nil // no catch — produce no output
 		}
-		return execSingle(node.right, catchInputFromError(err), buf)
+		var catchInput []byte
+		if je, ok := err.(*jsonError); ok {
+			catchInput = je.payload
+		} else {
+			msg := make([]byte, 0, 64)
+			msg = append(msg, '"')
+			for _, b := range []byte(err.Error()) {
+				if b == '"' {
+					msg = append(msg, '\\', '"')
+				} else if b == '\\' {
+					msg = append(msg, '\\', '\\')
+				} else {
+					msg = append(msg, b)
+				}
+			}
+			catchInput = append(msg, '"')
+		}
+		return execSingle(node.right, catchInput, buf)
 
 	case opStringInterp:
-		return execStringTemplate(node, input, buf)
-	case opFormatTemplate:
-		return execFormatTemplate(node, input, buf)
+		// String interpolation — inline exactly as in execMulti but return directly.
+		buf = append(buf, '"')
+		for i, expr := range node.elems {
+			buf = append(buf, node.segs[i]...)
+			result, err := execSingle(expr, input, nil)
+			if err != nil {
+				return nil, err
+			}
+			result = trimWhitespace(result)
+			if len(result) > 0 && result[0] == '"' {
+				sc := scanner{data: result}
+				buf = append(buf, sc.readString()...)
+			} else {
+				for _, b := range result {
+					if b == '"' {
+						buf = append(buf, '\\', '"')
+					} else if b == '\\' {
+						buf = append(buf, '\\', '\\')
+					} else {
+						buf = append(buf, b)
+					}
+				}
+			}
+		}
+		buf = append(buf, node.segs[len(node.elems)]...)
+		return append(buf, '"'), nil
 
 	case opContains:
 		argVal, err := execSingle(node.child, input, nil)
@@ -1480,8 +1019,6 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execToString(input, buf), nil
 	case opToNumber:
 		return execToNumber(input, buf)
-	case opToBoolean:
-		return execToBoolean(input, buf)
 	default:
 		return execFirstResult(node, input, buf)
 	}
@@ -1526,7 +1063,11 @@ func execIdentity(input []byte, buf []byte) ([]byte, error) {
 	s.skipWhitespace()
 	start := s.pos
 	s.skipValue()
-	return normalizeOutputValue(input[start:s.pos], buf), nil
+	if buf == nil {
+		end := s.pos
+		return input[start:end:end], nil
+	}
+	return append(buf, input[start:s.pos]...), nil
 }
 
 // execFieldMulti extracts a field value from a JSON object, then recurses
@@ -1545,7 +1086,7 @@ func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 			}
 			return fn(append(buf, "null"...))
 		}
-		return fieldAccessError(input, node.field)
+		return errExpectedObjectField
 	}
 
 	vs, ve := s.findFieldStr(node.field)
@@ -1560,10 +1101,10 @@ func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	value := input[vs:ve]
 
 	if node.child != nil {
-		return withIndexScope(chainedIndexScope(input), func() error {
-			return execMulti(node.child, value, buf, fn)
-		})
+		return execMulti(node.child, value, buf, fn)
 	}
+	// When buf is nil, pass a cap-limited sub-slice directly (zero-alloc).
+	// Cap-limited prevents callers from treating spare capacity as scratch.
 	if buf == nil {
 		return fn(value[:len(value):len(value)])
 	}
@@ -1585,7 +1126,7 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 			}
 			return append(buf, "null"...), nil
 		}
-		return nil, fieldAccessError(input, node.field)
+		return nil, errExpectedObjectField
 	}
 
 	vs, ve := s.findFieldStr(node.field)
@@ -1599,13 +1140,7 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 	value := input[vs:ve]
 
 	if node.child != nil {
-		var result []byte
-		err := withIndexScope(chainedIndexScope(input), func() error {
-			var execErr error
-			result, execErr = exec(node.child, value, buf)
-			return execErr
-		})
-		return result, err
+		return exec(node.child, value, buf)
 	}
 	if buf == nil {
 		return value[:len(value):len(value)], nil
@@ -1622,7 +1157,7 @@ func execIndexMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 		if node.optional {
 			return nil
 		}
-		return indexAccessError(input, node.index)
+		return errExpectedArrayIndex
 	}
 
 	idx := node.index
@@ -1648,9 +1183,7 @@ func execIndexMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	}
 
 	if node.child != nil {
-		return withIndexScope(chainedIndexScope(input), func() error {
-			return execMulti(node.child, result, buf, fn)
-		})
+		return execMulti(node.child, result, buf, fn)
 	}
 	if buf == nil {
 		return fn(result[:len(result):len(result)])
@@ -1666,7 +1199,7 @@ func execIndex(node *op, input []byte, buf []byte) ([]byte, error) {
 		if node.optional {
 			return append(buf, "null"...), nil
 		}
-		return nil, indexAccessError(input, node.index)
+		return nil, errExpectedArrayIndex
 	}
 
 	idx := node.index
@@ -1693,146 +1226,12 @@ func execIndex(node *op, input []byte, buf []byte) ([]byte, error) {
 	}
 
 	if node.child != nil {
-		var out []byte
-		err := withIndexScope(chainedIndexScope(input), func() error {
-			var execErr error
-			out, execErr = exec(node.child, result, buf)
-			return execErr
-		})
-		return out, err
+		return exec(node.child, result, buf)
 	}
 	if buf == nil {
 		return result[:len(result):len(result)], nil
 	}
 	return append(buf, result...), nil
-}
-
-func execIndexExprMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	scopeInput := currentIndexScope()
-	if scopeInput == nil {
-		scopeInput = input
-	}
-	return execMulti(node.left, scopeInput, nil, func(key []byte) error {
-		result, err := execIndexExprAccess(input, key, buf)
-		if err != nil {
-			return err
-		}
-		if node.child != nil {
-			return withIndexScope(chainedIndexScope(input), func() error {
-				return execMulti(node.child, result, buf, fn)
-			})
-		}
-		return fn(result)
-	})
-}
-
-func execIndexExpr(node *op, input []byte, buf []byte) ([]byte, error) {
-	scopeInput := currentIndexScope()
-	if scopeInput == nil {
-		scopeInput = input
-	}
-	key, err := execSingle(node.left, scopeInput, nil)
-	if err != nil {
-		return nil, err
-	}
-	result, err := execIndexExprAccess(input, key, buf)
-	if err != nil {
-		return nil, err
-	}
-	if node.child != nil {
-		var out []byte
-		err := withIndexScope(chainedIndexScope(input), func() error {
-			var execErr error
-			out, execErr = exec(node.child, result, buf)
-			return execErr
-		})
-		return out, err
-	}
-	return result, nil
-}
-
-func execIndexExprAccess(input, key, buf []byte) ([]byte, error) {
-	key = trimWhitespace(key)
-	if len(key) == 0 {
-		return nil, fmt.Errorf("Cannot index %s with invalid", jsonTypeName(input))
-	}
-	ks := scanner{data: key}
-	ks.skipWhitespace()
-	if ks.pos < len(ks.data) && ks.data[ks.pos] == '"' {
-		field := ks.readString()
-		return execFieldValue(input, field, buf)
-	}
-	if f, ok := parseJSONFloat(key); ok {
-		if math.IsNaN(f) || math.IsInf(f, 0) {
-			s := scanner{data: input}
-			s.skipWhitespace()
-			if s.pos < len(s.data) && (s.data[s.pos] == '[' || s.data[s.pos] == 'n') {
-				if buf == nil {
-					return bNull, nil
-				}
-				return append(buf, "null"...), nil
-			}
-			return nil, dynamicIndexNumberAccessError(input)
-		}
-		return execIndexValue(input, int(f), buf)
-	}
-	return nil, fmt.Errorf("Cannot index %s with %s", jsonTypeName(input), jsonTypeName(key))
-}
-
-func execFieldValue(input, field, buf []byte) ([]byte, error) {
-	s := &scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
-		if s.pos < len(s.data) && s.data[s.pos] == 'n' {
-			if buf == nil {
-				return bNull, nil
-			}
-			return append(buf, "null"...), nil
-		}
-		return nil, fieldAccessError(input, string(field))
-	}
-	vs, ve := s.findField(field)
-	if vs == -1 {
-		if buf == nil {
-			return bNull, nil
-		}
-		return append(buf, "null"...), nil
-	}
-	return normalizeOutputValue(input[vs:ve], buf), nil
-}
-
-func execIndexValue(input []byte, index int, buf []byte) ([]byte, error) {
-	s := &scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
-		return nil, dynamicIndexNumberAccessError(input)
-	}
-	idx := index
-	if idx < 0 {
-		length := s.arrayLen()
-		idx = length + idx
-		if idx < 0 {
-			if buf == nil {
-				return bNull, nil
-			}
-			return append(buf, "null"...), nil
-		}
-	}
-	var result []byte
-	s.arrayIter(func(i int, elemStart, elemEnd int) bool {
-		if i == idx {
-			result = input[elemStart:elemEnd]
-			return false
-		}
-		return true
-	})
-	if result == nil {
-		if buf == nil {
-			return bNull, nil
-		}
-		return append(buf, "null"...), nil
-	}
-	return normalizeOutputValue(result, buf), nil
 }
 
 // execIterator iterates all elements of an array or values of an object.
@@ -1843,35 +1242,21 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 		if node.optional {
 			return nil
 		}
-		return fmt.Errorf("Cannot iterate over %s (%s)", jsonTypeName(input), previewJSONValue(input))
+		return errExpectedIterable
 	}
 
 	switch s.data[s.pos] {
 	case '[':
 		var caught error
 		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
-			var err error
-			if node.child != nil {
-				scope := chainedIndexScope(input)
-				err = withIndexScope(scope, func() error {
-					return execMulti(node.child, input[elemStart:elemEnd], buf, fn)
-				})
-			} else {
-				err = fn(input[elemStart:elemEnd])
-			}
-			if err != nil {
+			if err := fn(input[elemStart:elemEnd]); err != nil {
 				// Propagate jsonError (from `error` builtin) and errBreak so
 				// try-catch and limit/first work correctly. Regular errors
 				// (e.g. field access on wrong type) are dropped, preserving
 				// the existing lenient multi-output behaviour.
 				if _, ok := err.(*jsonError); ok {
-					if !tryScopeActive() {
-						return false
-					}
 					caught = err
-				} else if isControlFlowError(err) {
-					caught = err
-				} else if optionalScopeActive() {
+				} else if err == errBreak {
 					caught = err
 				}
 				return false
@@ -1882,24 +1267,10 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 	case '{':
 		var caught error
 		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
-			var err error
-			if node.child != nil {
-				scope := chainedIndexScope(input)
-				err = withIndexScope(scope, func() error {
-					return execMulti(node.child, input[valueStart:valueEnd], buf, fn)
-				})
-			} else {
-				err = fn(input[valueStart:valueEnd])
-			}
-			if err != nil {
+			if err := fn(input[valueStart:valueEnd]); err != nil {
 				if _, ok := err.(*jsonError); ok {
-					if !tryScopeActive() {
-						return false
-					}
 					caught = err
-				} else if isControlFlowError(err) {
-					caught = err
-				} else if optionalScopeActive() {
+				} else if err == errBreak {
 					caught = err
 				}
 				return false
@@ -1911,217 +1282,13 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 		if node.optional {
 			return nil
 		}
-		return fmt.Errorf("Cannot iterate over %s (%s)", jsonTypeName(input), previewJSONValue(input))
+		return errExpectedIterable
 	}
-}
-
-func execRecursiveDescent(input []byte, buf []byte, fn func([]byte) error) error {
-	return execRecursiveValue(trimWhitespace(input), buf, fn)
-}
-
-func execRecursiveValue(value []byte, buf []byte, fn func([]byte) error) error {
-	if err := fn(append(buf[:0], value...)); err != nil {
-		return err
-	}
-
-	s := scanner{data: value}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return nil
-	}
-
-	switch s.data[s.pos] {
-	case '[':
-		var walkErr error
-		s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-			walkErr = execRecursiveValue(value[elemStart:elemEnd], buf, fn)
-			return walkErr == nil
-		})
-		return walkErr
-	case '{':
-		var walkErr error
-		s.objectIter(func(_ []byte, valueStart, valueEnd int) bool {
-			walkErr = execRecursiveValue(value[valueStart:valueEnd], buf, fn)
-			return walkErr == nil
-		})
-		return walkErr
-	default:
-		return nil
-	}
-}
-
-func execRecurse(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	current := trimWhitespace(input)
-	if err := fn(append(buf[:0], current...)); err != nil {
-		return err
-	}
-	if node.left == nil {
-		return execRecurseDefaultChildren(node, current, buf, fn)
-	}
-	nextVals, err := collectExecOutputs(node.left, current)
-	if err != nil {
-		return err
-	}
-	for _, next := range nextVals {
-		if node.child != nil {
-			cond, err := execSingle(node.child, next, nil)
-			if err != nil {
-				return err
-			}
-			if isFalsy(cond) {
-				continue
-			}
-		}
-		if err := execRecurse(node, next, buf, fn); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func execRecurseDefaultChildren(node *op, current []byte, buf []byte, fn func([]byte) error) error {
-	s := scanner{data: current}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return nil
-	}
-	switch s.data[s.pos] {
-	case '[':
-		var walkErr error
-		s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-			walkErr = execRecurse(node, current[elemStart:elemEnd], buf, fn)
-			return walkErr == nil
-		})
-		return walkErr
-	case '{':
-		var walkErr error
-		s.objectIter(func(_ []byte, valueStart, valueEnd int) bool {
-			walkErr = execRecurse(node, current[valueStart:valueEnd], buf, fn)
-			return walkErr == nil
-		})
-		return walkErr
-	default:
-		return nil
-	}
-}
-
-func execWalk(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	outputs, err := walkOutputs(node.child, trimWhitespace(input))
-	if err != nil {
-		return err
-	}
-	for _, out := range outputs {
-		if err := fn(append(buf[:0], out...)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func walkOutputs(filter *op, value []byte) ([][]byte, error) {
-	rebuilt, err := walkRebuild(filter, trimWhitespace(value))
-	if err != nil {
-		return nil, err
-	}
-	return collectExecOutputs(filter, rebuilt)
-}
-
-func walkFirstOutput(filter *op, value []byte) ([]byte, bool, error) {
-	outputs, err := walkOutputs(filter, value)
-	if err != nil {
-		return nil, false, err
-	}
-	if len(outputs) == 0 {
-		return nil, false, nil
-	}
-	return outputs[0], true, nil
-}
-
-func walkRebuild(filter *op, value []byte) ([]byte, error) {
-	s := scanner{data: value}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return cloneExecBytes(value), nil
-	}
-	switch s.data[s.pos] {
-	case '[':
-		return walkRebuildArray(filter, value)
-	case '{':
-		return walkRebuildObject(filter, value)
-	default:
-		return cloneExecBytes(value), nil
-	}
-}
-
-func walkRebuildArray(filter *op, value []byte) ([]byte, error) {
-	s := scanner{data: value}
-	s.skipWhitespace()
-	out := make([]byte, 0, len(value))
-	out = append(out, '[')
-	first := true
-	var walkErr error
-	s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-		child, keep, err := walkFirstOutput(filter, value[elemStart:elemEnd])
-		if err != nil {
-			walkErr = err
-			return false
-		}
-		if !keep {
-			return true
-		}
-		if !first {
-			out = append(out, ',')
-		}
-		first = false
-		out = append(out, child...)
-		return true
-	})
-	if walkErr != nil {
-		return nil, walkErr
-	}
-	out = append(out, ']')
-	return out, nil
-}
-
-func walkRebuildObject(filter *op, value []byte) ([]byte, error) {
-	s := scanner{data: value}
-	s.skipWhitespace()
-	out := make([]byte, 0, len(value))
-	out = append(out, '{')
-	first := true
-	var walkErr error
-	s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
-		child, keep, err := walkFirstOutput(filter, value[valueStart:valueEnd])
-		if err != nil {
-			walkErr = err
-			return false
-		}
-		if !keep {
-			return true
-		}
-		if !first {
-			out = append(out, ',')
-		}
-		first = false
-		out = append(out, '"')
-		out = appendJSONStringContent(out, key)
-		out = append(out, '"', ':')
-		out = append(out, child...)
-		return true
-	})
-	if walkErr != nil {
-		return nil, walkErr
-	}
-	out = append(out, '}')
-	return out, nil
 }
 
 // execDelete removes specified fields from a JSON object or elements from an array.
 // Never copies commas from input — reconstructs with our own commas.
 func execDelete(node *op, input []byte, buf []byte) ([]byte, error) {
-	if deleteNeedsGenericPaths(node) {
-		return execDeleteGeneric(node, input, buf)
-	}
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) {
@@ -2138,59 +1305,6 @@ func execDelete(node *op, input []byte, buf []byte) ([]byte, error) {
 	}
 }
 
-func deleteNeedsGenericPaths(node *op) bool {
-	for i := range node.fields {
-		if deletePathNeedsGeneric(&node.fields[i]) {
-			return true
-		}
-	}
-	return false
-}
-
-func deletePathNeedsGeneric(node *op) bool {
-	if node == nil {
-		return false
-	}
-	switch node.typ {
-	case opField, opIndex, opSlice:
-		return deletePathNeedsGeneric(node.child)
-	default:
-		return true
-	}
-}
-
-func execDeleteGeneric(node *op, input []byte, buf []byte) ([]byte, error) {
-	mutations := make([]pathMutation, 0, len(node.fields))
-	for i := range node.fields {
-		paths, err := collectAssignPaths(&node.fields[i], input)
-		if err != nil {
-			return nil, err
-		}
-		for _, steps := range paths {
-			if len(steps) == 0 {
-				if buf == nil {
-					return bNull, nil
-				}
-				return append(buf[:0], "null"...), nil
-			}
-			mutations = append(mutations, pathMutation{steps: steps, order: len(mutations), delete: true})
-		}
-	}
-	if len(mutations) == 0 {
-		return normalizeOutputValue(input, buf), nil
-	}
-	sortPathMutations(mutations)
-	current := normalizeOutputValue(input, nil)
-	var err error
-	for _, mutation := range mutations {
-		current, err = deletePathDecoded(current, mutation.steps)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return normalizeOutputValue(current, buf), nil
-}
-
 // execDeleteObject removes specified fields from a JSON object.
 func execDeleteObject(node *op, input []byte, buf []byte, s *scanner) ([]byte, error) {
 	// Validate all del() arguments are field accesses
@@ -2204,37 +1318,32 @@ func execDeleteObject(node *op, input []byte, buf []byte, s *scanner) ([]byte, e
 	first := true
 
 	s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
-		var nestedFields []op
 		for i := range node.fields {
 			d := &node.fields[i]
-			if !bytesEqualStr(key, d.field) {
-				continue
+			if bytesEqualStr(key, d.field) {
+				if d.child == nil {
+					return true // simple delete — skip this pair
+				}
+				// Nested delete — recurse into the value.
+				// Save the slice header before the call so we can recover if
+				// the nested target is not an object/array (execDelete returns nil).
+				if !first {
+					buf = append(buf, ',')
+				}
+				first = false
+				buf = append(buf, '"')
+				buf = append(buf, key...)
+				buf = append(buf, '"', ':')
+				preDel := buf // full slice header — survives buf=nil from error
+				nestedNode := &op{typ: opDelete, fields: []op{*d.child}}
+				var err error
+				buf, err = execDelete(nestedNode, input[valueStart:valueEnd], buf)
+				if err != nil {
+					// Nested target is not an object/array — keep original value.
+					buf = append(preDel, input[valueStart:valueEnd]...)
+				}
+				return true
 			}
-			if d.child == nil {
-				return true // simple delete wins over any nested delete for this key
-			}
-			nestedFields = append(nestedFields, *d.child)
-		}
-		if len(nestedFields) > 0 {
-			// Nested delete — recurse into the value.
-			// Save the slice header before the call so we can recover if
-			// the nested target is not an object/array (execDelete returns nil).
-			if !first {
-				buf = append(buf, ',')
-			}
-			first = false
-			buf = append(buf, '"')
-			buf = append(buf, key...)
-			buf = append(buf, '"', ':')
-			preDel := buf // full slice header — survives buf=nil from error
-			nestedNode := &op{typ: opDelete, fields: nestedFields}
-			var err error
-			buf, err = execDelete(nestedNode, input[valueStart:valueEnd], buf)
-			if err != nil {
-				// Nested target is not an object/array — keep original value.
-				buf = append(preDel, input[valueStart:valueEnd]...)
-			}
-			return true
 		}
 
 		// Keep this pair — copy verbatim
@@ -2316,7 +1425,16 @@ func resolveDelSliceBounds(node *op, input []byte, length int) (start, end int, 
 		if !ok {
 			return 0, 0, fmt.Errorf("slice index must be a number")
 		}
-		start = resolveSliceBound(f, length, false)
+		start = int(f)
+		if start < 0 {
+			start += length
+		}
+		if start < 0 {
+			start = 0
+		}
+		if start > length {
+			start = length
+		}
 	}
 	if node.right != nil {
 		sv, e := execSingle(node.right, input, nil)
@@ -2327,7 +1445,16 @@ func resolveDelSliceBounds(node *op, input []byte, length int) (start, end int, 
 		if !ok {
 			return 0, 0, fmt.Errorf("slice index must be a number")
 		}
-		end = resolveSliceBound(f, length, true)
+		end = int(f)
+		if end < 0 {
+			end += length
+		}
+		if end < 0 {
+			end = 0
+		}
+		if end > length {
+			end = length
+		}
 	}
 	if start > end {
 		start = end
@@ -2342,67 +1469,20 @@ func execPipeMulti(node *op, input []byte, buf []byte, fn func([]byte) error) er
 	})
 }
 
-func execApplyMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	scope := chainedIndexScope(input)
-	return execMulti(node.left, input, nil, func(intermediate []byte) error {
-		return withIndexScope(scope, func() error {
-			return execMulti(node.right, intermediate, buf, fn)
-		})
-	})
-}
-
-func objectKeyStringValue(value []byte) (string, error) {
-	value = trimWhitespace(value)
-	if len(value) == 0 {
-		return "", fmt.Errorf("expected object key expression")
-	}
-	vs := scanner{data: value}
-	vs.skipWhitespace()
-	if vs.pos >= len(vs.data) {
-		return "", fmt.Errorf("expected object key expression")
-	}
-	if vs.data[vs.pos] != '"' {
-		return "", fmt.Errorf("Cannot use %s (%s) as object key", jsonTypeName(value), string(value))
-	}
-	raw := vs.readString()
-	var out []byte
-	out = appendCanonicalRawJSONStringContent(out[:0], raw)
-	return string(out), nil
-}
-
-func execConstructKey(p pair, input []byte) (string, error) {
-	if p.keyExpr == nil {
-		return p.key, nil
-	}
-	keyValue, err := execSingle(p.keyExpr, input, nil)
-	if err != nil {
-		return "", err
-	}
-	return objectKeyStringValue(keyValue)
-}
-
 // execConstruct builds a JSON object from key-expression pairs (single-output per pair).
 // Used by the execSingle fast path via execFirstResult for common cases.
 func execConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 	buf = append(buf, '{')
 	for i, p := range node.pairs {
-		key, err := execConstructKey(p, input)
-		if err != nil {
-			return nil, err
-		}
 		if i > 0 {
 			buf = append(buf, ',')
 		}
 		buf = append(buf, '"')
-		buf = append(buf, key...)
+		buf = append(buf, p.key...)
 		buf = append(buf, '"', ':')
 		val, err := exec(p.expr, input, buf[len(buf):len(buf):cap(buf)])
 		if err != nil {
-			var te *transparentError
-			if errors.As(err, &te) {
-				return nil, err
-			}
-			return nil, fmt.Errorf("in object construction for key %q: %w", key, err)
+			return nil, fmt.Errorf("in object construction for key %q: %w", p.key, err)
 		}
 		buf = append(buf, normalizeNaNInf(val)...)
 	}
@@ -2449,30 +1529,19 @@ func collectPairCombos(pairs []pair, idx int, input []byte, prefix []byte, out *
 
 	p := pairs[idx]
 	isFirst := prefix[len(prefix)-1] == '{'
-	emitWithKey := func(key string) error {
-		return execMulti(p.expr, input, nil, func(val []byte) error {
-			// Build this pair's key:value, branching independently for each val.
-			var obj []byte
-			obj = append(obj, prefix...)
-			if !isFirst {
-				obj = append(obj, ',')
-			}
-			obj = append(obj, '"')
-			obj = append(obj, key...)
-			obj = append(obj, '"', ':')
-			obj = append(obj, normalizeNaNInf(val)...)
-			return collectPairCombos(pairs, idx+1, input, obj, out)
-		})
-	}
-	if p.keyExpr == nil {
-		return emitWithKey(p.key)
-	}
-	return execMulti(p.keyExpr, input, nil, func(keyValue []byte) error {
-		key, err := objectKeyStringValue(keyValue)
-		if err != nil {
-			return err
+
+	return execMulti(p.expr, input, nil, func(val []byte) error {
+		// Build this pair's key:value, branching independently for each val.
+		var obj []byte
+		obj = append(obj, prefix...)
+		if !isFirst {
+			obj = append(obj, ',')
 		}
-		return emitWithKey(key)
+		obj = append(obj, '"')
+		obj = append(obj, p.key...)
+		obj = append(obj, '"', ':')
+		obj = append(obj, normalizeNaNInf(val)...)
+		return collectPairCombos(pairs, idx+1, input, obj, out)
 	})
 }
 
@@ -2506,10 +1575,6 @@ func execArrayConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 		if err != nil {
 			// Propagate jsonErrors unwrapped so try-catch receives the original value.
 			if _, ok := err.(*jsonError); ok {
-				return nil, err
-			}
-			var te *transparentError
-			if errors.As(err, &te) {
 				return nil, err
 			}
 			return nil, fmt.Errorf("in array construction: %w", err)
@@ -2635,44 +1700,6 @@ func execCompare(node *op, input []byte, buf []byte, fn func([]byte) error) erro
 // execAnd evaluates left and right; returns true only if both are truthy.
 // Short-circuits: right is not evaluated if left is falsy.
 func execAnd(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	if hasMultiOutput(node.left) || hasMultiOutput(node.right) {
-		if !hasMultiOutput(node.right) {
-			return execMulti(node.left, input, nil, func(leftVal []byte) error {
-				if isFalsy(leftVal) {
-					return fn(append(buf[:0], "false"...))
-				}
-				rightVal, err := execSingle(node.right, input, nil)
-				if err != nil {
-					return err
-				}
-				if isFalsy(rightVal) {
-					return fn(append(buf[:0], "false"...))
-				}
-				return fn(append(buf[:0], "true"...))
-			})
-		}
-		var rightVals [][]byte
-		if err := execMulti(node.right, input, nil, func(rightVal []byte) error {
-			rightVals = append(rightVals, rightVal)
-			return nil
-		}); err != nil {
-			return err
-		}
-		return execMulti(node.left, input, nil, func(leftVal []byte) error {
-			for _, rightVal := range rightVals {
-				if isFalsy(leftVal) || isFalsy(rightVal) {
-					if err := fn(append(buf[:0], "false"...)); err != nil {
-						return err
-					}
-					continue
-				}
-				if err := fn(append(buf[:0], "true"...)); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-	}
 	leftVal, err := execSingle(node.left, input, buf)
 	if err != nil {
 		return err
@@ -2693,44 +1720,6 @@ func execAnd(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 // execOr evaluates left or right; returns true if either is truthy.
 // Short-circuits: right is not evaluated if left is truthy.
 func execOr(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	if hasMultiOutput(node.left) || hasMultiOutput(node.right) {
-		if !hasMultiOutput(node.right) {
-			return execMulti(node.left, input, nil, func(leftVal []byte) error {
-				if !isFalsy(leftVal) {
-					return fn(append(buf[:0], "true"...))
-				}
-				rightVal, err := execSingle(node.right, input, nil)
-				if err != nil {
-					return err
-				}
-				if !isFalsy(rightVal) {
-					return fn(append(buf[:0], "true"...))
-				}
-				return fn(append(buf[:0], "false"...))
-			})
-		}
-		var rightVals [][]byte
-		if err := execMulti(node.right, input, nil, func(rightVal []byte) error {
-			rightVals = append(rightVals, rightVal)
-			return nil
-		}); err != nil {
-			return err
-		}
-		return execMulti(node.left, input, nil, func(leftVal []byte) error {
-			for _, rightVal := range rightVals {
-				if !isFalsy(leftVal) || !isFalsy(rightVal) {
-					if err := fn(append(buf[:0], "true"...)); err != nil {
-						return err
-					}
-					continue
-				}
-				if err := fn(append(buf[:0], "false"...)); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-	}
 	leftVal, err := execSingle(node.left, input, buf)
 	if err != nil {
 		return err
@@ -2750,25 +1739,17 @@ func execOr(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 
 // execSelect evaluates a condition and emits the input if truthy, nothing if falsy.
 func execSelect(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	if isSingleOutputOp(node.child) {
-		condVal, err := execSingle(node.child, input, nil)
-		if err != nil {
-			return err
-		}
-		if isFalsy(condVal) {
-			return nil
-		}
-		return fn(input)
+	condVal, err := execSingle(node.child, input, buf)
+	if err != nil {
+		return err
 	}
-	return execMulti(node.child, input, nil, func(condVal []byte) error {
-		if isFalsy(condVal) {
-			return nil
-		}
-		return fn(input)
-	})
+	if isFalsy(condVal) {
+		return nil // zero outputs
+	}
+	return fn(input)
 }
 
-// execLength returns the length of a JSON value:
+/// execLength returns the length of a JSON value:
 // string → number of bytes between quotes, array → element count,
 // object → key count, null → 0.
 func execLength(input []byte, buf []byte, fn func([]byte) error) error {
@@ -2956,6 +1937,7 @@ func execToEntries(input []byte, buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
+
 // execFromEntries converts a [{key,value}] array back to a JSON object.
 // Each entry may use "key" or "name" as the key field.
 // Non-array input produces an empty object.
@@ -2985,6 +1967,7 @@ func execFromEntries(input []byte, buf []byte) ([]byte, error) {
 	buf = append(buf, '}')
 	return buf, nil
 }
+
 
 // execLast runs the child expression to completion and emits only the last result.
 func execLast(node *op, input []byte, buf []byte, fn func([]byte) error) error {
@@ -3052,27 +2035,6 @@ func execLimit(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return nil
 	}
 	return err
-}
-
-func execSkip(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	return execMulti(node.left, input, nil, func(countVal []byte) error {
-		nf, ok := parseJSONFloat(countVal)
-		if !ok {
-			return fmt.Errorf("skip: count must be a number")
-		}
-		n := int(nf)
-		if n < 0 {
-			return fmt.Errorf("skip doesn't support negative count")
-		}
-		skipped := 0
-		return execMulti(node.child, input, buf, func(result []byte) error {
-			if skipped < n {
-				skipped++
-				return nil
-			}
-			return fn(result)
-		})
-	})
 }
 
 // execAdd reduces an array by summing numbers, concatenating strings/arrays,
@@ -3193,6 +2155,7 @@ func execAdd(input []byte, buf []byte, fn func([]byte) error) error {
 	}
 	return fn(buf)
 }
+
 
 // execFlattenInto flattens a nested array into a single-level array.
 // node.index = -1 means unlimited depth; >= 0 means flatten that many levels.
@@ -3356,319 +2319,6 @@ func execJoin(input []byte, buf []byte, sep string) ([]byte, error) {
 	return buf, nil
 }
 
-func execStrftimeBuiltin(node *op, input []byte, buf []byte, local bool, fn func([]byte) error) error {
-	name := "strftime/1"
-	loc := time.UTC
-	if local {
-		name = "strflocaltime/1"
-		loc = time.Local
-	}
-	tm, err := decodeTimeValue(input, loc, true)
-	if err != nil {
-		return &transparentError{err: fmt.Errorf("%s requires parsed datetime inputs", name)}
-	}
-	formats, err := collectExecOutputs(node.child, input)
-	if err != nil {
-		return err
-	}
-	for _, formatVal := range formats {
-		format, err := decodeJSONStringValue(formatVal)
-		if err != nil {
-			return &transparentError{err: fmt.Errorf("%s requires a string format", name)}
-		}
-		layout, err := jqTimeLayout(format)
-		if err != nil {
-			return err
-		}
-		out := append(buf[:0], '"')
-		out = appendJSONStringContent(out, []byte(tm.In(loc).Format(layout)))
-		out = append(out, '"')
-		if err := fn(out); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func execStrptimeBuiltin(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	value, err := decodeJSONStringValue(input)
-	if err != nil {
-		return &transparentError{err: fmt.Errorf("strptime/1 requires string inputs")}
-	}
-	formats, err := collectExecOutputs(node.child, input)
-	if err != nil {
-		return err
-	}
-	for _, formatVal := range formats {
-		format, err := decodeJSONStringValue(formatVal)
-		if err != nil {
-			return &transparentError{err: fmt.Errorf("strptime/1 requires a string format")}
-		}
-		layout, err := jqTimeLayout(format)
-		if err != nil {
-			return err
-		}
-		tm, err := time.Parse(layout, value)
-		if err != nil {
-			return err
-		}
-		out, err := appendParsedTimeArray(buf[:0], tm.UTC())
-		if err != nil {
-			return err
-		}
-		if err := fn(out); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func execMktime(input []byte, buf []byte) ([]byte, error) {
-	tm, err := decodeParsedTimeArray(input, time.UTC)
-	if err != nil {
-		return nil, &transparentError{err: fmt.Errorf("mktime requires parsed datetime inputs")}
-	}
-	return appendJSONFloat(buf, float64(tm.Unix())), nil
-}
-
-func execGmtime(input []byte, buf []byte) ([]byte, error) {
-	tm, err := decodeTimeNumber(input, time.UTC)
-	if err != nil {
-		return nil, err
-	}
-	return appendParsedTimeArray(buf, tm.UTC())
-}
-
-func execFromdate(input []byte, buf []byte) ([]byte, error) {
-	value, err := decodeJSONStringValue(input)
-	if err != nil {
-		return nil, &transparentError{err: fmt.Errorf("fromdate requires string inputs")}
-	}
-	tm, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		return nil, err
-	}
-	return appendJSONFloat(buf, float64(tm.Unix())), nil
-}
-
-func execTodate(input []byte, buf []byte) ([]byte, error) {
-	tm, err := decodeTimeNumber(input, time.UTC)
-	if err != nil {
-		return nil, &transparentError{err: fmt.Errorf("todate requires numeric inputs")}
-	}
-	buf = append(buf, '"')
-	buf = tm.UTC().AppendFormat(buf, time.RFC3339)
-	buf = append(buf, '"')
-	return buf, nil
-}
-
-func execNow(buf []byte) []byte {
-	return appendJSONFloat(buf, float64(time.Now().UnixNano())/1e9)
-}
-
-func decodeTimeValue(input []byte, loc *time.Location, allowNumber bool) (time.Time, error) {
-	if allowNumber {
-		if tm, err := decodeTimeNumber(input, loc); err == nil {
-			return tm, nil
-		}
-	}
-	return decodeParsedTimeArray(input, loc)
-}
-
-func decodeTimeNumber(input []byte, loc *time.Location) (time.Time, error) {
-	value := trimWhitespace(input)
-	f, ok := parseJSONFloat(value)
-	if !ok {
-		return time.Time{}, fmt.Errorf("expected number")
-	}
-	return time.Unix(int64(f), 0).In(loc), nil
-}
-
-func decodeParsedTimeArray(input []byte, loc *time.Location) (time.Time, error) {
-	value := trimWhitespace(input)
-	s := scanner{data: value}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
-		return time.Time{}, fmt.Errorf("expected parsed datetime array")
-	}
-	parts := make([]int, 0, 8)
-	var parseErr error
-	s.arrayIter(func(_ int, start, end int) bool {
-		f, ok := parseJSONFloat(trimWhitespace(value[start:end]))
-		if !ok {
-			parseErr = fmt.Errorf("expected numeric datetime parts")
-			return false
-		}
-		parts = append(parts, int(f))
-		return true
-	})
-	if parseErr != nil {
-		return time.Time{}, parseErr
-	}
-	if len(parts) < 3 {
-		return time.Time{}, fmt.Errorf("expected parsed datetime array")
-	}
-	year, month0, day := parts[0], parts[1], parts[2]
-	hour, minute, second := 0, 0, 0
-	if len(parts) > 3 {
-		hour = parts[3]
-	}
-	if len(parts) > 4 {
-		minute = parts[4]
-	}
-	if len(parts) > 5 {
-		second = parts[5]
-	}
-	return time.Date(year, time.Month(month0+1), day, hour, minute, second, 0, loc), nil
-}
-
-func appendParsedTimeArray(buf []byte, tm time.Time) ([]byte, error) {
-	buf = append(buf, '[')
-	parts := []int{
-		tm.Year(),
-		int(tm.Month()) - 1,
-		tm.Day(),
-		tm.Hour(),
-		tm.Minute(),
-		tm.Second(),
-		int(tm.Weekday()),
-		tm.YearDay() - 1,
-	}
-	for i, part := range parts {
-		if i > 0 {
-			buf = append(buf, ',')
-		}
-		buf = strconv.AppendInt(buf, int64(part), 10)
-	}
-	buf = append(buf, ']')
-	return buf, nil
-}
-
-func decodeJSONStringValue(input []byte) (string, error) {
-	value := trimWhitespace(input)
-	s := scanner{data: value}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
-		return "", fmt.Errorf("expected string")
-	}
-	return string(decodeJSONStringContent(nil, s.readString())), nil
-}
-
-func jqTimeLayout(format string) (string, error) {
-	var b strings.Builder
-	for i := 0; i < len(format); i++ {
-		if format[i] != '%' {
-			b.WriteByte(format[i])
-			continue
-		}
-		i++
-		if i >= len(format) {
-			return "", fmt.Errorf("invalid strftime format")
-		}
-		switch format[i] {
-		case '%':
-			b.WriteByte('%')
-		case 'Y':
-			b.WriteString("2006")
-		case 'm':
-			b.WriteString("01")
-		case 'd':
-			b.WriteString("02")
-		case 'e':
-			b.WriteString("_2")
-		case 'H':
-			b.WriteString("15")
-		case 'M':
-			b.WriteString("04")
-		case 'S':
-			b.WriteString("05")
-		case 'A':
-			b.WriteString("Monday")
-		case 'B':
-			b.WriteString("January")
-		default:
-			return "", fmt.Errorf("unsupported strftime format %%%c", format[i])
-		}
-	}
-	return b.String(), nil
-}
-
-func execCombinations(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	if node.child != nil {
-		nVal, err := execSingle(node.child, input, nil)
-		if err != nil {
-			return err
-		}
-		f, ok := parseJSONFloat(trimWhitespace(nVal))
-		if !ok {
-			return fmt.Errorf("combinations/1 requires a numeric count")
-		}
-		n := int(f)
-		if n < 0 {
-			return nil
-		}
-		elems, err := decodeArrayElements(input)
-		if err != nil {
-			return err
-		}
-		current := make([][]byte, n)
-		var emit func(int) error
-		emit = func(depth int) error {
-			if depth == n {
-				return fn(appendJSONArrayValues(buf[:0], current))
-			}
-			for _, elem := range elems {
-				current[depth] = elem
-				if err := emit(depth + 1); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		return emit(0)
-	}
-
-	outer, err := decodeArrayElements(input)
-	if err != nil {
-		return err
-	}
-	sources := make([][][]byte, len(outer))
-	for i, elem := range outer {
-		inner, err := decodeArrayElements(elem)
-		if err != nil {
-			return err
-		}
-		sources[i] = inner
-	}
-	current := make([][]byte, len(sources))
-	var emit func(int) error
-	emit = func(depth int) error {
-		if depth == len(sources) {
-			return fn(appendJSONArrayValues(buf[:0], current))
-		}
-		for _, elem := range sources[depth] {
-			current[depth] = elem
-			if err := emit(depth + 1); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	return emit(0)
-}
-
-func appendJSONArrayValues(buf []byte, elems [][]byte) []byte {
-	buf = append(buf, '[')
-	for i, elem := range elems {
-		if i > 0 {
-			buf = append(buf, ',')
-		}
-		buf = append(buf, normalizeOutputValue(elem, nil)...)
-	}
-	buf = append(buf, ']')
-	return buf
-}
-
 // execSlice implements .[n:m], .[:m], .[n:] on arrays and strings.
 // node.left = start expr (nil = 0), node.right = end expr (nil = length).
 // Negative indices count from the end. Zero-alloc: writes directly into buf.
@@ -3696,29 +2346,18 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 			} else if s.data[p] == '\\' {
 				p += 2
 			} else {
-				_, size := utf8.DecodeRune(s.data[p:])
-				if size < 1 {
-					size = 1
-				}
-				p += size
+				p++
 			}
 			length++
 		}
 	default:
-		if node.optional && s.data[s.pos] != 'n' {
-			return nil, nil
-		}
 		return append(buf, "null"...), nil
 	}
 
 	// Resolve start bound
 	start := 0
-	scopeInput := currentIndexScope()
-	if scopeInput == nil {
-		scopeInput = input
-	}
 	if node.left != nil {
-		sv, err := execSingle(node.left, scopeInput, nil)
+		sv, err := execSingle(node.left, input, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -3726,13 +2365,22 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("slice index must be a number")
 		}
-		start = resolveSliceBound(f, length, false)
+		start = int(f)
+		if start < 0 {
+			start += length
+		}
+		if start < 0 {
+			start = 0
+		}
+		if start > length {
+			start = length
+		}
 	}
 
 	// Resolve end bound
 	end := length
 	if node.right != nil {
-		sv, err := execSingle(node.right, scopeInput, nil)
+		sv, err := execSingle(node.right, input, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -3740,7 +2388,16 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("slice index must be a number")
 		}
-		end = resolveSliceBound(f, length, true)
+		end = int(f)
+		if end < 0 {
+			end += length
+		}
+		if end < 0 {
+			end = 0
+		}
+		if end > length {
+			end = length
+		}
 	}
 	if start > end {
 		start = end
@@ -3774,11 +2431,7 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 			} else if s.data[s.pos] == '\\' {
 				s.pos += 2
 			} else {
-				_, size := utf8.DecodeRune(s.data[s.pos:])
-				if size < 1 {
-					size = 1
-				}
-				s.pos += size
+				s.pos++
 			}
 			if i >= start && i < end {
 				buf = append(buf, input[charStart:s.pos]...)
@@ -3788,69 +2441,6 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 		buf = append(buf, '"')
 	}
 	return buf, nil
-}
-
-func resolveSliceBound(f float64, length int, isEnd bool) int {
-	if math.IsNaN(f) {
-		if isEnd {
-			return length
-		}
-		return 0
-	}
-	if isEnd {
-		f = math.Ceil(f)
-	} else {
-		f = math.Floor(f)
-	}
-	idx := int(f)
-	if idx < 0 {
-		idx += length
-	}
-	if idx < 0 {
-		return 0
-	}
-	if idx > length {
-		return length
-	}
-	return idx
-}
-
-func execNeg(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	return execMulti(node.child, input, nil, func(value []byte) error {
-		result, err := negateJSONValue(value, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	})
-}
-
-func execNegSingle(node *op, input []byte, buf []byte) ([]byte, error) {
-	value, err := execSingle(node.child, input, nil)
-	if err != nil {
-		return nil, err
-	}
-	return negateJSONValue(value, buf)
-}
-
-func negateJSONValue(value []byte, buf []byte) ([]byte, error) {
-	if f, ok := parseJSONFloat(value); ok {
-		return appendNumber(buf, -f), nil
-	}
-	raw := previewJSONValue(value)
-	return nil, fmt.Errorf("%s (%s) cannot be negated", jsonTypeName(value), raw)
-}
-
-func previewJSONValue(value []byte) string {
-	raw := string(trimWhitespace(value))
-	if len(raw) > 11 {
-		raw = raw[:11]
-		for len(raw) > 0 && !utf8.ValidString(raw) {
-			raw = raw[:len(raw)-1]
-		}
-		raw += "..."
-	}
-	return raw
 }
 
 // execPlus implements expr + expr: null identity, string concat, array concat, numeric add.
@@ -3904,8 +2494,8 @@ func execPlusValues(leftVal, rightVal, buf []byte) ([]byte, error) {
 			lc := ls.readString()
 			rc := rs.readString()
 			buf = append(buf, '"')
-			buf = appendCanonicalRawJSONStringContent(buf, lc)
-			buf = appendCanonicalRawJSONStringContent(buf, rc)
+			buf = append(buf, lc...)
+			buf = append(buf, rc...)
 			buf = append(buf, '"')
 			return buf, nil
 		}
@@ -3997,7 +2587,7 @@ func execBase64Encode(input []byte, buf []byte) ([]byte, error) {
 	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
 		return nil, fmt.Errorf("@base64 input must be a string")
 	}
-	raw := s.readString()                        // raw bytes between quotes
+	raw := s.readString()                    // raw bytes between quotes
 	content := decodeJSONStringContent(nil, raw) // resolve escape sequences
 
 	buf = append(buf, '"')
@@ -4089,21 +2679,14 @@ func appendJSONByte(buf []byte, b byte) []byte {
 }
 
 // execBase64Decode decodes a base64 JSON string back to a JSON string.
-// Handles both standard (+/) and URL-safe (-_) base64, plus unpadded final groups.
+// Handles both standard (+/) and URL-safe (-_) base64. Strips whitespace.
 func execBase64Decode(input []byte, buf []byte) ([]byte, error) {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
 		return nil, fmt.Errorf("@base64d input must be a string")
 	}
-	content := decodeJSONStringContent(nil, s.readString())
-	inputText := string(trimWhitespace(input))
-	invalidBase64 := func() error {
-		return fmt.Errorf("string (%s) is not valid base64 data", inputText)
-	}
-	trailingByte := func() error {
-		return fmt.Errorf("string (%s) trailing base64 byte found", inputText)
-	}
+	content := s.readString() // raw base64 bytes between quotes
 
 	buf = append(buf, '"')
 
@@ -4113,21 +2696,21 @@ func execBase64Decode(input []byte, buf []byte) ([]byte, error) {
 	var pads [4]bool // true if the char was '=' padding
 	n := 0
 	for _, ch := range content {
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			continue
+		}
 		if ch == '=' {
 			pads[n] = true
 			vals[n] = 0
 		} else {
 			v, ok := base64DecodeChar(ch)
 			if !ok {
-				return nil, invalidBase64()
+				return nil, fmt.Errorf("@base64d: invalid character %q", ch)
 			}
 			vals[n] = v
 		}
 		n++
 		if n == 4 {
-			if pads[0] || pads[1] || (pads[2] && !pads[3]) {
-				return nil, invalidBase64()
-			}
 			buf = appendJSONByte(buf, (vals[0]<<2)|(vals[1]>>4))
 			if !pads[2] {
 				buf = appendJSONByte(buf, ((vals[1]&0x0F)<<4)|(vals[2]>>2))
@@ -4140,20 +2723,10 @@ func execBase64Decode(input []byte, buf []byte) ([]byte, error) {
 		}
 	}
 	// Remaining chars (unpadded input: 2 or 3 chars in last group)
-	if n == 1 {
-		if !pads[0] {
-			return nil, trailingByte()
-		}
-	} else if n == 3 {
-		if pads[0] || pads[1] || pads[2] {
-			return nil, invalidBase64()
-		}
+	if n == 3 {
 		buf = appendJSONByte(buf, (vals[0]<<2)|(vals[1]>>4))
 		buf = appendJSONByte(buf, ((vals[1]&0x0F)<<4)|(vals[2]>>2))
 	} else if n == 2 {
-		if pads[0] || pads[1] {
-			return nil, invalidBase64()
-		}
 		buf = appendJSONByte(buf, (vals[0]<<2)|(vals[1]>>4))
 	}
 
@@ -4177,6 +2750,7 @@ func execValues(input []byte, buf []byte, fn func([]byte) error) error {
 	}
 	return fn(input)
 }
+
 
 // execIn implements in(obj): tests whether the input value is a key in obj (objects)
 // or an index in range for arrays. E.g. "foo" | in({"foo":1}) = true.
@@ -4218,186 +2792,15 @@ func execIn(node *op, input []byte, buf []byte) []byte {
 	return boolResult(buf, false)
 }
 
-func execINBuiltin(node *op, input []byte, buf []byte) ([]byte, error) {
-	rightVals, err := collectExecOutputs(node.child, input)
-	if err != nil {
-		return nil, err
-	}
-	if node.left == nil {
-		for _, right := range rightVals {
-			if jsonEqual(input, right) {
-				return boolResult(buf, true), nil
-			}
-		}
-		return boolResult(buf, false), nil
-	}
-	leftVals, err := collectExecOutputs(node.left, input)
-	if err != nil {
-		return nil, err
-	}
-	for _, left := range leftVals {
-		for _, right := range rightVals {
-			if jsonEqual(left, right) {
-				return boolResult(buf, true), nil
-			}
-		}
-	}
-	return boolResult(buf, false), nil
-}
-
-func execBsearch(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	input = trimWhitespace(input)
-	s := scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
-		return &transparentError{err: fmt.Errorf("%s (%s) cannot be searched from", jsonTypeName(input), input)}
-	}
-	var elems [][]byte
-	s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-		elems = append(elems, input[elemStart:elemEnd])
-		return true
-	})
-	return execMulti(node.child, input, nil, func(search []byte) error {
-		idx := binarySearchJSON(elems, search)
-		return fn(appendInt(buf[:0], idx))
-	})
-}
-
-func binarySearchJSON(elems [][]byte, needle []byte) int {
-	lo, hi := 0, len(elems)
-	for lo < hi {
-		mid := lo + (hi-lo)/2
-		if compareJSONOrder(elems[mid], needle) < 0 {
-			lo = mid + 1
-		} else {
-			hi = mid
-		}
-	}
-	if lo < len(elems) && compareJSONOrder(elems[lo], needle) == 0 {
-		return lo
-	}
-	return -(lo + 1)
-}
-
-type indexedObjectEntry struct {
-	key   []byte
-	value []byte
-}
-
-func execINDEXBuiltin(node *op, input []byte, buf []byte) ([]byte, error) {
-	streamVals, err := collectExecOutputs(node.left, input)
-	if err != nil {
-		return nil, err
-	}
-	var entries []indexedObjectEntry
-	positions := make(map[string]int)
-	for _, val := range streamVals {
-		keyVals, err := collectExecOutputs(node.child, val)
-		if err != nil {
-			return nil, err
-		}
-		for _, keyVal := range keyVals {
-			keyBytes := jsonObjectKeyBytes(keyVal)
-			keyStr := string(keyBytes)
-			if idx, ok := positions[keyStr]; ok {
-				entries[idx].value = cloneExecBytes(val)
-				continue
-			}
-			positions[keyStr] = len(entries)
-			entries = append(entries, indexedObjectEntry{
-				key:   cloneExecBytes(keyBytes),
-				value: cloneExecBytes(val),
-			})
-		}
-	}
-	buf = append(buf, '{')
-	for i, entry := range entries {
-		if i > 0 {
-			buf = append(buf, ',')
-		}
-		buf = append(buf, '"')
-		buf = appendJSONStringContent(buf, entry.key)
-		buf = append(buf, '"', ':')
-		buf = append(buf, entry.value...)
-	}
-	buf = append(buf, '}')
-	return buf, nil
-}
-
-func execJOINBuiltin(node *op, input []byte, buf []byte) ([]byte, error) {
-	indexVal, err := execSingle(node.left, input, nil)
-	if err != nil {
-		return nil, err
-	}
-	indexVal = trimWhitespace(indexVal)
-	s := scanner{data: indexVal}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
-		return nil, fmt.Errorf("JOIN index must be an object")
-	}
-	out := append(buf[:0], '[')
-	first := true
-	appendJoin := func(elem []byte) error {
-		keyVals, err := collectExecOutputs(node.child, elem)
-		if err != nil {
-			return err
-		}
-		for _, keyVal := range keyVals {
-			key := jsonObjectKeyBytes(keyVal)
-			obj := scanner{data: indexVal}
-			obj.skipWhitespace()
-			valueStart, valueEnd := obj.findField(key)
-			match := bNull
-			if valueStart != -1 {
-				match = indexVal[valueStart:valueEnd]
-			}
-			if !first {
-				out = append(out, ',')
-			}
-			first = false
-			out = append(out, '[')
-			out = append(out, trimWhitespace(elem)...)
-			out = append(out, ',')
-			out = append(out, match...)
-			out = append(out, ']')
-		}
-		return nil
-	}
-	in := scanner{data: trimWhitespace(input)}
-	in.skipWhitespace()
-	if in.pos < len(in.data) && in.data[in.pos] == '[' {
-		if err := execMulti(&op{typ: opIterator}, input, nil, appendJoin); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := appendJoin(input); err != nil {
-			return nil, err
-		}
-	}
-	out = append(out, ']')
-	return out, nil
-}
-
-func jsonObjectKeyBytes(val []byte) []byte {
-	val = trimWhitespace(val)
-	s := scanner{data: val}
-	s.skipWhitespace()
-	if s.pos < len(s.data) && s.data[s.pos] == '"' {
-		return decodeJSONStringContent(nil, s.readString())
-	}
-	return val
-}
-
 // execDebug prints the input to stderr and is used by opDebug.
 func execDebug(input []byte) {
 	fmt.Fprintf(os.Stderr, "[DEBUG]: %s\n", input)
 }
 
 // execFindIndex implements index(s), rindex(s), and indices(s).
-//
-//	last=true, all=false  → rindex: last occurrence
-//	last=false, all=false → index:  first occurrence, null if not found
-//	last=false, all=true  → indices: all occurrences as array
+//   last=true, all=false  → rindex: last occurrence
+//   last=false, all=false → index:  first occurrence, null if not found
+//   last=false, all=true  → indices: all occurrences as array
 func execFindIndex(node *op, input []byte, buf []byte, last, all bool) []byte {
 	// Evaluate the search value
 	searchVal, err := execSingle(node.child, input, nil)
@@ -4425,8 +2828,8 @@ func execFindIndex(node *op, input []byte, buf []byte, last, all bool) []byte {
 		if sv.pos >= len(sv.data) || sv.data[sv.pos] != '"' {
 			break
 		}
-		content := ss.readString() // raw bytes of input string content
-		needle := sv.readString()  // raw bytes of search string content
+		content := ss.readString()      // raw bytes of input string content
+		needle := sv.readString()       // raw bytes of search string content
 
 		// Empty needle: jq returns null for index/rindex, [] for indices
 		if len(needle) == 0 {
@@ -4620,2229 +3023,6 @@ func execKeysUnsorted(input []byte, buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
-func execKeys(input []byte, buf []byte) ([]byte, error) {
-	s := &scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return append(buf, "[]"...), nil
-	}
-	if s.data[s.pos] == '[' {
-		return execKeysUnsorted(input, buf)
-	}
-	if s.data[s.pos] != '{' {
-		return nil, fmt.Errorf("keys input must be an object or array")
-	}
-
-	var keys [][]byte
-	s.objectIter(func(key []byte, _, _ int) bool {
-		keys = append(keys, key)
-		return true
-	})
-	sort.Slice(keys, func(i, j int) bool {
-		return bytesCompare(keys[i], keys[j]) < 0
-	})
-
-	buf = append(buf, '[')
-	for i, key := range keys {
-		if i > 0 {
-			buf = append(buf, ',')
-		}
-		buf = append(buf, '"')
-		buf = append(buf, key...)
-		buf = append(buf, '"')
-	}
-	buf = append(buf, ']')
-	return buf, nil
-}
-
-var supportedBuiltinNames = []string{
-	"IN/1", "INDEX/2", "JOIN/2", "abs/0", "add/0", "all/0", "all/1", "any/0", "any/1",
-	"ascii_downcase/0", "ascii_upcase/0", "bsearch/1", "builtins/0", "capture/1", "ceil/0",
-	"combinations/0", "combinations/1", "contains/1", "date/0", "debug/0", "delpaths/1", "endswith/1",
-	"error/0", "explode/0", "first/0", "flatten/0", "flatten/1", "floor/0", "fma/3", "foreach/3",
-	"from_entries/0", "fromdate/0", "fromjson/0", "getpath/1", "gmtime/0", "group_by/1",
-	"gsub/2", "has/1", "have_decnum/0", "hypot/2", "implode/0", "in/1", "index/1", "indices/1",
-	"isempty/1", "join/1", "keys/0", "keys_unsorted/0", "last/0", "length/0", "limit/2",
-	"leaf_paths/0", "ltrim/0", "ltrimstr/1", "map/1", "map_values/1", "match/1", "max/0", "max_by/1",
-	"mktime/0", "min/0", "min_by/1", "nearbyint/0", "nth/2", "path/1", "paths/0", "paths/1",
-	"now/0", "pick/1", "pow/2", "range/1", "range/2", "range/3", "reduce/3", "repeat/1", "reverse/0",
-	"recurse/0", "recurse/1", "recurse/2", "rindex/1", "round/0", "rtrim/0", "rtrimstr/1", "scan/1", "select/1", "setpath/2",
-	"skip/2", "sort/0", "sort_by/1", "split/1", "sqrt/0", "startswith/1", "strflocaltime/1",
-	"strftime/1", "strptime/1", "sub/2", "test/1", "to_entries/0", "toboolean/0", "todate/0",
-	"tojson/0", "tonumber/0", "tostream/0", "tostring/0", "transpose/0", "trim/0", "trimstr/1",
-	"truncate_stream/1", "type/0", "unique/0", "unique_by/1", "until/2", "utf8bytelength/0",
-	"values/0", "walk/1", "while/2", "fromstream/1",
-	"with_entries/1",
-}
-
-func execBuiltins(buf []byte) []byte {
-	buf = append(buf, '[')
-	for i, name := range supportedBuiltinNames {
-		if i > 0 {
-			buf = append(buf, ',')
-		}
-		buf = append(buf, '"')
-		buf = appendJSONStringContent(buf, []byte(name))
-		buf = append(buf, '"')
-	}
-	buf = append(buf, ']')
-	return buf
-}
-
-func execToStream(input []byte, buf []byte, fn func([]byte) error) error {
-	return execToStreamValue(trimWhitespace(input), nil, buf, fn)
-}
-
-func execToStreamValue(value []byte, frame *pathFrame, buf []byte, fn func([]byte) error) error {
-	s := scanner{data: value}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return fn(appendStreamEvent(buf[:0], frame, value, true))
-	}
-	switch s.data[s.pos] {
-	case '[':
-		if s.arrayLen() == 0 {
-			return fn(appendStreamEvent(buf[:0], frame, []byte("[]"), true))
-		}
-		var lastChild *pathFrame
-		var err error
-		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
-			childFrame := &pathFrame{parent: frame, kind: pathStepNumber, index: index}
-			lastChild = childFrame
-			err = execToStreamValue(value[elemStart:elemEnd], childFrame, buf, fn)
-			return err == nil
-		})
-		if err != nil {
-			return err
-		}
-		return fn(appendStreamEvent(buf[:0], lastChild, nil, false))
-	case '{':
-		empty := true
-		var lastChild *pathFrame
-		var err error
-		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
-			empty = false
-			childFrame := &pathFrame{parent: frame, kind: pathStepString, rawKey: key}
-			lastChild = childFrame
-			err = execToStreamValue(value[valueStart:valueEnd], childFrame, buf, fn)
-			return err == nil
-		})
-		if err != nil {
-			return err
-		}
-		if empty {
-			return fn(appendStreamEvent(buf[:0], frame, []byte("{}"), true))
-		}
-		return fn(appendStreamEvent(buf[:0], lastChild, nil, false))
-	default:
-		return fn(appendStreamEvent(buf[:0], frame, value, true))
-	}
-}
-
-func execFindIndexMulti(node *op, input []byte, buf []byte, fn func([]byte) error, last, all bool) error {
-	searchVals, err := collectExecOutputs(node.child, input)
-	if err != nil {
-		if all {
-			return fn(append(buf[:0], "[]"...))
-		}
-		return fn(append(buf[:0], "null"...))
-	}
-	if len(searchVals) == 0 {
-		if all {
-			return fn(append(buf[:0], "[]"...))
-		}
-		return fn(append(buf[:0], "null"...))
-	}
-	for _, searchVal := range searchVals {
-		searchNode := &op{child: &op{typ: opLiteral, literal: searchVal}}
-		if err := fn(execFindIndex(searchNode, input, buf[:0], last, all)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func appendStreamEvent(dst []byte, frame *pathFrame, value []byte, withValue bool) []byte {
-	dst = append(dst, '[')
-	dst = appendPathFrameJSON(dst, frame)
-	if withValue {
-		dst = append(dst, ',')
-		dst = append(dst, normalizeOutputValue(value, nil)...)
-	}
-	dst = append(dst, ']')
-	return dst
-}
-
-func execTruncateStream(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	depthVal, err := execSingle(&op{typ: opIdentity}, input, nil)
-	if err != nil {
-		return err
-	}
-	f, ok := parseJSONFloat(trimWhitespace(depthVal))
-	if !ok {
-		return fmt.Errorf("truncate_stream depth must be numeric")
-	}
-	depth := int(f)
-	return execMulti(node.child, input, nil, func(event []byte) error {
-		truncated, keep, err := truncateStreamEvent(event, depth, buf[:0])
-		if err != nil {
-			return err
-		}
-		if !keep {
-			return nil
-		}
-		return fn(truncated)
-	})
-}
-
-func truncateStreamEvent(event []byte, depth int, buf []byte) ([]byte, bool, error) {
-	pathVal, valueVal, hasValue, err := decodeStreamEvent(event)
-	if err != nil {
-		return nil, false, err
-	}
-	steps, err := decodePath(pathVal)
-	if err != nil {
-		return nil, false, err
-	}
-	if len(steps) <= depth {
-		return nil, false, nil
-	}
-	steps = steps[depth:]
-	out := append(buf, '[')
-	out = append(out, '[')
-	for i, step := range steps {
-		if i > 0 {
-			out = append(out, ',')
-		}
-		switch step.kind {
-		case pathStepString:
-			out = append(out, '"')
-			out = appendCanonicalRawJSONStringContent(out, step.key)
-			out = append(out, '"')
-		case pathStepNumber:
-			out = appendInt(out, step.index)
-		default:
-			return nil, false, fmt.Errorf("Paths must be specified as an array")
-		}
-	}
-	out = append(out, ']')
-	if hasValue {
-		out = append(out, ',')
-		out = append(out, normalizeOutputValue(valueVal, nil)...)
-	}
-	out = append(out, ']')
-	return out, true, nil
-}
-
-func execFromStream(node *op, input []byte, buf []byte) ([]byte, error) {
-	events, err := collectExecOutputs(node.child, input)
-	if err != nil {
-		return nil, err
-	}
-	current := []byte("null")
-	seen := false
-	for _, event := range events {
-		pathVal, valueVal, hasValue, err := decodeStreamEvent(event)
-		if err != nil {
-			return nil, err
-		}
-		if !hasValue {
-			continue
-		}
-		steps, err := decodePath(pathVal)
-		if err != nil {
-			return nil, err
-		}
-		if len(steps) == 0 {
-			current = cloneExecBytes(valueVal)
-			seen = true
-			continue
-		}
-		current, err = setPathDecoded(current, steps, 0, valueVal, nil)
-		if err != nil {
-			return nil, err
-		}
-		seen = true
-	}
-	if !seen {
-		return append(buf, "null"...), nil
-	}
-	return normalizeOutputValue(current, buf), nil
-}
-
-func decodeStreamEvent(event []byte) (pathVal []byte, valueVal []byte, hasValue bool, err error) {
-	event = trimWhitespace(event)
-	s := scanner{data: event}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
-		return nil, nil, false, fmt.Errorf("Stream event must be an array")
-	}
-	parts := make([][]byte, 0, 2)
-	s.arrayIter(func(_ int, start, end int) bool {
-		parts = append(parts, cloneExecBytes(event[start:end]))
-		return len(parts) < 3
-	})
-	if len(parts) == 0 {
-		return nil, nil, false, fmt.Errorf("Stream event must be an array")
-	}
-	if len(parts) > 2 {
-		return nil, nil, false, fmt.Errorf("Stream event must be an array")
-	}
-	pathVal = parts[0]
-	if len(parts) == 2 {
-		valueVal = parts[1]
-		hasValue = true
-	}
-	return pathVal, valueVal, hasValue, nil
-}
-
-func execGetPath(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	return execMulti(node.child, input, nil, func(pathVal []byte) error {
-		result, err := execGetPathOne(input, pathVal, buf)
-		if err != nil {
-			return err
-		}
-		return fn(result)
-	})
-}
-
-type pathFrame struct {
-	parent *pathFrame
-	kind   pathStepKind
-	rawKey []byte
-	index  int
-}
-
-type pathTraceState struct {
-	value  []byte
-	frame  *pathFrame
-	opaque bool
-}
-
-func execPath(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	root := pathTraceState{value: trimWhitespace(input)}
-	return execPathExpr(node.child, root, buf, func(state pathTraceState) error {
-		if state.opaque {
-			return invalidPathResultError(state.value)
-		}
-		out := appendPathFrameJSON(buf[:0], state.frame)
-		return fn(out)
-	})
-}
-
-func execPathExpr(node *op, state pathTraceState, buf []byte, emit func(pathTraceState) error) error {
-	if node == nil {
-		return emit(state)
-	}
-
-	switch node.typ {
-	case opIdentity:
-		return emit(state)
-	case opField:
-		if state.opaque {
-			return invalidPathFieldError(state.value, node.field)
-		}
-		next := pathTraceState{
-			value: pathFieldTraceValue(state.value, node.field),
-			frame: &pathFrame{
-				parent: state.frame,
-				kind:   pathStepString,
-				rawKey: []byte(node.field),
-			},
-		}
-		if node.child != nil {
-			return withIndexScope(chainedIndexScope(state.value), func() error {
-				return execPathExpr(node.child, next, buf, emit)
-			})
-		}
-		return emit(next)
-	case opIndex:
-		if state.opaque {
-			return invalidPathIndexError(state.value, node.index)
-		}
-		next := pathTraceState{
-			value: pathIndexTraceValue(state.value, node.index),
-			frame: &pathFrame{
-				parent: state.frame,
-				kind:   pathStepNumber,
-				index:  node.index,
-			},
-		}
-		if node.child != nil {
-			return withIndexScope(chainedIndexScope(state.value), func() error {
-				return execPathExpr(node.child, next, buf, emit)
-			})
-		}
-		return emit(next)
-	case opIndexExpr:
-		scopeInput := currentIndexScope()
-		if scopeInput == nil {
-			scopeInput = state.value
-		}
-		keys, err := collectExecOutputs(node.left, scopeInput)
-		if err != nil {
-			return err
-		}
-		for _, key := range keys {
-			if state.opaque {
-				return invalidPathDynamicIndexError(state.value, key)
-			}
-			next, err := pathTraceDynamicIndex(state, key)
-			if err != nil {
-				return err
-			}
-			if node.child != nil {
-				if err := withIndexScope(chainedIndexScope(state.value), func() error {
-					return execPathExpr(node.child, next, buf, emit)
-				}); err != nil {
-					return err
-				}
-				continue
-			}
-			if err := emit(next); err != nil {
-				return err
-			}
-		}
-		return nil
-	case opIterator:
-		if state.opaque {
-			return invalidPathIteratorError(state.value)
-		}
-		return withIndexScope(chainedIndexScope(state.value), func() error {
-			return execPathIterator(node, state, buf, emit)
-		})
-	case opRecursiveDescent:
-		if err := emit(state); err != nil {
-			return err
-		}
-		return execPathRecursive(state, buf, emit)
-	case opPipe:
-		return execPathExpr(node.left, state, buf, func(next pathTraceState) error {
-			return execPathExpr(node.right, next, buf, emit)
-		})
-	case opApply:
-		return execPathExpr(node.left, state, buf, func(next pathTraceState) error {
-			return withIndexScope(chainedIndexScope(state.value), func() error {
-				return execPathExpr(node.right, next, buf, emit)
-			})
-		})
-	case opSelect:
-		match, err := pathsFilterMatch(node.child, state.value)
-		if err != nil {
-			return err
-		}
-		if match {
-			return emit(state)
-		}
-		return nil
-	case opGenerator:
-		for _, elem := range node.elems {
-			if err := execPathExpr(elem, state, buf, emit); err != nil {
-				return err
-			}
-		}
-		return nil
-	default:
-		return execMulti(node, state.value, nil, func(out []byte) error {
-			return emit(pathTraceState{
-				value:  cloneExecBytes(out),
-				frame:  state.frame,
-				opaque: true,
-			})
-		})
-	}
-}
-
-func execPathIterator(node *op, state pathTraceState, buf []byte, emit func(pathTraceState) error) error {
-	s := scanner{data: state.value}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return nil
-	}
-
-	switch s.data[s.pos] {
-	case '[':
-		var iterErr error
-		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
-			next := pathTraceState{
-				value: state.value[elemStart:elemEnd],
-				frame: &pathFrame{
-					parent: state.frame,
-					kind:   pathStepNumber,
-					index:  index,
-				},
-			}
-			if node.child != nil {
-				iterErr = execPathExpr(node.child, next, buf, emit)
-			} else {
-				iterErr = emit(next)
-			}
-			return iterErr == nil
-		})
-		return iterErr
-	case '{':
-		var iterErr error
-		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
-			next := pathTraceState{
-				value: state.value[valueStart:valueEnd],
-				frame: &pathFrame{
-					parent: state.frame,
-					kind:   pathStepString,
-					rawKey: key,
-				},
-			}
-			if node.child != nil {
-				iterErr = execPathExpr(node.child, next, buf, emit)
-			} else {
-				iterErr = emit(next)
-			}
-			return iterErr == nil
-		})
-		return iterErr
-	default:
-		return nil
-	}
-}
-
-func execPathRecursive(state pathTraceState, buf []byte, emit func(pathTraceState) error) error {
-	s := scanner{data: state.value}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return nil
-	}
-
-	switch s.data[s.pos] {
-	case '[':
-		var walkErr error
-		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
-			next := pathTraceState{
-				value: state.value[elemStart:elemEnd],
-				frame: &pathFrame{
-					parent: state.frame,
-					kind:   pathStepNumber,
-					index:  index,
-				},
-			}
-			walkErr = execPathRecursiveNode(next, buf, emit)
-			return walkErr == nil
-		})
-		return walkErr
-	case '{':
-		var walkErr error
-		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
-			next := pathTraceState{
-				value: state.value[valueStart:valueEnd],
-				frame: &pathFrame{
-					parent: state.frame,
-					kind:   pathStepString,
-					rawKey: key,
-				},
-			}
-			walkErr = execPathRecursiveNode(next, buf, emit)
-			return walkErr == nil
-		})
-		return walkErr
-	default:
-		return nil
-	}
-}
-
-func execPathRecursiveNode(state pathTraceState, buf []byte, emit func(pathTraceState) error) error {
-	if err := emit(state); err != nil {
-		return err
-	}
-	return execPathRecursive(state, buf, emit)
-}
-
-func execPick(node *op, input []byte, buf []byte) ([]byte, error) {
-	current := bNull
-	for _, expr := range node.elems {
-		if hasNegativePathIndex(expr) {
-			return nil, fmt.Errorf("Out of bounds negative array index")
-		}
-		paths, err := collectAssignPaths(expr, input)
-		if err != nil {
-			return nil, err
-		}
-		for _, steps := range paths {
-			value, err := getPathDecoded(input, steps, nil)
-			if err != nil {
-				return nil, err
-			}
-			current, err = setPathDecoded(current, steps, 0, value, nil)
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
-	return normalizeOutputValue(current, buf), nil
-}
-
-func hasNegativePathIndex(node *op) bool {
-	if node == nil {
-		return false
-	}
-	if node.typ == opIndex && node.index < 0 {
-		return true
-	}
-	for _, elem := range node.elems {
-		if hasNegativePathIndex(elem) {
-			return true
-		}
-	}
-	for _, p := range node.pairs {
-		if hasNegativePathIndex(p.expr) {
-			return true
-		}
-	}
-	return hasNegativePathIndex(node.left) || hasNegativePathIndex(node.right) || hasNegativePathIndex(node.child) || hasNegativePathIndex(node.extra)
-}
-
-func execAssign(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	if node.left != nil && node.left.typ == opSlice {
-		return execAssignSlice(node, input, buf, fn)
-	}
-	if isNaNIndexAssign(node.left) {
-		return &transparentError{err: fmt.Errorf("Cannot set array element at NaN index")}
-	}
-	paths, err := collectAssignPaths(node.left, input)
-	if err != nil {
-		return err
-	}
-	values, err := collectExecOutputs(node.right, input)
-	if err != nil {
-		return err
-	}
-	for _, value := range values {
-		current := normalizeOutputValue(input, nil)
-		for _, steps := range paths {
-			current, err = setPathDecoded(current, steps, 0, value, nil)
-			if err != nil {
-				return err
-			}
-		}
-		if err := fn(append(buf[:0], current...)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func isNaNIndexAssign(node *op) bool {
-	if node == nil || node.typ != opIndexExpr || node.left == nil || node.left.typ != opLiteral {
-		return false
-	}
-	lit := strings.TrimSpace(string(node.left.literal))
-	return lit == "NaN" || lit == "infinite" || lit == "-infinite"
-}
-
-func execAssignSlice(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	values, err := collectExecOutputs(node.right, input)
-	if err != nil {
-		return err
-	}
-	for _, value := range values {
-		current, err := setRootSliceValue(input, node.left, value, nil)
-		if err != nil {
-			return err
-		}
-		if err := fn(append(buf[:0], current...)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func setRootSliceValue(input []byte, slice *op, value []byte, buf []byte) ([]byte, error) {
-	s := scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return nil, fmt.Errorf("Cannot update string slices")
-	}
-	if s.data[s.pos] == '"' {
-		return nil, &transparentError{err: fmt.Errorf("Cannot update string slices")}
-	}
-	if s.data[s.pos] != '[' {
-		return nil, dynamicIndexNumberAccessError(input)
-	}
-	length := s.arrayLen()
-	start, end, err := resolveDelSliceBounds(slice, input, length)
-	if err != nil {
-		return nil, err
-	}
-	valueElems, err := decodeArrayElements(value)
-	if err != nil {
-		valueElems = [][]byte{normalizeOutputValue(value, nil)}
-	}
-	buf = append(buf, '[')
-	first := true
-	emit := func(elem []byte) {
-		if !first {
-			buf = append(buf, ',')
-		}
-		first = false
-		buf = append(buf, normalizeOutputValue(elem, nil)...)
-	}
-	idx := 0
-	s.arrayIter(func(i int, elemStart, elemEnd int) bool {
-		if i == start {
-			for _, repl := range valueElems {
-				emit(repl)
-			}
-		}
-		if i < start || i >= end {
-			emit(input[elemStart:elemEnd])
-		}
-		idx = i + 1
-		return true
-	})
-	if start == length {
-		for _, repl := range valueElems {
-			emit(repl)
-		}
-	}
-	_ = idx
-	buf = append(buf, ']')
-	return buf, nil
-}
-
-func decodeArrayElements(value []byte) ([][]byte, error) {
-	trimmed := trimWhitespace(value)
-	s := scanner{data: trimmed}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
-		return nil, fmt.Errorf("not array")
-	}
-	var elems [][]byte
-	s.arrayIter(func(_ int, start, end int) bool {
-		elems = append(elems, cloneExecBytes(trimmed[start:end]))
-		return true
-	})
-	return elems, nil
-}
-
-func execUpdate(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	paths, err := collectAssignPaths(node.left, input)
-	if err != nil {
-		return err
-	}
-	mutations := make([]pathMutation, 0, len(paths))
-	needsDeleteOrdering := false
-	for i, steps := range paths {
-		oldVal, err := getPathDecoded(input, steps, nil)
-		if err != nil {
-			return err
-		}
-		values, err := collectExecOutputs(node.right, oldVal)
-		if err != nil {
-			return err
-		}
-		if len(values) == 0 {
-			mutations = append(mutations, pathMutation{steps: steps, order: i, delete: true})
-			needsDeleteOrdering = true
-			continue
-		}
-		mutations = append(mutations, pathMutation{steps: steps, order: i, value: values[0]})
-	}
-	if needsDeleteOrdering {
-		sortPathMutations(mutations)
-	}
-	current := normalizeOutputValue(input, nil)
-	for _, mutation := range mutations {
-		if mutation.delete {
-			current, err = deletePathDecoded(current, mutation.steps)
-		} else {
-			current, err = setPathDecoded(current, mutation.steps, 0, mutation.value, nil)
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return fn(append(buf[:0], current...))
-}
-
-func execUpdateAlt(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	paths, err := collectAssignPaths(node.left, input)
-	if err != nil {
-		return err
-	}
-	mutations := make([]pathMutation, 0, len(paths))
-	needsDeleteOrdering := false
-	for i, steps := range paths {
-		oldVal, err := getPathDecoded(input, steps, nil)
-		if err != nil {
-			return err
-		}
-		if !isFalsy(oldVal) {
-			mutations = append(mutations, pathMutation{steps: steps, order: i, value: cloneExecBytes(oldVal)})
-			continue
-		}
-		values, err := collectExecOutputs(node.right, input)
-		if err != nil {
-			return err
-		}
-		if len(values) == 0 {
-			mutations = append(mutations, pathMutation{steps: steps, order: i, delete: true})
-			needsDeleteOrdering = true
-			continue
-		}
-		mutations = append(mutations, pathMutation{steps: steps, order: i, value: values[0]})
-	}
-	if needsDeleteOrdering {
-		sortPathMutations(mutations)
-	}
-	current := normalizeOutputValue(input, nil)
-	for _, mutation := range mutations {
-		if mutation.delete {
-			current, err = deletePathDecoded(current, mutation.steps)
-		} else {
-			current, err = setPathDecoded(current, mutation.steps, 0, mutation.value, nil)
-		}
-		if err != nil {
-			return err
-		}
-	}
-	return fn(append(buf[:0], current...))
-}
-
-func execUpdateMath(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	paths, err := collectAssignPaths(node.left, input)
-	if err != nil {
-		return err
-	}
-	rhs, err := execSingle(node.right, input, nil)
-	if err != nil {
-		return err
-	}
-	current := normalizeOutputValue(input, nil)
-	opTyp := opPlus
-	switch node.updateOp {
-	case updatePlus:
-		opTyp = opPlus
-	case updateMinus:
-		opTyp = opMinus
-	case updateMul:
-		opTyp = opMul
-	case updateDiv:
-		opTyp = opDiv
-	case updateMod:
-		opTyp = opMod
-	}
-	for _, steps := range paths {
-		oldVal, err := getPathDecoded(current, steps, nil)
-		if err != nil {
-			return err
-		}
-		var newVal []byte
-		if node.updateOp == updatePlus {
-			newVal, err = execPlusValues(oldVal, rhs, nil)
-		} else {
-			newVal, err = execArithValues(opTyp, oldVal, rhs, nil)
-		}
-		if err != nil {
-			return err
-		}
-		current, err = setPathDecoded(current, steps, 0, newVal, nil)
-		if err != nil {
-			return err
-		}
-	}
-	return fn(append(buf[:0], current...))
-}
-
-func collectAssignPaths(node *op, input []byte) ([][]pathStep, error) {
-	if node == nil {
-		return nil, nil
-	}
-	if node.typ == opBind {
-		baseCtx := currentExecContext()
-		values, err := collectExecOutputs(node.left, input)
-		if err != nil {
-			return nil, err
-		}
-		var all [][]pathStep
-		for _, value := range values {
-			nextCtx, err := bindOpValue(baseCtx, node, value)
-			if err != nil {
-				return nil, err
-			}
-			var nested [][]pathStep
-			if err := withExecContext(nextCtx, func() error {
-				var innerErr error
-				nested, innerErr = collectAssignPaths(node.right, input)
-				return innerErr
-			}); err != nil {
-				return nil, err
-			}
-			all = append(all, nested...)
-		}
-		return all, nil
-	}
-	if node.typ == opCall {
-		callerCtx := currentExecContext()
-		def := callerCtx.lookupFunc(funcKey(node.name, len(node.elems)))
-		if def == nil {
-			return nil, fmt.Errorf("%s is not defined", funcKey(node.name, len(node.elems)))
-		}
-		callCtxs, err := bindCallContexts(def, callerCtx, node.elems, input)
-		if err != nil {
-			return nil, err
-		}
-		var all [][]pathStep
-		for _, callCtx := range callCtxs {
-			var nested [][]pathStep
-			if err := withExecContext(callCtx, func() error {
-				var innerErr error
-				nested, innerErr = collectAssignPaths(def.body, input)
-				return innerErr
-			}); err != nil {
-				return nil, err
-			}
-			all = append(all, nested...)
-		}
-		return all, nil
-	}
-	if node.typ == opGetPath {
-		pathVals, err := collectExecOutputs(node.child, input)
-		if err != nil {
-			return nil, err
-		}
-		paths := make([][]pathStep, 0, len(pathVals))
-		for _, pathVal := range pathVals {
-			steps, err := decodePath(pathVal)
-			if err != nil {
-				return nil, err
-			}
-			paths = append(paths, steps)
-		}
-		return paths, nil
-	}
-
-	var paths [][]pathStep
-	err := execPath(&op{typ: opPath, child: node}, input, nil, func(pathVal []byte) error {
-		steps, err := decodePath(pathVal)
-		if err != nil {
-			return err
-		}
-		paths = append(paths, steps)
-		return nil
-	})
-	return paths, err
-}
-
-type pathMutation struct {
-	steps  []pathStep
-	order  int
-	delete bool
-	value  []byte
-}
-
-func sortPathMutations(mutations []pathMutation) {
-	sort.SliceStable(mutations, func(i, j int) bool {
-		return pathStepsLessDesc(mutations[i].steps, mutations[j].steps, mutations[i].order, mutations[j].order)
-	})
-}
-
-func pathStepsLessDesc(a, b []pathStep, aOrder, bOrder int) bool {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	for i := 0; i < n; i++ {
-		if a[i].kind != b[i].kind {
-			return aOrder < bOrder
-		}
-		switch a[i].kind {
-		case pathStepNumber:
-			if a[i].index != b[i].index {
-				return a[i].index > b[i].index
-			}
-		case pathStepString:
-			ak := string(a[i].key)
-			bk := string(b[i].key)
-			if ak != bk {
-				return aOrder < bOrder
-			}
-		default:
-			ar := string(a[i].raw)
-			br := string(b[i].raw)
-			if ar != br {
-				return aOrder < bOrder
-			}
-		}
-	}
-	if len(a) != len(b) {
-		return len(a) > len(b)
-	}
-	return aOrder < bOrder
-}
-
-func getPathDecoded(input []byte, steps []pathStep, buf []byte) ([]byte, error) {
-	current := input
-	for _, step := range steps {
-		if isNull(current) {
-			if buf == nil {
-				return bNull, nil
-			}
-			return append(buf, "null"...), nil
-		}
-		var err error
-		current, err = getPathDecodedStep(current, step)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return normalizeOutputValue(current, buf), nil
-}
-
-func getPathDecodedStep(current []byte, step pathStep) ([]byte, error) {
-	switch step.kind {
-	case pathStepString:
-		cs := scanner{data: current}
-		cs.skipWhitespace()
-		if cs.pos >= len(cs.data) || cs.data[cs.pos] != '{' {
-			return nil, setpathAccessError(current, step)
-		}
-		vs, ve := cs.findField(step.key)
-		if vs == -1 {
-			return bNull, nil
-		}
-		return current[vs:ve], nil
-	case pathStepNumber:
-		cs := scanner{data: current}
-		cs.skipWhitespace()
-		if cs.pos >= len(cs.data) || cs.data[cs.pos] != '[' {
-			return nil, setpathAccessError(current, step)
-		}
-		idx := step.index
-		if idx < 0 {
-			idx = cs.arrayLen() + idx
-			if idx < 0 {
-				return bNull, nil
-			}
-		}
-		var result []byte
-		cs.arrayIter(func(i int, elemStart, elemEnd int) bool {
-			if i == idx {
-				result = current[elemStart:elemEnd]
-				return false
-			}
-			return true
-		})
-		if result == nil {
-			return bNull, nil
-		}
-		return result, nil
-	default:
-		return nil, setpathAccessError(current, step)
-	}
-}
-
-func deletePathDecoded(input []byte, steps []pathStep) ([]byte, error) {
-	out, _, err := delPathDecoded(input, steps, 0, nil)
-	return out, err
-}
-
-func execPaths(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	return execPathsValue(node.child, trimWhitespace(input), nil, buf, fn)
-}
-
-func execReduce(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	states, err := collectExecOutputs(node.right, input)
-	if err != nil {
-		return err
-	}
-	if len(states) == 0 {
-		return nil
-	}
-
-	finalStates := make([][]byte, 0, len(states))
-	baseCtx := currentExecContext()
-	for _, initState := range states {
-		currentStates := [][]byte{initState}
-		err = execMulti(node.left, input, nil, func(item []byte) error {
-			nextStates := make([][]byte, 0, len(currentStates))
-			for _, state := range currentStates {
-				nextCtx, err := bindOpValue(baseCtx, node, item)
-				if err != nil {
-					return err
-				}
-				err = withExecContext(nextCtx, func() error {
-					var last []byte
-					if err := execMulti(node.child, state, nil, func(out []byte) error {
-						last = cloneExecBytes(out)
-						return nil
-					}); err != nil {
-						return err
-					}
-					if last != nil {
-						nextStates = append(nextStates, last)
-					}
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-			}
-			currentStates = nextStates
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-		finalStates = append(finalStates, currentStates...)
-	}
-	for _, state := range finalStates {
-		if err := fn(append(buf[:0], state...)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func execForeach(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	states, err := collectExecOutputs(node.right, input)
-	if err != nil {
-		return err
-	}
-	if len(states) == 0 {
-		return nil
-	}
-
-	baseCtx := currentExecContext()
-	for _, initState := range states {
-		currentStates := [][]byte{initState}
-		err = execMulti(node.left, input, nil, func(item []byte) error {
-			nextStates := make([][]byte, 0, len(currentStates))
-			for _, state := range currentStates {
-				var last []byte
-				nextCtx, err := bindOpValue(baseCtx, node, item)
-				if err != nil {
-					return err
-				}
-				err = withExecContext(nextCtx, func() error {
-					return execMulti(node.child, state, nil, func(updated []byte) error {
-						updatedState := cloneExecBytes(updated)
-						last = updatedState
-						if err := execMulti(node.extra, updatedState, nil, func(out []byte) error {
-							return fn(append(buf[:0], out...))
-						}); err != nil {
-							return err
-						}
-						return nil
-					})
-				})
-				if err != nil {
-					return err
-				}
-				if last != nil {
-					nextStates = append(nextStates, last)
-				}
-			}
-			currentStates = nextStates
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func execWhile(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	current := cloneExecBytes(input)
-	for {
-		condVal, err := execSingle(node.left, current, nil)
-		if err != nil {
-			return err
-		}
-		if isFalsy(condVal) {
-			return nil
-		}
-		if err := fn(append(buf[:0], current...)); err != nil {
-			return err
-		}
-		next, err := execSingle(node.child, current, nil)
-		if err != nil {
-			return err
-		}
-		current = cloneExecBytes(next)
-	}
-}
-
-func execRepeat(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	for {
-		if err := execMulti(node.child, input, buf, fn); err != nil {
-			return err
-		}
-	}
-}
-
-func execUntil(node *op, input []byte, buf []byte) ([]byte, error) {
-	current := cloneExecBytes(input)
-	for {
-		condVal, err := execSingle(node.left, current, nil)
-		if err != nil {
-			return nil, err
-		}
-		if !isFalsy(condVal) {
-			return append(buf[:0], current...), nil
-		}
-		next, err := execSingle(node.child, current, nil)
-		if err != nil {
-			return nil, err
-		}
-		current = cloneExecBytes(next)
-	}
-}
-
-func execDefScope(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	baseCtx := currentExecContext()
-	table := &funcTable{defs: map[string]*funcDef{}, parent: nil}
-	if baseCtx != nil {
-		table.parent = baseCtx.funcs
-	}
-	def := *node.fn
-	def.capturedFuncs = table
-	if baseCtx != nil {
-		def.capturedEnv = baseCtx.env
-	}
-	table.defs[funcKey(def.name, len(def.params))] = &def
-
-	var nextCtx *execContext
-	if baseCtx == nil {
-		nextCtx = &execContext{funcs: table}
-	} else {
-		out := *baseCtx
-		out.funcs = table
-		nextCtx = &out
-	}
-	return withExecContext(nextCtx, func() error {
-		return execMulti(node.child, input, buf, fn)
-	})
-}
-
-func execCall(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	callerCtx := currentExecContext()
-	def := callerCtx.lookupFunc(funcKey(node.name, len(node.elems)))
-	if def == nil {
-		return fmt.Errorf("%s is not defined", funcKey(node.name, len(node.elems)))
-	}
-	callCtxs, err := bindCallContexts(def, callerCtx, node.elems, input)
-	if err != nil {
-		return err
-	}
-	for _, callCtx := range callCtxs {
-		var outputs [][]byte
-		if err := withExecContext(callCtx, func() error {
-			return execMulti(def.body, input, nil, func(out []byte) error {
-				outputs = append(outputs, cloneExecBytes(out))
-				return nil
-			})
-		}); err != nil {
-			return err
-		}
-		for _, out := range outputs {
-			emitted := out
-			if buf != nil {
-				emitted = append(buf[:0], out...)
-			}
-			if err := fn(emitted); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func bindCallContexts(def *funcDef, callerCtx *execContext, args []*op, input []byte) ([]*execContext, error) {
-	var callCtx *execContext
-	if callerCtx != nil {
-		callCtx = &execContext{
-			env:    def.capturedEnv,
-			funcs:  def.capturedFuncs,
-			labels: callerCtx.labels,
-			depth:  callerCtx.depth + 1,
-		}
-	} else {
-		callCtx = &execContext{
-			env:   def.capturedEnv,
-			funcs: def.capturedFuncs,
-		}
-	}
-
-	var filterDefs map[string]*funcDef
-	for i, name := range def.params {
-		if !def.valueParams[i] {
-			if filterDefs == nil {
-				filterDefs = make(map[string]*funcDef)
-			}
-			filterDefs[funcKey(name, 0)] = &funcDef{
-				name:          name,
-				body:          args[i],
-				capturedEnv:   callerCtxEnv(callerCtx),
-				capturedFuncs: callerCtxFuncs(callerCtx),
-			}
-		}
-	}
-	if len(filterDefs) > 0 {
-		callCtx.funcs = &funcTable{
-			defs:   filterDefs,
-			parent: callCtx.funcs,
-		}
-	}
-
-	contexts := []*execContext{callCtx}
-	for i, name := range def.params {
-		if !def.valueParams[i] {
-			continue
-		}
-		values, err := collectExecOutputs(args[i], input)
-		if err != nil {
-			return nil, err
-		}
-		if len(values) == 0 {
-			return nil, nil
-		}
-		next := make([]*execContext, 0, len(contexts)*len(values))
-		for _, ctx := range contexts {
-			for _, value := range values {
-				next = append(next, ctx.bindVar(name, value))
-			}
-		}
-		contexts = next
-	}
-	return contexts, nil
-}
-
-func callerCtxEnv(ctx *execContext) *envFrame {
-	if ctx == nil {
-		return nil
-	}
-	return ctx.env
-}
-
-func callerCtxFuncs(ctx *execContext) *funcTable {
-	if ctx == nil {
-		return nil
-	}
-	return ctx.funcs
-}
-
-func collectExecOutputs(node *op, input []byte) ([][]byte, error) {
-	var out [][]byte
-	err := execMulti(node, input, nil, func(val []byte) error {
-		out = append(out, cloneExecBytes(val))
-		return nil
-	})
-	return out, err
-}
-
-func cloneExecBytes(src []byte) []byte {
-	return append([]byte(nil), src...)
-}
-
-func execBindAlternatives(baseCtx *execContext, node *op, input, value []byte, fn func([]byte) error) error {
-	base := prebindAlternationNulls(baseCtx, node.pattern, node.altPatterns)
-	targets := make([]*bindPattern, 0, 1+len(node.altPatterns))
-	targets = append(targets, node.pattern)
-	targets = append(targets, node.altPatterns...)
-
-	var lastErr error
-	for _, target := range targets {
-		nextCtx, err := bindPatternValue(base, target, value)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		outputs := make([][]byte, 0, 1)
-		err = withExecContext(nextCtx, func() error {
-			return execMulti(node.right, input, nil, func(val []byte) error {
-				outputs = append(outputs, cloneExecBytes(val))
-				return nil
-			})
-		})
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		for _, out := range outputs {
-			if err := fn(out); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if lastErr != nil {
-		return lastErr
-	}
-	return nil
-}
-
-func bindOpValue(ctx *execContext, node *op, value []byte) (*execContext, error) {
-	if node.pattern != nil && len(node.altPatterns) > 0 {
-		base := prebindAlternationNulls(ctx, node.pattern, node.altPatterns)
-		targets := make([]*bindPattern, 0, 1+len(node.altPatterns))
-		targets = append(targets, node.pattern)
-		targets = append(targets, node.altPatterns...)
-		var lastErr error
-		for _, target := range targets {
-			next, err := bindPatternValue(base, target, value)
-			if err == nil {
-				return next, nil
-			}
-			lastErr = err
-		}
-		if lastErr != nil {
-			return nil, lastErr
-		}
-		return base, nil
-	}
-	if node.pattern != nil {
-		return bindPatternValue(ctx, node.pattern, value)
-	}
-	return ctx.bindVar(node.name, value), nil
-}
-
-func prebindAlternationNulls(ctx *execContext, primary *bindPattern, alts []*bindPattern) *execContext {
-	next := ctx
-	names := make(map[string]struct{})
-	collectPatternVarNames(primary, names)
-	for _, alt := range alts {
-		collectPatternVarNames(alt, names)
-	}
-	for name := range names {
-		next = next.bindVar(name, bNull)
-	}
-	return next
-}
-
-func collectPatternVarNames(pattern *bindPattern, names map[string]struct{}) {
-	if pattern == nil {
-		return
-	}
-	switch pattern.kind {
-	case bindPatternVar:
-		names[pattern.name] = struct{}{}
-	case bindPatternArray:
-		for _, elem := range pattern.elems {
-			collectPatternVarNames(elem, names)
-		}
-	case bindPatternObject:
-		for _, field := range pattern.fields {
-			if field.bindName != "" {
-				names[field.bindName] = struct{}{}
-			}
-			collectPatternVarNames(field.pattern, names)
-		}
-	}
-}
-
-func bindPatternValue(ctx *execContext, pattern *bindPattern, value []byte) (*execContext, error) {
-	if pattern == nil {
-		return ctx, nil
-	}
-	switch pattern.kind {
-	case bindPatternVar:
-		return ctx.bindVar(pattern.name, value), nil
-	case bindPatternArray:
-		value = trimWhitespace(value)
-		if isNull(value) {
-			return bindPatternNull(ctx, pattern), nil
-		}
-		s := scanner{data: value}
-		s.skipWhitespace()
-		if s.pos >= len(s.data) || s.data[s.pos] != '[' {
-			return nil, dynamicIndexNumberAccessError(value)
-		}
-		elems := make([][]byte, len(pattern.elems))
-		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
-			if index < len(elems) {
-				elems[index] = value[elemStart:elemEnd]
-			}
-			return index+1 < len(elems)
-		})
-		next := ctx
-		for i, elem := range pattern.elems {
-			elemVal := bNull
-			if elems[i] != nil {
-				elemVal = elems[i]
-			}
-			var err error
-			next, err = bindPatternValue(next, elem, elemVal)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return next, nil
-	case bindPatternObject:
-		value = trimWhitespace(value)
-		if isNull(value) {
-			return bindPatternNull(ctx, pattern), nil
-		}
-		s := scanner{data: value}
-		s.skipWhitespace()
-		if s.pos >= len(s.data) || s.data[s.pos] != '{' {
-			key := ""
-			if len(pattern.fields) > 0 {
-				key = pattern.fields[0].key
-			}
-			return nil, fieldAccessError(value, key)
-		}
-		next := ctx
-		for _, field := range pattern.fields {
-			fs := scanner{data: value}
-			fs.skipWhitespace()
-			vs, ve := fs.findFieldStr(field.key)
-			fieldVal := bNull
-			if vs != -1 {
-				fieldVal = value[vs:ve]
-			}
-			if field.bindName != "" {
-				next = next.bindVar(field.bindName, fieldVal)
-			}
-			var err error
-			next, err = bindPatternValue(next, field.pattern, fieldVal)
-			if err != nil {
-				return nil, err
-			}
-		}
-		return next, nil
-	default:
-		return ctx, nil
-	}
-}
-
-func bindPatternNull(ctx *execContext, pattern *bindPattern) *execContext {
-	if pattern == nil {
-		return ctx
-	}
-	switch pattern.kind {
-	case bindPatternVar:
-		return ctx.bindVar(pattern.name, bNull)
-	case bindPatternArray:
-		next := ctx
-		for _, elem := range pattern.elems {
-			next = bindPatternNull(next, elem)
-		}
-		return next
-	case bindPatternObject:
-		next := ctx
-		for _, field := range pattern.fields {
-			if field.bindName != "" {
-				next = next.bindVar(field.bindName, bNull)
-			}
-			next = bindPatternNull(next, field.pattern)
-		}
-		return next
-	default:
-		return ctx
-	}
-}
-
-func execPathsValue(filter *op, value []byte, frame *pathFrame, buf []byte, fn func([]byte) error) error {
-	if frame != nil {
-		match, err := pathsFilterMatch(filter, value)
-		if err != nil {
-			return err
-		}
-		if match {
-			out := appendPathFrameJSON(buf[:0], frame)
-			if err := fn(out); err != nil {
-				return err
-			}
-		}
-	}
-
-	s := scanner{data: value}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return nil
-	}
-
-	switch s.data[s.pos] {
-	case '{':
-		var walkErr error
-		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
-			childFrame := pathFrame{
-				parent: frame,
-				kind:   pathStepString,
-				rawKey: key,
-			}
-			walkErr = execPathsValue(filter, value[valueStart:valueEnd], &childFrame, buf, fn)
-			return walkErr == nil
-		})
-		return walkErr
-	case '[':
-		var walkErr error
-		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
-			childFrame := pathFrame{
-				parent: frame,
-				kind:   pathStepNumber,
-				index:  index,
-			}
-			walkErr = execPathsValue(filter, value[elemStart:elemEnd], &childFrame, buf, fn)
-			return walkErr == nil
-		})
-		return walkErr
-	default:
-		return nil
-	}
-}
-
-func pathsFilterMatch(filter *op, value []byte) (bool, error) {
-	if filter == nil {
-		return true, nil
-	}
-	result, err := execSingle(filter, value, nil)
-	if err != nil {
-		return false, err
-	}
-	return !isFalsy(result), nil
-}
-
-func appendPathFrameJSON(dst []byte, frame *pathFrame) []byte {
-	dst = append(dst, '[')
-	dst = appendPathFrameElems(dst, frame)
-	dst = append(dst, ']')
-	return dst
-}
-
-func appendPathFrameElems(dst []byte, frame *pathFrame) []byte {
-	if frame == nil {
-		return dst
-	}
-	if frame.parent != nil {
-		dst = appendPathFrameElems(dst, frame.parent)
-		dst = append(dst, ',')
-	}
-	switch frame.kind {
-	case pathStepString:
-		dst = append(dst, '"')
-		dst = appendCanonicalRawJSONStringContent(dst, frame.rawKey)
-		dst = append(dst, '"')
-	case pathStepNumber:
-		dst = appendInt(dst, frame.index)
-	}
-	return dst
-}
-
-func execGetPathOne(input, pathVal, buf []byte) ([]byte, error) {
-	ps := scanner{data: pathVal}
-	ps.skipWhitespace()
-	if ps.pos >= len(ps.data) || ps.data[ps.pos] != '[' {
-		return nil, fmt.Errorf("Path must be specified as an array")
-	}
-
-	current := input
-	var iterErr error
-	ps.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-		if isNull(current) {
-			return true
-		}
-		next, err := execGetPathStep(current, pathVal[elemStart:elemEnd])
-		if err != nil {
-			iterErr = err
-			return false
-		}
-		current = next
-		return true
-	})
-	if iterErr != nil {
-		return nil, iterErr
-	}
-	return normalizeOutputValue(current, buf), nil
-}
-
-func execGetPathStep(current, step []byte) ([]byte, error) {
-	ss := scanner{data: step}
-	ss.skipWhitespace()
-	if ss.pos >= len(ss.data) {
-		return bNull, nil
-	}
-	if ss.data[ss.pos] == '"' {
-		key := ss.readString()
-		cs := scanner{data: current}
-		cs.skipWhitespace()
-		if cs.pos >= len(cs.data) || cs.data[cs.pos] != '{' {
-			return nil, getpathAccessError(current, step)
-		}
-		vs, ve := cs.findField(key)
-		if vs == -1 {
-			return bNull, nil
-		}
-		return current[vs:ve], nil
-	}
-
-	if f, ok := parseJSONFloat(step); ok {
-		idx := int(f)
-		cs := scanner{data: current}
-		cs.skipWhitespace()
-		if cs.pos >= len(cs.data) || cs.data[cs.pos] != '[' {
-			return nil, getpathAccessError(current, step)
-		}
-		if idx < 0 {
-			idx = cs.arrayLen() + idx
-			if idx < 0 {
-				return bNull, nil
-			}
-		}
-		var result []byte
-		cs.arrayIter(func(i int, elemStart, elemEnd int) bool {
-			if i == idx {
-				result = current[elemStart:elemEnd]
-				return false
-			}
-			return true
-		})
-		if result == nil {
-			return bNull, nil
-		}
-		return result, nil
-	}
-
-	return nil, getpathAccessError(current, step)
-}
-
-func pathFieldTraceValue(current []byte, field string) []byte {
-	cs := scanner{data: current}
-	cs.skipWhitespace()
-	if cs.pos < len(cs.data) && cs.data[cs.pos] == '{' {
-		vs, ve := cs.findFieldStr(field)
-		if vs != -1 {
-			return current[vs:ve]
-		}
-	}
-	return bNull
-}
-
-func pathIndexTraceValue(current []byte, index int) []byte {
-	cs := scanner{data: current}
-	cs.skipWhitespace()
-	if cs.pos >= len(cs.data) || cs.data[cs.pos] != '[' {
-		return bNull
-	}
-	idx := index
-	if idx < 0 {
-		idx = cs.arrayLen() + idx
-		if idx < 0 {
-			return bNull
-		}
-	}
-	var result []byte
-	cs.arrayIter(func(i int, elemStart, elemEnd int) bool {
-		if i == idx {
-			result = current[elemStart:elemEnd]
-			return false
-		}
-		return true
-	})
-	if result == nil {
-		return bNull
-	}
-	return result
-}
-
-func pathTraceDynamicIndex(state pathTraceState, key []byte) (pathTraceState, error) {
-	key = trimWhitespace(key)
-	ks := scanner{data: key}
-	ks.skipWhitespace()
-	if ks.pos < len(ks.data) && ks.data[ks.pos] == '"' {
-		rawKey := ks.readString()
-		return pathTraceState{
-			value: pathFieldTraceValue(state.value, string(rawKey)),
-			frame: &pathFrame{
-				parent: state.frame,
-				kind:   pathStepString,
-				rawKey: rawKey,
-			},
-		}, nil
-	}
-	if f, ok := parseJSONFloat(key); ok {
-		idx := int(f)
-		return pathTraceState{
-			value: pathIndexTraceValue(state.value, idx),
-			frame: &pathFrame{
-				parent: state.frame,
-				kind:   pathStepNumber,
-				index:  idx,
-			},
-		}, nil
-	}
-	return pathTraceState{}, fmt.Errorf("Invalid path expression with result %s", string(trimWhitespace(key)))
-}
-
-func invalidPathResultError(value []byte) error {
-	return fmt.Errorf("Invalid path expression with result %s", string(trimWhitespace(value)))
-}
-
-func invalidPathFieldError(value []byte, field string) error {
-	return fmt.Errorf("Invalid path expression near attempt to access element %q of %s", field, string(trimWhitespace(value)))
-}
-
-func invalidPathIndexError(value []byte, index int) error {
-	return fmt.Errorf("Invalid path expression near attempt to access element %d of %s", index, string(trimWhitespace(value)))
-}
-
-func invalidPathDynamicIndexError(value, key []byte) error {
-	key = trimWhitespace(key)
-	ks := scanner{data: key}
-	ks.skipWhitespace()
-	if ks.pos < len(ks.data) && ks.data[ks.pos] == '"' {
-		return invalidPathFieldError(value, string(ks.readString()))
-	}
-	if f, ok := parseJSONFloat(key); ok {
-		return invalidPathIndexError(value, int(f))
-	}
-	return fmt.Errorf("Invalid path expression near attempt to access element %s of %s", string(trimWhitespace(key)), string(trimWhitespace(value)))
-}
-
-func invalidPathIteratorError(value []byte) error {
-	return fmt.Errorf("Invalid path expression near attempt to iterate through %s", string(trimWhitespace(value)))
-}
-
-func getpathAccessError(current, step []byte) error {
-	ss := scanner{data: step}
-	ss.skipWhitespace()
-	if ss.pos < len(ss.data) && ss.data[ss.pos] == '"' {
-		return fmt.Errorf("Cannot index %s with string %q", jsonTypeName(current), ss.readString())
-	}
-	return fmt.Errorf("Cannot index %s with %s", jsonTypeName(current), jsonTypeName(step))
-}
-
-type pathStepKind int
-
-const (
-	pathStepString pathStepKind = iota
-	pathStepNumber
-	pathStepOther
-)
-
-type pathStep struct {
-	kind     pathStepKind
-	key      []byte
-	index    int
-	raw      []byte
-	typeName string
-}
-
-func decodePath(pathVal []byte) ([]pathStep, error) {
-	ps := scanner{data: pathVal}
-	ps.skipWhitespace()
-	if ps.pos >= len(ps.data) || ps.data[ps.pos] != '[' {
-		return nil, fmt.Errorf("Path must be specified as an array")
-	}
-	steps := make([]pathStep, 0, ps.arrayLen())
-	ps = scanner{data: pathVal}
-	ps.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-		raw := trimWhitespace(pathVal[elemStart:elemEnd])
-		ss := scanner{data: raw}
-		ss.skipWhitespace()
-		if ss.pos < len(ss.data) && ss.data[ss.pos] == '"' {
-			steps = append(steps, pathStep{
-				kind: pathStepString,
-				key:  ss.readString(),
-				raw:  raw,
-			})
-			return true
-		}
-		if f, ok := parseJSONFloat(raw); ok {
-			steps = append(steps, pathStep{
-				kind:  pathStepNumber,
-				index: int(f),
-				raw:   raw,
-			})
-			return true
-		}
-		steps = append(steps, pathStep{
-			kind:     pathStepOther,
-			raw:      raw,
-			typeName: jsonTypeName(raw),
-		})
-		return true
-	})
-	return steps, nil
-}
-
-func execSetPath(node *op, input []byte, buf []byte) ([]byte, error) {
-	pathVal, err := execSingle(node.left, input, nil)
-	if err != nil {
-		return nil, err
-	}
-	value, err := execSingle(node.child, input, nil)
-	if err != nil {
-		return nil, err
-	}
-	steps, err := decodePath(pathVal)
-	if err != nil {
-		return nil, &transparentError{err: err}
-	}
-	out, err := setPathDecoded(input, steps, 0, value, buf)
-	if err != nil {
-		return nil, &transparentError{err: err}
-	}
-	return out, nil
-}
-
-func execDelPaths(node *op, input []byte, buf []byte) ([]byte, error) {
-	pathsVal, err := execSingle(node.child, input, nil)
-	if err != nil {
-		return nil, err
-	}
-	ps := scanner{data: pathsVal}
-	ps.skipWhitespace()
-	if ps.pos >= len(ps.data) || ps.data[ps.pos] != '[' {
-		return nil, &transparentError{err: fmt.Errorf("Paths must be specified as an array")}
-	}
-	current := normalizeOutputValue(input, nil)
-	var iterErr error
-	ps = scanner{data: pathsVal}
-	ps.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-		steps, err := decodePath(pathsVal[elemStart:elemEnd])
-		if err != nil {
-			iterErr = &transparentError{err: fmt.Errorf("Paths must be specified as an array")}
-			return false
-		}
-		next, _, err := delPathDecoded(current, steps, 0, nil)
-		if err != nil {
-			iterErr = err
-			return false
-		}
-		current = next
-		return true
-	})
-	if iterErr != nil {
-		return nil, iterErr
-	}
-	return normalizeOutputValue(current, buf), nil
-}
-
-func setPathDecoded(input []byte, steps []pathStep, depth int, value []byte, buf []byte) ([]byte, error) {
-	input = trimWhitespace(input)
-	if depth >= len(steps) {
-		if buf == nil {
-			return trimWhitespace(value), nil
-		}
-		return append(buf, trimWhitespace(value)...), nil
-	}
-	step := steps[depth]
-	s := scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		input = bNull
-		s = scanner{data: input}
-		s.skipWhitespace()
-	}
-
-	switch step.kind {
-	case pathStepString:
-		if s.data[s.pos] == 'n' {
-			return setPathObjectFromNull(step, steps, depth, value, buf)
-		}
-		if s.data[s.pos] != '{' {
-			return nil, setpathAccessError(input, step)
-		}
-		return setPathObject(input, step, steps, depth, value, buf)
-	case pathStepNumber:
-		if s.data[s.pos] == 'n' {
-			return setPathArray(bNull, step, steps, depth, value, buf)
-		}
-		if s.data[s.pos] != '[' {
-			return nil, setpathAccessError(input, step)
-		}
-		return setPathArray(input, step, steps, depth, value, buf)
-	default:
-		return nil, setpathAccessError(input, step)
-	}
-}
-
-func setPathObjectFromNull(step pathStep, steps []pathStep, depth int, value []byte, buf []byte) ([]byte, error) {
-	child, err := setPathDecoded(bNull, steps, depth+1, value, nil)
-	if err != nil {
-		return nil, err
-	}
-	buf = append(buf, '{', '"')
-	buf = append(buf, step.key...)
-	buf = append(buf, '"', ':')
-	buf = append(buf, child...)
-	buf = append(buf, '}')
-	return buf, nil
-}
-
-func setPathObject(input []byte, step pathStep, steps []pathStep, depth int, value []byte, buf []byte) ([]byte, error) {
-	s := scanner{data: input}
-	s.skipWhitespace()
-	buf = append(buf, '{')
-	first := true
-	found := false
-	var iterErr error
-	s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
-		outVal := input[valueStart:valueEnd]
-		if bytesEqual(key, step.key) {
-			found = true
-			var err error
-			outVal, err = setPathDecoded(outVal, steps, depth+1, value, nil)
-			if err != nil {
-				iterErr = err
-				return false
-			}
-		}
-		if !first {
-			buf = append(buf, ',')
-		}
-		first = false
-		buf = append(buf, '"')
-		buf = append(buf, key...)
-		buf = append(buf, '"', ':')
-		buf = append(buf, outVal...)
-		return true
-	})
-	if iterErr != nil {
-		return nil, iterErr
-	}
-	if !found {
-		outVal, err := setPathDecoded(bNull, steps, depth+1, value, nil)
-		if err != nil {
-			return nil, err
-		}
-		if !first {
-			buf = append(buf, ',')
-		}
-		buf = append(buf, '"')
-		buf = append(buf, step.key...)
-		buf = append(buf, '"', ':')
-		buf = append(buf, outVal...)
-	}
-	buf = append(buf, '}')
-	return buf, nil
-}
-
-func setPathArray(input []byte, step pathStep, steps []pathStep, depth int, value []byte, buf []byte) ([]byte, error) {
-	elems := make([][]byte, 0)
-	if !isNull(input) {
-		s := scanner{data: input}
-		s.skipWhitespace()
-		s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-			elems = append(elems, input[elemStart:elemEnd])
-			return true
-		})
-	}
-	idx := step.index
-	if idx < 0 {
-		idx = len(elems) + idx
-		if idx < 0 {
-			return nil, fmt.Errorf("Out of bounds negative array index")
-		}
-	}
-	if idx > maxArrayUpdateIndex {
-		return nil, fmt.Errorf("Array index too large")
-	}
-	buf = append(buf, '[')
-	first := true
-	for i := 0; i < idx; i++ {
-		var outVal []byte
-		if i < len(elems) {
-			outVal = elems[i]
-		} else {
-			outVal = bNull
-		}
-		if !first {
-			buf = append(buf, ',')
-		}
-		first = false
-		buf = append(buf, outVal...)
-	}
-	var target []byte
-	if idx < len(elems) {
-		target = elems[idx]
-	} else {
-		target = bNull
-	}
-	newVal, err := setPathDecoded(target, steps, depth+1, value, nil)
-	if err != nil {
-		return nil, err
-	}
-	if !first {
-		buf = append(buf, ',')
-	}
-	first = false
-	buf = append(buf, newVal...)
-	for i := idx + 1; i < len(elems); i++ {
-		if !first {
-			buf = append(buf, ',')
-		}
-		first = false
-		buf = append(buf, elems[i]...)
-	}
-	buf = append(buf, ']')
-	return buf, nil
-}
-
-func delPathDecoded(input []byte, steps []pathStep, depth int, buf []byte) ([]byte, bool, error) {
-	input = trimWhitespace(input)
-	if depth >= len(steps) {
-		return nil, true, nil
-	}
-	s := scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return input, false, nil
-	}
-	if s.data[s.pos] == 'n' {
-		if buf == nil {
-			return bNull, false, nil
-		}
-		return append(buf, "null"...), false, nil
-	}
-
-	step := steps[depth]
-	switch step.kind {
-	case pathStepString:
-		if s.data[s.pos] == '{' {
-			return delPathObject(input, step, steps, depth, buf)
-		}
-		if s.data[s.pos] == '[' {
-			return nil, false, fmt.Errorf("Cannot delete string element of array")
-		}
-		return nil, false, fmt.Errorf("Cannot delete fields from %s", jsonTypeName(input))
-	case pathStepNumber:
-		if s.data[s.pos] == '[' {
-			return delPathArray(input, step, steps, depth, buf)
-		}
-		if s.data[s.pos] == '{' {
-			return nil, false, fmt.Errorf("Cannot delete number field of object")
-		}
-		return nil, false, fmt.Errorf("Cannot delete fields from %s", jsonTypeName(input))
-	default:
-		if s.data[s.pos] == '[' {
-			return nil, false, fmt.Errorf("Cannot delete %s element of array", step.typeName)
-		}
-		if s.data[s.pos] == '{' {
-			return nil, false, fmt.Errorf("Cannot delete %s field of object", step.typeName)
-		}
-		return nil, false, fmt.Errorf("Cannot delete fields from %s", jsonTypeName(input))
-	}
-}
-
-func delPathObject(input []byte, step pathStep, steps []pathStep, depth int, buf []byte) ([]byte, bool, error) {
-	s := scanner{data: input}
-	s.skipWhitespace()
-	buf = append(buf, '{')
-	first := true
-	found := false
-	var iterErr error
-	s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
-		outVal := input[valueStart:valueEnd]
-		omit := false
-		if bytesEqual(key, step.key) {
-			found = true
-			if depth+1 >= len(steps) {
-				omit = true
-			} else {
-				var deleted bool
-				var err error
-				outVal, deleted, err = delPathDecoded(outVal, steps, depth+1, nil)
-				if err != nil {
-					iterErr = err
-					return false
-				}
-				omit = deleted
-			}
-		}
-		if omit {
-			return true
-		}
-		if !first {
-			buf = append(buf, ',')
-		}
-		first = false
-		buf = append(buf, '"')
-		buf = append(buf, key...)
-		buf = append(buf, '"', ':')
-		buf = append(buf, outVal...)
-		return true
-	})
-	if iterErr != nil {
-		return nil, false, iterErr
-	}
-	if !found {
-		return normalizeOutputValue(input, buf[:0]), false, nil
-	}
-	buf = append(buf, '}')
-	return buf, false, nil
-}
-
-func delPathArray(input []byte, step pathStep, steps []pathStep, depth int, buf []byte) ([]byte, bool, error) {
-	elems := make([][]byte, 0)
-	s := scanner{data: input}
-	s.skipWhitespace()
-	s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-		elems = append(elems, input[elemStart:elemEnd])
-		return true
-	})
-	idx := step.index
-	if idx < 0 {
-		idx = len(elems) + idx
-		if idx < 0 {
-			return normalizeOutputValue(input, buf[:0]), false, nil
-		}
-	}
-	if idx >= len(elems) {
-		return normalizeOutputValue(input, buf[:0]), false, nil
-	}
-	buf = append(buf, '[')
-	first := true
-	for i, elem := range elems {
-		omit := false
-		outVal := elem
-		if i == idx {
-			if depth+1 >= len(steps) {
-				omit = true
-			} else {
-				var deleted bool
-				var err error
-				outVal, deleted, err = delPathDecoded(elem, steps, depth+1, nil)
-				if err != nil {
-					return nil, false, err
-				}
-				omit = deleted
-			}
-		}
-		if omit {
-			continue
-		}
-		if !first {
-			buf = append(buf, ',')
-		}
-		first = false
-		buf = append(buf, outVal...)
-	}
-	buf = append(buf, ']')
-	return buf, false, nil
-}
-
-func setpathAccessError(current []byte, step pathStep) error {
-	if step.kind == pathStepString {
-		return fmt.Errorf("Cannot index %s with string %q", jsonTypeName(current), step.key)
-	}
-	if step.kind == pathStepNumber {
-		return fmt.Errorf("Cannot index %s with number", jsonTypeName(current))
-	}
-	if step.typeName == "array" && isArrayValue(current) {
-		return fmt.Errorf("Cannot update field at array index of array")
-	}
-	if step.typeName == "object" && (isNull(current) || isArrayValue(current)) {
-		return fmt.Errorf("Array/string slice indices must be integers")
-	}
-	return fmt.Errorf("Cannot index %s with %s", jsonTypeName(current), step.typeName)
-}
-
-func isArrayValue(input []byte) bool {
-	s := scanner{data: input}
-	s.skipWhitespace()
-	return s.pos < len(s.data) && s.data[s.pos] == '['
-}
-
 // execAnyAll implements any/all with optional expr argument.
 // wantAll=false → any (true if at least one match), wantAll=true → all (true if all match).
 func execAnyAll(node *op, input []byte, buf []byte, fn func([]byte) error, wantAll bool) error {
@@ -6889,7 +3069,7 @@ func execAnyAllSingle(node *op, input []byte, buf []byte, wantAll bool) ([]byte,
 		return boolResult(buf, wantAll), nil
 	}
 
-	found := false      // for any: true if a match was found
+	found := false   // for any: true if a match was found
 	falseFound := false // for all: true if a non-match was found
 
 	check := func(elem []byte) bool {
@@ -7158,45 +3338,6 @@ func execPow(node *op, input []byte, buf []byte) ([]byte, error) {
 	return appendNumber(buf[:0], math.Pow(xf, yf)), nil
 }
 
-func execHypot(node *op, input []byte, buf []byte) ([]byte, error) {
-	xVal, err := execSingle(node.left, input, nil)
-	if err != nil {
-		return nil, err
-	}
-	yVal, err := execSingle(node.right, input, nil)
-	if err != nil {
-		return nil, err
-	}
-	xf, xok := parseJSONFloat(xVal)
-	yf, yok := parseJSONFloat(yVal)
-	if !xok || !yok {
-		return nil, fmt.Errorf("hypot inputs must be numbers")
-	}
-	return appendNumber(buf[:0], math.Hypot(xf, yf)), nil
-}
-
-func execFMA(node *op, input []byte, buf []byte) ([]byte, error) {
-	xVal, err := execSingle(node.left, input, nil)
-	if err != nil {
-		return nil, err
-	}
-	yVal, err := execSingle(node.right, input, nil)
-	if err != nil {
-		return nil, err
-	}
-	zVal, err := execSingle(node.child, input, nil)
-	if err != nil {
-		return nil, err
-	}
-	xf, xok := parseJSONFloat(xVal)
-	yf, yok := parseJSONFloat(yVal)
-	zf, zok := parseJSONFloat(zVal)
-	if !xok || !yok || !zok {
-		return nil, fmt.Errorf("fma inputs must be numbers")
-	}
-	return appendNumber(buf[:0], math.FMA(xf, yf, zf)), nil
-}
-
 // execStringPredicate implements startswith and endswith.
 // Returns bTrue/bFalse when buf is nil (zero-alloc in condition context).
 func execStringPredicate(input []byte, buf []byte, s string, start, end bool) []byte {
@@ -7215,41 +3356,19 @@ func execStringPredicate(input []byte, buf []byte, s string, start, end bool) []
 	return boolResult(buf, match)
 }
 
-func resolveStringLikeArg(node *op, input []byte) ([]byte, error) {
-	if node.child == nil {
-		return []byte(node.field), nil
-	}
-	value, err := execSingle(node.child, input, nil)
-	if err != nil {
-		return nil, err
-	}
-	sc := &scanner{data: value}
-	sc.skipWhitespace()
-	if sc.pos >= len(sc.data) || sc.data[sc.pos] != '"' {
-		return nil, fmt.Errorf("string argument must be a string")
-	}
-	return sc.readString(), nil
-}
-
 // execTrimStr implements ltrimstr (left=true) and rtrimstr (left=false).
 // If the input string starts/ends with s, returns the trimmed string.
 // If no match, returns the input unchanged (cap-limited zero-alloc sub-slice when buf is nil).
-func execTrimStr(node *op, input []byte, buf []byte, left bool) ([]byte, error) {
-	s, err := resolveStringLikeArg(node, input)
-	if err != nil {
-		if left {
-			return nil, &transparentError{err: fmt.Errorf("startswith() requires string inputs")}
-		}
-		return nil, &transparentError{err: fmt.Errorf("endswith() requires string inputs")}
-	}
+func execTrimStr(input []byte, buf []byte, s string, left bool) []byte {
 	sc := &scanner{data: input}
 	sc.skipWhitespace()
 	start := sc.pos
 	if sc.pos >= len(sc.data) || sc.data[sc.pos] != '"' {
-		if left {
-			return nil, &transparentError{err: fmt.Errorf("startswith() requires string inputs")}
+		if buf == nil {
+			end := sc.pos
+			return input[start:end:end]
 		}
-		return nil, &transparentError{err: fmt.Errorf("endswith() requires string inputs")}
+		return append(buf, input[start:]...)
 	}
 	content := sc.readString()
 	end := sc.pos
@@ -7257,12 +3376,12 @@ func execTrimStr(node *op, input []byte, buf []byte, left bool) ([]byte, error) 
 	var match bool
 	var trimmed []byte
 	if left {
-		match = len(content) >= len(s) && bytesEqualStr(content[:len(s)], string(s))
+		match = len(content) >= len(s) && bytesEqualStr(content[:len(s)], s)
 		if match {
 			trimmed = content[len(s):]
 		}
 	} else {
-		match = len(content) >= len(s) && bytesEqualStr(content[len(content)-len(s):], string(s))
+		match = len(content) >= len(s) && bytesEqualStr(content[len(content)-len(s):], s)
 		if match {
 			trimmed = content[:len(content)-len(s)]
 		}
@@ -7270,97 +3389,15 @@ func execTrimStr(node *op, input []byte, buf []byte, left bool) ([]byte, error) 
 
 	if !match {
 		if buf == nil {
-			return input[start:end:end], nil
+			return input[start:end:end]
 		}
-		return append(buf, input[start:end]...), nil
+		return append(buf, input[start:end]...)
 	}
 
 	buf = append(buf, '"')
 	buf = append(buf, trimmed...)
 	buf = append(buf, '"')
-	return buf, nil
-}
-
-func execTrimStrBoth(node *op, input []byte, buf []byte) ([]byte, error) {
-	s, err := resolveStringLikeArg(node, input)
-	if err != nil {
-		return nil, &transparentError{err: fmt.Errorf("startswith() requires string inputs")}
-	}
-	leftNode := &op{field: string(s)}
-	left, err := execTrimStr(leftNode, input, nil, true)
-	if err != nil {
-		return nil, err
-	}
-	rightNode := &op{field: string(s)}
-	return execTrimStr(rightNode, left, buf, false)
-}
-
-type trimMode int
-
-const (
-	trimBoth trimMode = iota
-	trimLeft
-	trimRight
-)
-
-func execTrim(input []byte, buf []byte, mode trimMode) ([]byte, error) {
-	sc := &scanner{data: input}
-	sc.skipWhitespace()
-	if sc.pos >= len(sc.data) || sc.data[sc.pos] != '"' {
-		return nil, fmt.Errorf("trim input must be a string")
-	}
-	raw := sc.readString()
-	decoded := decodeJSONStringContent(nil, raw)
-
-	var trimmed string
-	switch mode {
-	case trimLeft:
-		trimmed = strings.TrimLeftFunc(string(decoded), unicode.IsSpace)
-	case trimRight:
-		trimmed = strings.TrimRightFunc(string(decoded), unicode.IsSpace)
-	default:
-		trimmed = strings.TrimFunc(string(decoded), unicode.IsSpace)
-	}
-
-	buf = append(buf, '"')
-	buf = appendJSONStringContent(buf, []byte(trimmed))
-	buf = append(buf, '"')
-	return buf, nil
-}
-
-func execUTF8ByteLength(input []byte, buf []byte) ([]byte, error) {
-	sc := &scanner{data: input}
-	sc.skipWhitespace()
-	if sc.pos >= len(sc.data) || sc.data[sc.pos] != '"' {
-		raw := trimWhitespace(input)
-		return nil, fmt.Errorf("%s (%s) only strings have UTF-8 byte length", jsonTypeName(raw), raw)
-	}
-	raw := sc.readString()
-	decoded := decodeJSONStringContent(nil, raw)
-	return appendInt(buf[:0], len(decoded)), nil
-}
-
-func execReverse(input []byte, buf []byte) ([]byte, error) {
-	input = trimWhitespace(input)
-	s := scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
-		return nil, fmt.Errorf("reverse input must be an array")
-	}
-	var elems [][]byte
-	s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-		elems = append(elems, input[elemStart:elemEnd])
-		return true
-	})
-	buf = append(buf, '[')
-	for i := len(elems) - 1; i >= 0; i-- {
-		if i != len(elems)-1 {
-			buf = append(buf, ',')
-		}
-		buf = append(buf, elems[i]...)
-	}
-	buf = append(buf, ']')
-	return buf, nil
+	return buf
 }
 
 // execHas checks field membership (object) or index bounds (array).
@@ -7392,17 +3429,12 @@ func execHas(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 // Used by execIf and execAlternative to avoid closure allocation in the common case.
 func isSingleOutputOp(o *op) bool {
 	switch o.typ {
-	case opOptional:
-		return isSingleOutputOp(o.child)
 	case opIdentity, opField, opIndex, opLiteral, opCompare, opAnd, opOr, opNot,
-		opLength, opHas, opIn, opINBuiltin, opSlice, opPlus, opMinus, opMul, opDiv, opMod,
+		opLength, opHas, opIn, opSlice, opPlus, opMinus, opMul, opDiv, opMod,
 		opAdd, opFlatten, opSelect, opAlternative, opTypeBuiltin, opToEntries,
-		opFromEntries, opToJSON, opFromJSON, opToString, opToNumber, opToBoolean,
+		opFromEntries, opToJSON, opFromJSON, opToString, opToNumber,
 		opBase64, opBase64D, opAsciiDowncase, opAsciiUpcase,
-		opStartsWith, opEndsWith, opSplit, opJoin, opTrim, opLtrim, opRtrim,
-		opTrimStr, opLtrimStr, opRtrimStr, opHaveDecnum, opUTF8ByteLength,
-		opReverse, opPick, opINDEXBuiltin, opUntil, opURIEncode, opTodate, opNow,
-		opHypot, opFMA,
+		opStartsWith, opEndsWith, opSplit, opJoin, opURIEncode,
 		opDebug:
 		return true
 	case opPipe:
@@ -7446,8 +3478,7 @@ func execIf(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 
 // execAlternative collects all truthy outputs from left; if none, evaluates right.
 // jq semantics: (null, false, 3) // 18 → 3 (truthy outputs pass through).
-//
-//	(null, false) // 18 → 18 (no truthy outputs, use right).
+//               (null, false) // 18 → 18 (no truthy outputs, use right).
 func execAlternative(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	anyTruthy := false
 	err := execMulti(node.left, input, buf, func(result []byte) error {
@@ -7506,7 +3537,7 @@ func execArithValues(typ opType, leftVal, rightVal, buf []byte) ([]byte, error) 
 			rs.pos < len(rs.data) && rs.data[rs.pos] == '[' {
 			return execArrayDiff(leftVal, rightVal, buf), nil
 		}
-		return nil, fmt.Errorf("%s and %s cannot be subtracted", jqTypeValueForError(leftVal), jqTypeValueForError(rightVal))
+		return nil, fmt.Errorf("cannot subtract %q from %q", rightVal, leftVal)
 
 	case opMul:
 		if lok && rok {
@@ -7571,17 +3602,6 @@ func execArithValues(typ opType, leftVal, rightVal, buf []byte) ([]byte, error) 
 			if rf == 0 {
 				return nil, fmt.Errorf("number (%s) and number (%s) cannot be divided (remainder) because the divisor is zero",
 					string(leftVal), string(rightVal))
-			}
-			if math.IsInf(lf, 0) {
-				if math.IsInf(rf, 1) {
-					if math.IsInf(lf, -1) {
-						return appendInt(buf, -1), nil
-					}
-					return appendInt(buf, 0), nil
-				}
-				if !math.IsInf(rf, 0) && !math.IsNaN(rf) {
-					return appendInt(buf, 0), nil
-				}
 			}
 			// integer modulo when both operands are integral
 			li, ri := int64(lf), int64(rf)
@@ -8118,21 +4138,15 @@ func compareJSONOrder(a, b []byte) int {
 	case 't': // true == true
 		return 0
 	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9': // number
-		if cmp, ok := compareJSONNumberLiterals(a, b); ok {
-			return cmp
+		af, _ := parseJSONFloat(a)
+		bf, _ := parseJSONFloat(b)
+		if af < bf {
+			return -1
 		}
-		af, aOk := parseJSONFloat(a)
-		bf, bOk := parseJSONFloat(b)
-		if aOk && bOk {
-			if af < bf {
-				return -1
-			}
-			if af > bf {
-				return 1
-			}
-			return 0
+		if af > bf {
+			return 1
 		}
-		return bytesCompare(trimWhitespace(a), trimWhitespace(b))
+		return 0
 	case '"': // string: lexicographic byte comparison of content
 		ac := as.readString()
 		bc := bs.readString()
@@ -8328,23 +4342,8 @@ func execToJSON(input []byte, buf []byte) []byte {
 	s.skipValue()
 	value := input[start:s.pos]
 	buf = append(buf, '"')
-	depth := 0
-	truncated := false
-	for i := 0; i < len(value) && !truncated; {
+	for i := 0; i < len(value); {
 		b := value[i]
-		switch b {
-		case '{', '[':
-			depth++
-			if depth > jsonStringifySkipDepthLimit {
-				buf = append(buf, "<skipped: too deep>"...)
-				truncated = true
-				continue
-			}
-		case '}', ']':
-			if depth > 0 {
-				depth--
-			}
-		}
 		// Replace nan token with null
 		if b == 'n' && i+3 <= len(value) && value[i+1] == 'a' && value[i+2] == 'n' {
 			buf = append(buf, "null"...)
@@ -8374,6 +4373,7 @@ func execToJSON(input []byte, buf []byte) []byte {
 	}
 	return append(buf, '"')
 }
+
 
 // execFromJSON parses a JSON string and returns its content as raw JSON bytes.
 // Returns an error if the resulting value is not valid JSON.
@@ -8419,45 +4419,10 @@ func execFromJSON(input []byte, buf []byte) ([]byte, error) {
 		buf = buf[:startLen]
 		return append(buf, "-infinite"...), nil
 	}
-	if exceedsJSONDepthLimit(result, jsonParseDepthLimit) {
-		return nil, fmt.Errorf("Exceeds depth limit for parsing")
-	}
 	if !json.Valid(result) {
 		return nil, fromJSONError(result)
 	}
 	return buf, nil
-}
-
-func exceedsJSONDepthLimit(data []byte, limit int) bool {
-	depth := 0
-	inString := false
-	for i := 0; i < len(data); i++ {
-		ch := data[i]
-		if inString {
-			if ch == '\\' {
-				i++
-				continue
-			}
-			if ch == '"' {
-				inString = false
-			}
-			continue
-		}
-		switch ch {
-		case '"':
-			inString = true
-		case '{', '[':
-			depth++
-			if depth > limit {
-				return true
-			}
-		case '}', ']':
-			if depth > 0 {
-				depth--
-			}
-		}
-	}
-	return false
 }
 
 // fromJSONError generates a jq-compatible error message for invalid JSON.
@@ -8509,6 +4474,8 @@ func fromJSONError(data []byte) error {
 	return fmt.Errorf("Invalid numeric literal at EOF at line 1, column %d (while parsing '%s')", col-1, content)
 }
 
+
+
 // execToString returns the input unchanged if it is already a JSON string,
 // otherwise calls execToJSON to wrap it.
 func execToString(input []byte, buf []byte) []byte {
@@ -8556,69 +4523,6 @@ func execToNumber(input []byte, buf []byte) ([]byte, error) {
 	}
 }
 
-func execToBoolean(input []byte, buf []byte) ([]byte, error) {
-	s := scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return nil, fmt.Errorf("null () cannot be parsed as a boolean")
-	}
-	switch s.data[s.pos] {
-	case 't':
-		return append(buf, "true"...), nil
-	case 'f':
-		return append(buf, "false"...), nil
-	case '"':
-		raw := trimWhitespace(input)
-		content := s.readString()
-		if bytesEqualStr(content, "true") {
-			return append(buf, "true"...), nil
-		}
-		if bytesEqualStr(content, "false") {
-			return append(buf, "false"...), nil
-		}
-		return nil, fmt.Errorf("string (%s) cannot be parsed as a boolean", raw)
-	default:
-		raw := trimWhitespace(input)
-		typeName := jsonTypeName(raw)
-		if isNumberByte(s.data[s.pos]) {
-			typeName = "number"
-		}
-		return nil, fmt.Errorf("%s (%s) cannot be parsed as a boolean", typeName, raw)
-	}
-}
-
-func execAbs(input []byte, buf []byte) ([]byte, error) {
-	s := scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return nil, fmt.Errorf("abs input must be a number or string")
-	}
-	start := s.pos
-	switch s.data[s.pos] {
-	case '"':
-		s.skipValue()
-		if buf == nil {
-			return input[start:s.pos:s.pos], nil
-		}
-		return append(buf, input[start:s.pos]...), nil
-	case '-':
-		s.skipValue()
-		if buf == nil {
-			return input[start+1 : s.pos : s.pos], nil
-		}
-		return append(buf, input[start+1:s.pos]...), nil
-	default:
-		if isNumberByte(s.data[s.pos]) {
-			s.skipValue()
-			if buf == nil {
-				return input[start:s.pos:s.pos], nil
-			}
-			return append(buf, input[start:s.pos]...), nil
-		}
-		return nil, fmt.Errorf("abs input must be a number or string")
-	}
-}
-
 // execURIEncode percent-encodes a JSON string per RFC 3986 unreserved characters.
 // The JSON string is first decoded (escape sequences resolved) so that e.g.
 // "\u03bc" encodes as %CE%BC (the UTF-8 bytes for μ) rather than %5Cu03bc.
@@ -8628,7 +4532,7 @@ func execURIEncode(input []byte, buf []byte) ([]byte, error) {
 	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
 		return nil, fmt.Errorf("@uri input must be a string")
 	}
-	raw := s.readString()                        // raw bytes between JSON quotes
+	raw := s.readString()                    // raw bytes between JSON quotes
 	content := decodeJSONStringContent(nil, raw) // resolve escape sequences
 
 	buf = append(buf, '"')
@@ -8666,19 +4570,6 @@ func hexNibble(b byte) rune {
 		return rune(b-'A') + 10
 	}
 	return 0
-}
-
-func parseHexNibbleByte(b byte) (byte, bool) {
-	switch {
-	case b >= '0' && b <= '9':
-		return b - '0', true
-	case b >= 'a' && b <= 'f':
-		return b - 'a' + 10, true
-	case b >= 'A' && b <= 'F':
-		return b - 'A' + 10, true
-	default:
-		return 0, false
-	}
 }
 
 // appendRuneUTF8 appends the UTF-8 encoding of r to dst.
@@ -8762,365 +4653,6 @@ func decodeJSONStringContent(dst, content []byte) []byte {
 
 // jsonHexChars is the lowercase hex digit table for JSON \uXXXX encoding.
 const jsonHexChars = "0123456789abcdef"
-
-// appendCanonicalRawJSONStringContent normalizes raw JSON string content into jq's
-// preferred output form without rewriting already-raw UTF-8 bytes. Control escapes
-// become \u00xx, printable ASCII escapes become literal bytes, and \uXXXX escapes
-// are normalized to lowercase hex (or surrogate pairs above U+FFFF).
-func appendCanonicalRawJSONStringContent(dst, raw []byte) []byte {
-	for i := 0; i < len(raw); i++ {
-		if raw[i] != '\\' {
-			if raw[i] < 0x20 {
-				dst = append(dst, '\\', 'u', '0', '0',
-					jsonHexChars[raw[i]>>4], jsonHexChars[raw[i]&0xF])
-			} else {
-				dst = append(dst, raw[i])
-			}
-			continue
-		}
-		i++
-		if i >= len(raw) {
-			break
-		}
-		switch raw[i] {
-		case '"':
-			dst = append(dst, '\\', '"')
-		case '\\':
-			dst = append(dst, '\\', '\\')
-		case '/':
-			dst = append(dst, '/')
-		case 'n':
-			dst = append(dst, '\\', 'u', '0', '0', '0', 'a')
-		case 'r':
-			dst = append(dst, '\\', 'u', '0', '0', '0', 'd')
-		case 't':
-			dst = append(dst, '\\', 'u', '0', '0', '0', '9')
-		case 'b':
-			dst = append(dst, '\\', 'u', '0', '0', '0', '8')
-		case 'f':
-			dst = append(dst, '\\', 'u', '0', '0', '0', 'c')
-		case 'u':
-			if i+4 >= len(raw) {
-				continue
-			}
-			r := hexNibble(raw[i+1])<<12 |
-				hexNibble(raw[i+2])<<8 |
-				hexNibble(raw[i+3])<<4 |
-				hexNibble(raw[i+4])
-			i += 4
-			if r >= 0xD800 && r <= 0xDBFF && i+6 < len(raw) &&
-				raw[i+1] == '\\' && raw[i+2] == 'u' {
-				r2 := hexNibble(raw[i+3])<<12 |
-					hexNibble(raw[i+4])<<8 |
-					hexNibble(raw[i+5])<<4 |
-					hexNibble(raw[i+6])
-				if r2 >= 0xDC00 && r2 <= 0xDFFF {
-					dst = appendHex4Escape(dst, r)
-					dst = appendHex4Escape(dst, r2)
-					i += 6
-					continue
-				}
-			}
-			switch {
-			case r < 0x20:
-				dst = appendHex4Escape(dst, r)
-			case r == '"':
-				dst = append(dst, '\\', '"')
-			case r == '\\':
-				dst = append(dst, '\\', '\\')
-			case r < 0x80:
-				dst = append(dst, byte(r))
-			default:
-				dst = appendHex4Escape(dst, r)
-			}
-		default:
-			dst = append(dst, raw[i])
-		}
-	}
-	return dst
-}
-
-func normalizeOutputValue(value, buf []byte) []byte {
-	s := scanner{data: value}
-	s.skipWhitespace()
-	start := s.pos
-	s.skipValue()
-	value = value[start:s.pos]
-	if len(value) == 0 {
-		if buf == nil {
-			return value
-		}
-		return append(buf, value...)
-	}
-	if value[0] != '"' {
-		if buf == nil {
-			return value[:len(value):len(value)]
-		}
-		return append(buf, value...)
-	}
-	out := buf
-	if out == nil {
-		out = make([]byte, 0, len(value))
-	}
-	ss := scanner{data: value}
-	raw := ss.readString()
-	out = append(out, '"')
-	out = appendCanonicalRawJSONStringContent(out, raw)
-	return append(out, '"')
-}
-
-func execStringTemplate(node *op, input, buf []byte) ([]byte, error) {
-	return execInterpolatedTemplate(node, input, buf, false)
-}
-
-func execFormatTemplate(node *op, input, buf []byte) ([]byte, error) {
-	return execInterpolatedTemplate(node, input, buf, true)
-}
-
-func execInterpolatedTemplate(node *op, input, buf []byte, applyFormat bool) ([]byte, error) {
-	buf = append(buf, '"')
-	for i, expr := range node.elems {
-		buf = append(buf, node.segs[i]...)
-		result, err := execSingle(expr, input, nil)
-		if err != nil {
-			return nil, err
-		}
-		if applyFormat {
-			result, err = execTemplateFormatter(node.format, result, nil)
-			if err != nil {
-				return nil, err
-			}
-		}
-		buf = appendEmbeddedJSONValue(buf, trimWhitespace(result))
-	}
-	buf = append(buf, node.segs[len(node.elems)]...)
-	return append(buf, '"'), nil
-}
-
-func appendEmbeddedJSONValue(dst, result []byte) []byte {
-	if len(result) > 0 && result[0] == '"' {
-		sc := scanner{data: result}
-		return append(dst, sc.readString()...)
-	}
-	for _, b := range result {
-		if b == '"' {
-			dst = append(dst, '\\', '"')
-		} else if b == '\\' {
-			dst = append(dst, '\\', '\\')
-		} else {
-			dst = append(dst, b)
-		}
-	}
-	return dst
-}
-
-func execTemplateFormatter(format opType, input, buf []byte) ([]byte, error) {
-	switch format {
-	case opBase64:
-		return execBase64Encode(input, buf)
-	case opBase64D:
-		return execBase64Decode(input, buf)
-	case opURIEncode:
-		return execURIEncode(input, buf)
-	case opToJSON:
-		return execToJSON(input, buf), nil
-	case opToString:
-		return execToString(input, buf), nil
-	case opHTMLEncode:
-		return execHTMLEncode(input, buf)
-	case opCSVEncode:
-		return execCSVEncode(input, buf)
-	case opTSVEncode:
-		return execTSVEncode(input, buf)
-	case opShEncode:
-		return execShEncode(input, buf)
-	case opURIDecode:
-		return execURIDecode(input, buf)
-	default:
-		return nil, fmt.Errorf("unsupported template formatter: %v", format)
-	}
-}
-
-func jqTypeValueForError(value []byte) string {
-	s := scanner{data: value}
-	s.skipWhitespace()
-	typeName := "number"
-	if s.pos < len(s.data) {
-		switch s.data[s.pos] {
-		case '"':
-			typeName = "string"
-		case 'n':
-			typeName = "null"
-		case 't', 'f':
-			typeName = "boolean"
-		case '[':
-			typeName = "array"
-		case '{':
-			typeName = "object"
-		}
-	}
-	raw := string(trimWhitespace(value))
-	if len(raw) > 14 {
-		raw = raw[:11] + "..."
-	}
-	return fmt.Sprintf("%s (%s)", typeName, raw)
-}
-
-func catchInputFromError(err error) []byte {
-	if je, ok := err.(*jsonError); ok {
-		return je.payload
-	}
-	msg := make([]byte, 0, 64)
-	msg = append(msg, '"')
-	for _, b := range []byte(err.Error()) {
-		if b == '"' {
-			msg = append(msg, '\\', '"')
-		} else if b == '\\' {
-			msg = append(msg, '\\', '\\')
-		} else {
-			msg = append(msg, b)
-		}
-	}
-	return append(msg, '"')
-}
-
-func withTryScope(fn func() error) error {
-	gid := currentGID()
-	tryScopeMu.Lock()
-	tryScopeByGID[gid]++
-	tryScopeMu.Unlock()
-	defer func() {
-		tryScopeMu.Lock()
-		if tryScopeByGID[gid] <= 1 {
-			delete(tryScopeByGID, gid)
-		} else {
-			tryScopeByGID[gid]--
-		}
-		tryScopeMu.Unlock()
-	}()
-	return fn()
-}
-
-func tryScopeActive() bool {
-	gid := currentGID()
-	tryScopeMu.Lock()
-	active := tryScopeByGID[gid] > 0
-	tryScopeMu.Unlock()
-	return active
-}
-
-func withOptionalScope(fn func() error) error {
-	gid := currentGID()
-	optionalScopeMu.Lock()
-	optionalScopeByGID[gid]++
-	optionalScopeMu.Unlock()
-	defer func() {
-		optionalScopeMu.Lock()
-		if optionalScopeByGID[gid] <= 1 {
-			delete(optionalScopeByGID, gid)
-		} else {
-			optionalScopeByGID[gid]--
-		}
-		optionalScopeMu.Unlock()
-	}()
-	return fn()
-}
-
-func optionalScopeActive() bool {
-	gid := currentGID()
-	optionalScopeMu.Lock()
-	active := optionalScopeByGID[gid] > 0
-	optionalScopeMu.Unlock()
-	return active
-}
-
-func currentIndexScope() []byte {
-	gid := currentGID()
-	indexScopeMu.Lock()
-	stack := indexScopeByGID[gid]
-	var scope []byte
-	if len(stack) > 0 {
-		scope = stack[len(stack)-1]
-	}
-	indexScopeMu.Unlock()
-	return scope
-}
-
-func chainedIndexScope(input []byte) []byte {
-	if scope := currentIndexScope(); scope != nil {
-		return scope
-	}
-	return input
-}
-
-func withIndexScope(scope []byte, fn func() error) error {
-	gid := currentGID()
-	indexScopeMu.Lock()
-	indexScopeByGID[gid] = append(indexScopeByGID[gid], scope)
-	indexScopeMu.Unlock()
-	defer func() {
-		indexScopeMu.Lock()
-		stack := indexScopeByGID[gid]
-		if len(stack) <= 1 {
-			delete(indexScopeByGID, gid)
-		} else {
-			indexScopeByGID[gid] = stack[:len(stack)-1]
-		}
-		indexScopeMu.Unlock()
-	}()
-	return fn()
-}
-
-func currentGID() uint64 {
-	var buf [64]byte
-	n := runtime.Stack(buf[:], false)
-	var id uint64
-	for i := len("goroutine "); i < n; i++ {
-		b := buf[i]
-		if b < '0' || b > '9' {
-			break
-		}
-		id = id*10 + uint64(b-'0')
-	}
-	return id
-}
-
-func jsonTypeName(input []byte) string {
-	s := scanner{data: input}
-	s.skipWhitespace()
-	if s.pos >= len(s.data) {
-		return "null"
-	}
-	switch s.data[s.pos] {
-	case '{':
-		return "object"
-	case '[':
-		return "array"
-	case '"':
-		return "string"
-	case 't', 'f':
-		return "boolean"
-	case 'n':
-		return "null"
-	default:
-		if isNumberByte(s.data[s.pos]) {
-			return "number"
-		}
-		return "invalid"
-	}
-}
-
-func fieldAccessError(input []byte, field string) error {
-	return fmt.Errorf("Cannot index %s with string %q", jsonTypeName(input), field)
-}
-
-func indexAccessError(input []byte, index int) error {
-	return fmt.Errorf("Cannot index %s with number %d", jsonTypeName(input), index)
-}
-
-func dynamicIndexNumberAccessError(input []byte) error {
-	return fmt.Errorf("Cannot index %s with number", jsonTypeName(input))
-}
 
 // appendJSONStringContent appends decoded bytes re-encoded as JSON string content
 // (without outer quotes). Handles standard escaping for control chars, " and \.
@@ -9245,7 +4777,7 @@ func appendHex4Escape(dst []byte, r rune) []byte {
 type roundMode int
 
 const (
-	roundFloor roundMode = iota
+	roundFloor   roundMode = iota
 	roundCeil
 	roundNearest
 )
@@ -9285,7 +4817,7 @@ func execRoundMode(input, buf []byte, mode roundMode) []byte {
 type mathFuncType int
 
 const (
-	mathSqrt mathFuncType = iota
+	mathSqrt      mathFuncType = iota
 	mathFabs
 	mathAtan
 	mathLog
@@ -9576,7 +5108,7 @@ func execTSVEncode(input, buf []byte) ([]byte, error) {
 // --- @sh ---
 
 // execShEncode shell-quotes a JSON string as a single-quoted POSIX sh string.
-// Internal single quotes are escaped as '\” (end-quote, backslash-quote, reopen-quote).
+// Internal single quotes are escaped as '\'' (end-quote, backslash-quote, reopen-quote).
 func execShEncode(input, buf []byte) ([]byte, error) {
 	s := scanner{data: input}
 	s.skipWhitespace()
@@ -9633,32 +5165,19 @@ func execURIDecode(input, buf []byte) ([]byte, error) {
 	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
 		return nil, fmt.Errorf("@urid input must be a string")
 	}
-	raw := decodeJSONStringContent(nil, s.readString())
-	inputText := string(trimWhitespace(input))
-	invalidURI := func() error {
-		return fmt.Errorf("string (%s) is not a valid uri encoding", inputText)
-	}
+	raw := s.readString() // raw JSON string content, e.g. %CE%BC
 
 	// Percent-decode to raw bytes
 	decoded := make([]byte, 0, len(raw))
 	for i := 0; i < len(raw); i++ {
-		if raw[i] != '%' {
+		if raw[i] == '%' && i+2 < len(raw) {
+			hi := hexNibble(raw[i+1])
+			lo := hexNibble(raw[i+2])
+			decoded = append(decoded, byte(hi<<4)|byte(lo))
+			i += 2
+		} else {
 			decoded = append(decoded, raw[i])
-			continue
 		}
-		if i+2 >= len(raw) {
-			return nil, invalidURI()
-		}
-		hi, okHi := parseHexNibbleByte(raw[i+1])
-		lo, okLo := parseHexNibbleByte(raw[i+2])
-		if !okHi || !okLo {
-			return nil, invalidURI()
-		}
-		decoded = append(decoded, (hi<<4)|lo)
-		i += 2
-	}
-	if !utf8.Valid(decoded) {
-		return nil, invalidURI()
 	}
 
 	buf = append(buf, '"')
@@ -9888,59 +5407,47 @@ func execGSub(node *op, input []byte, buf []byte) ([]byte, error) {
 // Supports errBreak for early exit: limit(3; range(100)) stops after 3 values.
 // Float steps and negative steps are supported. Step of 0 returns an error.
 func execRange(node *op, input []byte, fn func([]byte) error) error {
-	fromVals, err := collectExecOutputs(node.left, input)
+	fromBytes, err := execSingle(node.left, input, nil)
 	if err != nil {
 		return err
 	}
-	toVals, err := collectExecOutputs(node.right, input)
+	toBytes, err := execSingle(node.right, input, nil)
 	if err != nil {
 		return err
-	}
-	if len(fromVals) == 0 || len(toVals) == 0 {
-		return nil
 	}
 
-	stepVals := [][]byte{[]byte("1")}
+	from, ok := parseJSONFloat(fromBytes)
+	if !ok {
+		return fmt.Errorf("range: 'from' must be a number, got %s", fromBytes)
+	}
+	to, ok := parseJSONFloat(toBytes)
+	if !ok {
+		return fmt.Errorf("range: 'to' must be a number, got %s", toBytes)
+	}
+
+	step := 1.0
 	if node.child != nil {
-		stepVals, err = collectExecOutputs(node.child, input)
+		stepBytes, err := execSingle(node.child, input, nil)
 		if err != nil {
 			return err
 		}
-		if len(stepVals) == 0 {
-			return nil
+		step, ok = parseJSONFloat(stepBytes)
+		if !ok {
+			return fmt.Errorf("range: 'step' must be a number, got %s", stepBytes)
+		}
+		if step == 0 {
+			return fmt.Errorf("range: step cannot be zero")
 		}
 	}
 
-	for _, fromBytes := range fromVals {
-		from, ok := parseJSONFloat(fromBytes)
-		if !ok {
-			return fmt.Errorf("range: 'from' must be a number, got %s", fromBytes)
-		}
-		for _, toBytes := range toVals {
-			to, ok := parseJSONFloat(toBytes)
-			if !ok {
-				return fmt.Errorf("range: 'to' must be a number, got %s", toBytes)
+	for i := from; (step > 0 && i < to) || (step < 0 && i > to); i += step {
+		// 1 alloc per value — proportional to what was asked for (Tier 2).
+		out := appendJSONFloat(nil, i)
+		if err := fn(out); err != nil {
+			if err == errBreak {
+				return nil
 			}
-			for _, stepBytes := range stepVals {
-				step, ok := parseJSONFloat(stepBytes)
-				if !ok {
-					return fmt.Errorf("range: 'step' must be a number, got %s", stepBytes)
-				}
-				if step == 0 {
-					return fmt.Errorf("range: step cannot be zero")
-				}
-
-				for i := from; (step > 0 && i < to) || (step < 0 && i > to); i += step {
-					// 1 alloc per value — proportional to what was asked for (Tier 2).
-					out := appendJSONFloat(nil, i)
-					if err := fn(out); err != nil {
-						if err == errBreak {
-							return nil
-						}
-						return err
-					}
-				}
-			}
+			return err
 		}
 	}
 	return nil

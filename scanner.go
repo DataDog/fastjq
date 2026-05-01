@@ -2,7 +2,9 @@ package fastjq
 
 import (
 	"bytes"
+	"errors"
 	"math"
+	"strconv"
 )
 
 // scanner is a zero-allocation JSON scanner that operates on raw bytes.
@@ -423,7 +425,9 @@ func jsonEqual(a, b []byte) bool {
 		aContent := sa.readString()
 		sb := &scanner{data: b}
 		bContent := sb.readString()
-		return bytesEqual(aContent, bContent)
+		aDecoded := decodeJSONStringContent(nil, aContent)
+		bDecoded := decodeJSONStringContent(nil, bContent)
+		return bytesEqual(aDecoded, bDecoded)
 	}
 
 	// Booleans and null: first byte determines identity
@@ -463,7 +467,42 @@ func jsonEqual(a, b []byte) bool {
 		return equal && countA == countB
 	}
 
-	// Arrays and other types: byte-for-byte only (already tried above)
+	// Arrays: compare element-by-element recursively so numerically equivalent
+	// values like 0.1 and 1e-1 match inside collections too.
+	if aCh == '[' && bCh == '[' {
+		countA := 0
+		countB := 0
+		equal := true
+
+		var elemsA [][2]int
+		sa := scanner{data: a}
+		sa.arrayIter(func(_ int, start, end int) bool {
+			elemsA = append(elemsA, [2]int{start, end})
+			countA++
+			return true
+		})
+
+		sb := scanner{data: b}
+		sb.arrayIter(func(i, start, end int) bool {
+			countB++
+			if !equal {
+				return true
+			}
+			if i >= len(elemsA) {
+				equal = false
+				return false
+			}
+			span := elemsA[i]
+			if !jsonEqual(a[span[0]:span[1]], b[start:end]) {
+				equal = false
+				return false
+			}
+			return true
+		})
+		return equal && countA == countB
+	}
+
+	// Other types: byte-for-byte only (already tried above)
 	return false
 }
 
@@ -531,9 +570,159 @@ func parseJSONFloat(b []byte) (float64, bool) {
 	// Slow path: use strconv via unsafe.String to avoid allocation
 	f, err := parseFloatUnsafe(b)
 	if err != nil {
+		if errors.Is(err, strconv.ErrRange) {
+			return f, true
+		}
 		return 0, false
 	}
 	return f, true
+}
+
+type decimalLiteral struct {
+	neg    bool
+	digits []byte
+	exp10  int64
+}
+
+func compareJSONNumberLiterals(a, b []byte) (int, bool) {
+	da, aok := parseDecimalLiteral(trimWhitespace(a))
+	db, bok := parseDecimalLiteral(trimWhitespace(b))
+	if !aok || !bok {
+		return 0, false
+	}
+	return compareDecimalLiterals(da, db), true
+}
+
+func parseDecimalLiteral(b []byte) (decimalLiteral, bool) {
+	if len(b) == 0 {
+		return decimalLiteral{}, false
+	}
+	i := 0
+	neg := false
+	if b[i] == '-' {
+		neg = true
+		i++
+		if i >= len(b) {
+			return decimalLiteral{}, false
+		}
+	}
+
+	digits := make([]byte, 0, len(b))
+	sawDigit := false
+	for i < len(b) && b[i] >= '0' && b[i] <= '9' {
+		digits = append(digits, b[i])
+		sawDigit = true
+		i++
+	}
+
+	fracDigits := int64(0)
+	if i < len(b) && b[i] == '.' {
+		i++
+		for i < len(b) && b[i] >= '0' && b[i] <= '9' {
+			digits = append(digits, b[i])
+			fracDigits++
+			sawDigit = true
+			i++
+		}
+	}
+	if !sawDigit {
+		return decimalLiteral{}, false
+	}
+
+	exp10 := int64(0)
+	if i < len(b) && (b[i] == 'e' || b[i] == 'E') {
+		i++
+		if i >= len(b) {
+			return decimalLiteral{}, false
+		}
+		expNeg := false
+		if b[i] == '+' || b[i] == '-' {
+			expNeg = b[i] == '-'
+			i++
+		}
+		if i >= len(b) || b[i] < '0' || b[i] > '9' {
+			return decimalLiteral{}, false
+		}
+		for i < len(b) && b[i] >= '0' && b[i] <= '9' {
+			exp10 = exp10*10 + int64(b[i]-'0')
+			i++
+		}
+		if expNeg {
+			exp10 = -exp10
+		}
+	}
+	if i != len(b) {
+		return decimalLiteral{}, false
+	}
+
+	leading := 0
+	for leading < len(digits) && digits[leading] == '0' {
+		leading++
+	}
+	digits = digits[leading:]
+	if len(digits) == 0 {
+		return decimalLiteral{digits: []byte{'0'}}, true
+	}
+
+	exp10 -= fracDigits
+	for len(digits) > 1 && digits[len(digits)-1] == '0' {
+		digits = digits[:len(digits)-1]
+		exp10++
+	}
+	return decimalLiteral{neg: neg, digits: digits, exp10: exp10}, true
+}
+
+func compareDecimalLiterals(a, b decimalLiteral) int {
+	aZero := len(a.digits) == 1 && a.digits[0] == '0'
+	bZero := len(b.digits) == 1 && b.digits[0] == '0'
+	if aZero && bZero {
+		return 0
+	}
+	if a.neg != b.neg {
+		if a.neg {
+			return -1
+		}
+		return 1
+	}
+
+	magCmp := compareDecimalMagnitudes(a, b)
+	if a.neg {
+		return -magCmp
+	}
+	return magCmp
+}
+
+func compareDecimalMagnitudes(a, b decimalLiteral) int {
+	aAdj := int64(len(a.digits)) + a.exp10
+	bAdj := int64(len(b.digits)) + b.exp10
+	if aAdj < bAdj {
+		return -1
+	}
+	if aAdj > bAdj {
+		return 1
+	}
+
+	maxLen := len(a.digits)
+	if len(b.digits) > maxLen {
+		maxLen = len(b.digits)
+	}
+	for i := 0; i < maxLen; i++ {
+		da := byte('0')
+		db := byte('0')
+		if i < len(a.digits) {
+			da = a.digits[i]
+		}
+		if i < len(b.digits) {
+			db = b.digits[i]
+		}
+		if da < db {
+			return -1
+		}
+		if da > db {
+			return 1
+		}
+	}
+	return 0
 }
 
 func isNumberByte(ch byte) bool {
@@ -554,6 +743,9 @@ func jsonCompare(a, b []byte) (int, bool) {
 	aCh, bCh := a[0], b[0]
 
 	if isNumberByte(aCh) && isNumberByte(bCh) {
+		if cmp, ok := compareJSONNumberLiterals(a, b); ok {
+			return cmp, true
+		}
 		af, aOk := parseJSONFloat(a)
 		bf, bOk := parseJSONFloat(b)
 		if !aOk || !bOk {

@@ -21,9 +21,20 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `.foo`, `.foo.bar` (field access, including nested)
 - `del(.foo)`, `del(.foo, .bar)`, `del(.foo.bar)` (field deletion, including nested)
 - `.[0]`, `.[-1]` (array indexing, negative = from end)
+- `.[4,2]` (multi-index array access; emits one output per index)
 - `del(.[0])`, `del(.[1], .[3])` (array element deletion)
+- `del(.[1,2])` (delete multiple array indices from one bracket expression)
 - `del(.[n:m])`, `del(.[-n:])` (array slice deletion)
+- Dynamic numeric slice bounds and chained slices (`.[1.2:3.5]`, `.[3:3][1:]`)
+- `paths` and `paths(filter)` for structural path enumeration
+- `path(expr)` for symbolic path extraction through direct field/index/iterator chains
+- `getpath(path)` including variadic path generators
+- `setpath(path; value)` and `delpaths(paths)` for direct path-array updates
 - `.[]` (iterator — all elements of array or values of object)
+- `..` (recursive descent — depth-first, root-first structural traversal)
+- `recurse`, `recurse(f)`, `recurse(f; cond)` (recursive generator traversal)
+- `walk(f)` (bottom-up recursive transform)
+- `tostream`, `truncate_stream(stream)`, `fromstream(stream)` (stream-shape reconstruction helpers over in-memory values)
 - `.items[]`, `.items[0]`, `.data[0].name` (chained access)
 - `.[n:m]`, `.[:m]`, `.[n:]` (array/string slicing, negative indices from end)
 - `{name, age}` (object construction, shorthand)
@@ -39,9 +50,13 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `has("key")` (true if object has the field, even if its value is null)
 - `if cond then expr [elif cond then expr]* [else expr] end` (conditional; elif and else optional)
 - `empty` (produce zero outputs)
+- `reduce gen as $x (init; update)` / `foreach gen as $x (init; update; extract?)`
+- `def f: body; expr`, `def f(args...): body; f(...)` (lexically scoped user-defined functions with filter/value params)
+- `label $name | body` / `break $name` (named control-flow escape)
 - `(expr)` (parenthesized grouping)
 - `select(cond)` (filter — emit input if condition truthy, nothing if falsy)
 - `.foo // "default"` (alternative — use right if left is null/false)
+- `expr as $x | body` and destructuring binds like `. as [$a, $b] | body` (lexical binding; body runs against the original input)
 - `.foo?`, `.[0]?`, `.[]?` (optional — suppress errors, produce nothing)
 - `try expr` / `try expr catch handler` (error suppression; handler receives JSON value from `error`, or string for built-in errors)
 - `error` (throw input as a `jsonError`; `catch` receives original JSON value)
@@ -57,6 +72,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 
 **Array/collection operations**
 - `map(expr)` (apply expr to every array element; desugars to `[.[] | expr]` at parse time)
+- `repeat(expr)` / `range(...)` (value-synthesizing stream helpers)
 - `add` (sum numbers, concat strings/arrays, merge objects)
 - `flatten`, `flatten(n)` (flatten nested arrays)
 - `split("s")`, `join("s")` (split/join by separator)
@@ -70,25 +86,34 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `any`, `any(expr)`, `any(gen; cond)` (any truthy)
 - `all`, `all(expr)`, `all(gen; cond)` (all truthy)
 - `first`, `last` (first/last element; one-arg forms take an expr)
+- `limit(n; expr)`, `skip(n; expr)` (stream control over generator outputs)
+- `reduce gen as $x (init; update)` (stateful accumulation over generator outputs)
+- `map_values(f)` (array/object value transform; object fields drop when `f` yields no output)
 - `values` (filter nulls from stream)
 - `numbers`, `strings`, `arrays`, `objects`, `booleans`, `nulls`, `iterables`, `scalars` (type filters)
 - `index(s)`, `rindex(s)`, `indices(s)` (first/last/all occurrences; overlapping; Unicode codepoint positions; array subsequence search)
+- `paths`, `leaf_paths` *(compat alias)*, `path(expr)`, `getpath`, `setpath`, `delpaths`
 - `has("key")`, `has(n)` (field/index existence)
 - `in(obj)` (reverse membership)
 - `contains(val)`, `inside(val)` (recursive containment)
 
 **Object operations**
 - `to_entries` / `from_entries` / `with_entries` (reshape)
-- `keys_unsorted` (keys in insertion order; array → indices)
+- `keys` / `keys_unsorted` (`keys` sorts object keys; array → indices)
 - `length` (string → char count, array/object → count, null → 0, number → |n|)
 
 **Type & conversion**
 - `type` (type name string)
 - `tojson` / `@json`, `fromjson` (JSON string serialize/parse)
-- `tostring` / `@text`, `tonumber` (string/number coercion)
+- `tostring` / `@text`, `tonumber`, `toboolean` (string/number/boolean coercion)
+- `todate`, `now`, `date` *(compat alias of `todate`)*
+- `builtins`, `$__loc__` (introspection helpers used by upstream jq tests)
+- `abs` (jq-style absolute value; numbers become positive, strings pass through)
+- `nan`, `infinite`, `-nan`, `-infinite`, `isnan`, `isinfinite`, `isfinite`, `isnormal`, `pow(x; y)` (special numeric values/helpers; non-finite values serialize as `null`)
+- `hypot(x; y)`, `fma(x; y; z)` (remaining small numeric builtins that fit the current executor)
 - `floor`, `ceil`, `round` (numeric rounding)
 - `ascii_downcase`, `ascii_upcase` (case conversion)
-- `startswith("s")`, `endswith("s")`, `ltrimstr("s")`, `rtrimstr("s")` (string prefix/suffix)
+- `startswith("s")`, `endswith("s")`, `trim`, `ltrim`, `rtrim`, `ltrimstr("s")`, `rtrimstr("s")` (string prefix/suffix/whitespace trim)
 
 **Format strings**
 - `@base64`, `@base64d` (base64 encode/decode; decode JSON string content first)
@@ -96,6 +121,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `@html` (HTML-escape `&<>'"`)
 - `@csv`, `@tsv` (CSV/TSV formatting from array)
 - `@sh` (POSIX shell quoting)
+- `@format "...\(...)"` template forms (apply the formatter only to interpolated values)
 
 **Debugging**
 - `debug` (print to stderr, pass through)
@@ -146,6 +172,9 @@ Operator precedence is implemented via a function call chain:
 `parseCmp` → `parseAtom`. Pipe (`|`) is loosest. Then alternative (`//`),
 `or`, `and`, comparison, then atoms. No precedence table needed.
 
+Array construction uses a generator-aware variant so jq forms like
+`[a, b | f]` parse as `[(a, b) | f]` rather than `[a, (b | f)]`.
+
 ### 8. Literals Store Raw JSON Bytes
 
 Literals like `"error"`, `42`, `null` store raw JSON bytes (`[]byte`) at
@@ -153,9 +182,9 @@ compile time. At runtime: `append(buf, literal...)` — zero-alloc on hot path.
 
 ### 9. Select Zero-Output Pattern
 
-`select(cond)` evaluates the condition; if falsy (null or false), it simply
-doesn't call the callback function — producing zero outputs that propagate
-naturally through pipes.
+`select(cond)` evaluates the condition as a generator. Each truthy condition
+output emits the original input once; falsy outputs emit nothing. In single-result
+contexts, `execSingle` short-circuits on the first truthy condition output.
 
 ### 10. execSingle Fast Path
 
@@ -163,54 +192,64 @@ naturally through pipes.
 index, compare, type) without creating closures, avoiding heap allocations in
 hot paths like `select(.field == "value")`.
 
-### 11. Multi-Output Arithmetic Operands
+### 11. Runtime Context for Variable Binding
+
+Variable bindings use an internal `execContext` stack keyed by goroutine. Each
+`expr as $x | body` evaluation copies the bound JSON bytes into a linked-list
+environment frame, then runs `body` against the original input with `$x`
+available to nested pipeline stages. This keeps lexical scoping simple without
+changing the public API.
+
+### 12. Multi-Output Arithmetic Operands
 
 `execMulti` uses `execMulti` for the left side of arithmetic operators.
 This supports `.[] + 1` and similar generators as operands. The right side is
 evaluated once per left output. `execPlusValues` holds core arithmetic logic,
 decoupled from operand evaluation.
 
-### 12. Object Merge Key Order
+### 13. Object Merge Key Order
 
 `expr + expr` on two objects: all left keys are emitted first (with right's
 value for duplicates), then new right-only keys. This preserves left-object
 key order even when right overrides a value.
 
-### 13. Object Equality (Key-Order Independent)
+### 14. Object Equality (Key-Order Independent)
 
 `jsonEqual` for objects does a content comparison: for every key in A, look it
 up in B and recursively compare values; also verify key counts match. This
 ensures `{"a":1,"b":2} == {"b":2,"a":1}` returns `true`, matching jq semantics.
 
-### 14. jsonError for error Propagation
+### 15. jsonError for error Propagation
 
 The `error` builtin returns a `*jsonError{payload []byte}` instead of a Go
 `fmt.Errorf`. `try-catch` handlers receive the payload directly as the input
 JSON value, not a string representation. Regular built-in errors (wrong type,
 division by zero, etc.) still produce string messages in catch.
 
-### 15. Iterator Error Propagation
+### 16. Iterator Error Propagation
 
 `execIterator` propagates `*jsonError` and `errBreak` from its callback, while
 silently dropping other errors. This allows `try (.[] | error) catch .` to work
 correctly while preserving the lenient multi-output behaviour (e.g.
 `.[] | .foo` on a mixed array doesn't abort on non-objects).
 
-### 16. opGenerator for Comma-Separated Bodies
+### 17. opGenerator for Comma-Separated Bodies
 
 `limit(n; a, b)` — where the body is a comma-separated generator — is parsed
 into an `opGenerator` node with `elems []*op`. `execMulti` runs each element
 in sequence, feeding all outputs to the callback. This gives `limit` the ability
 to short-circuit across generator elements cleanly.
 
-### 17. Format String JSON Decoding
+### 18. Format String JSON Decoding
 
 All format strings that operate on string content (`@base64`, `@uri`, `@html`,
 `@csv`, `@tsv`, `@sh`) first decode JSON string escape sequences
 (`decodeJSONStringContent`) before encoding. This ensures `"\n"` becomes
-byte `0x0a` in base64 output, not the two ASCII bytes `\` and `n`.
+byte `0x0a` in base64 output, not the two ASCII bytes `\` and `n`. Template
+forms such as `@html "<b>\(.)</b>"` reuse the same formatter helpers on each
+interpolated value while leaving the surrounding literal string bytes untouched.
 
-### 18. Containment (Zero-Alloc Parallel Scan)
+### 19. Containment (Zero-Alloc Parallel Scan)
 
 `jsonContains(haystack, needle)` is implemented recursively using parallel
 scanner instances for objects (no allocation for the comparison logic). For
@@ -223,6 +262,28 @@ allocate. For strings it's a pure byte-range scan.
 key ordering. Keys appear in the order of their first occurrence across all
 objects; the value used is the last one seen.
 
+### 20. Canonical String Emission
+
+When a string value is emitted as output, fastjq canonicalizes its JSON string
+escaping so the public result stays compact and jq-compatible for control
+characters and normalized escapes.
+
+### 21. try-catch Body Scoping
+
+`try expr catch handler` catches errors thrown while evaluating `expr` itself.
+Errors from downstream pipeline stages propagate normally instead of being
+captured by the inner `try`.
+
+### 22. Reduce And Foreach Reuse Lexical Binding Frames
+
+`reduce gen as $x (init; update)` and `foreach gen as $x (init; update; extract?)`
+evaluate their initial state once, then run later stages against accumulator
+state while binding `$x` in the existing runtime environment chain. `reduce`
+keeps the last update result for each accumulator branch; `foreach` emits the
+extract result for every update output but only carries the last update result
+forward. This keeps both forms compatible with later pipeline stages and nested
+lexical bindings without changing the public API.
+
 ## File Structure
 
 ```
@@ -230,17 +291,17 @@ fastjq.go           — Public API: Compile, Run, RunWithBuffer, RunAll, RunFunc
 scanner.go          — Zero-alloc JSON scanner: skipValue, readString, objectIter, arrayIter,
                       jsonEqual (key-order independent for objects), jsonContains, isFalsy,
                       byteOffsetToCodepointOffset, compareJSONOrder
-query.go            — Query parser + AST (~55 op types); parseGeneratorExpr for comma bodies
+query.go            — Query parser + AST (~56 op types); parseGeneratorExpr for comma bodies
 exec.go             — Executor: all op implementations; jsonError type; execPlusValues;
                       execArrayConstruct; execDeleteArray (slices); execFindIndex (overlapping,
-                      Unicode codepoints, array subsequences); format string decoders
+                      Unicode codepoints, array subsequences); execReduce; format string decoders
 float.go            — Zero-alloc float parsing via unsafe.String
-fastjq_test.go      — Unit tests (~430 tests)
+fastjq_test.go      — Unit tests (~435 tests)
 correctness_test.go — Edge case, no-panic, and Unicode tests
 complex_test.go     — Complex multi-step query tests
 fuzz_test.go        — Fuzz tests (FuzzCompile, FuzzRunFixed, FuzzBoth)
-bench_test.go       — Benchmarks: fastjq vs gojq (159 benchmarks)
-jqtest/run_test.go  — Official jq test harness (jq.test + man.test, 751 total)
+bench_test.go       — Benchmarks: fastjq vs gojq (255 benchmark cases)
+jqtest/run_test.go  — Official jq test harness (jq.test, man.test, optional.test, base64.test, uri.test; 783 total)
 cmd/fastjq/main.go  — JSONL processor CLI
 bench_vs_jq.sh      — CLI throughput benchmark script
 scripts/update_benchmarks.go — Regenerates BENCHMARKS.md

@@ -4,6 +4,88 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — parser breadth, path updates, jq parity majority, and builtin sweep
+
+### Added
+
+- Expanded the official upstream jq harness from two files to five by adding `tests/optional.test`, `tests/base64.test`, and `tests/uri.test` to `jqtest`.
+- Added lexical variable binding for simple jq forms: `expr as $x | body` and `$x` references across later pipeline stages.
+- Added jq-compatible destructuring binds for `as`, `reduce`, and `foreach`, including array patterns, object patterns, nested patterns, shorthand object-field binds, and constant-string computed keys.
+- Added jq-compatible `reduce gen as $x (init; update)` for simple accumulator folds over generator outputs.
+- Added jq-compatible `foreach gen as $x (init; update; extract?)`, including omitted-extract identity behavior and jq-style last-update carry-forward semantics.
+- Added jq-compatible `label $name | ...` and `break $name` for named early exit from iterator and `foreach` pipelines.
+- Added jq-style multi-index array access and deletion forms such as `.[4,2]` and `del(.[1,2])`.
+- Added jq-compatible builtins `abs`, `trim`, `ltrim`, `rtrim`, `toboolean`, `keys`, and `skip`.
+- Added jq-compatible `map_values(f)` for arrays and objects, including jq-style field dropping when an object-value transform yields no output.
+- Added jq-compatible `with_entries(f)` as parser sugar over `to_entries | map(f) | from_entries`, including the jq-suite key-update form `with_entries(.key |= "KEY_" + .)`.
+- Added jq-compatible `paths` and `paths(filter)` for non-root structural path enumeration.
+- Added jq-compatible dedicated recursive descent `..` for root-first, depth-first structural traversal and recursive path updates such as `(.. | select(type=="boolean")) |= ...`.
+- Added jq-compatible `recurse`, `recurse(f)`, `recurse(f; cond)`, and `walk(f)` for the official recursive helper cases covered by jq's suite.
+- Added jq-compatible `path(expr)` for symbolic path extraction across direct field, index, dynamic-index, iterator, `select`, and pipe compositions.
+- Added jq-compatible `getpath(path)` with variadic path-output support and `$var` path arguments.
+- Added jq-compatible `setpath(path; value)` and `delpaths(paths)` for direct path-array updates.
+- Added generator-correct `select(cond)` semantics so every truthy output of `cond` emits the original input, matching jq for filters like `select((1,0))` and `select((false,true))`.
+- Added jq-compatible `hypot(x; y)`, `fma(x; y; z)`, `todate`, and `now`.
+- Added compatibility aliases `leaf_paths` → `paths(scalars)` and `date` → `todate`, and exposed them through `builtins`.
+- Added jq-compatible `@format "...\(...)"` template support for the existing string-producing formatters, including the official `@html "<b>\(.)</b>"` and `@sh "echo \(.)"` forms.
+- Added jq-compatible user-defined functions with lexical scoping: `def f: body; expr`, parameterized defs, filter params, value params (`$x`), nested defs, and self-recursion.
+- Added benchmark coverage for the new public surface: variable binding, `abs`, `toboolean`, `trim`, `ltrim`, `rtrim`, `keys`, `skip`, `reduce`, `foreach`, `paths`, `path`, `getpath`, `setpath`, and `delpaths`.
+- Added benchmark entries for user-defined function dispatch (`def inc: . + 1; inc`) before the next full benchmark regeneration.
+- Added jq-style unary negation (`-expr`) for non-literal expressions such as `-$x`.
+- Added numeric-expression slice bounds and chained slice parsing, including forms like `.[1.2:3.5]`, `.[:rindex("x")]`, and `.[3:3][1:]`.
+- Added benchmark coverage for `@format "...\(...)"` template execution.
+
+### Fixed
+
+- Moved official jq-suite coverage from `356/751` passing to `751/783` passing while keeping `0` active jq-suite failures.
+- Fixed `strftime("%e")` day-of-month formatting to match jq's upstream optional suite coverage.
+- Fixed `@base64d` invalid-input handling so whitespace and trailing-base64-byte cases now raise jq-compatible catchable errors instead of partially decoding garbage.
+- Fixed `@urid` decoding to honor JSON string escapes before percent-decoding and to reject incomplete, non-hex, and invalid UTF-8 percent sequences with jq-compatible errors.
+- Removed the blanket jq-suite skip for variable binding syntax so implemented `as $x` cases now run instead of being hidden behind harness filters.
+- Fixed variable-binding parsing inside array-construction generator contexts such as `1 as $x | [$x,$x,$x as $x | $x]`.
+- Fixed jq-suite structural comparison for JSON outputs that differ only by numerically equivalent number spellings inside arrays or objects (for example `0.1` vs `1e-1`).
+- Fixed sorted object-key output for `keys` while preserving jq's array-index behavior for array input.
+- Fixed generator stream skipping for `skip(n; expr)`, including multi-count forms such as `skip(0,2,3,4; .[])` and jq-style negative-count errors.
+- Fixed optional slice behavior so `.[1:3]?` suppresses type errors without dropping jq's special `null` result case.
+- Fixed string slicing and unary-negation error previews to match jq with UTF-8-aware truncation and codepoint-based slice offsets.
+- Fixed direct bracket-expression scope so jq-style queries like `.foo[.baz]` and `.foo[.baz][.qux]` evaluate the bracket expression against the original postfix-chain input instead of the intermediate selected value.
+- Fixed dynamic numeric index edge cases to match jq: `.[nan]` now returns `null` for arrays/null input and dynamic-number errors now use jq's generic `Cannot index <type> with number` text.
+- Fixed jq-suite skip filtering so unsupported `path(...)` no longer accidentally suppresses implemented `getpath(...)` tests.
+- Fixed symbolic `path(...)` execution and unskipped the official jq path cases it now supports.
+- Fixed path-update error propagation so `try`/`catch` sees jq-style raw messages even when `setpath(...)` appears inside array/object construction.
+- Fixed `tojson | fromjson` depth-limit parity so 10,001-deep structures now reach jq's `"Exceeds depth limit for parsing"` error before stringify truncation kicks in.
+- Fixed `del(...)` argument flattening so jq-style grouped bracket selectors like `del(.[1,2])` delete multiple array indices instead of failing validation.
+- Fixed multi-output arithmetic ordering to match jq when both operands are generators, which unblocks `foreach` cases like `.[] / .[]`.
+- Fixed giant-exponent numeric comparison handling and jq-suite numeric-equivalence checks so numbers like `5E500000000` and `5E-5000000000` compare correctly.
+- Fixed jq-style subtraction diagnostics for non-numeric values, including typed/truncated messages like `string ("very-long-...) and string ("very-long-...) cannot be subtracted`.
+- Fixed parser breadth for template-format strings so previously skipped official-suite cases now run and pass.
+- Fixed parser breadth for `map_values(...)` and `with_entries(...)`, removing another small batch of compile skips without introducing general update-syntax support yet.
+- Fixed the remaining `select(cond)` semantic gap in both streaming and first-result execution paths by evaluating generator conditions through the multi-output executor instead of the single-result fast path.
+- Fixed `todate` / `date` formatting to stay 0-alloc by appending RFC3339 output directly into the caller buffer instead of allocating an intermediate Go string.
+- Fixed the remaining non-module parser-tail assignment cases, including `//=` updates and grouped/bound lhs assignment such as `(.a as $x | .b) = "b"`.
+- Fixed labeled control-flow unwinding so `break $label` now exits the correct surrounding `label` through iterators, `foreach`, array construction, and `try` boundaries.
+- Fixed user-call continuation scoping so downstream pipeline stages resume in the caller's lexical function environment instead of leaking the callee's captured scope.
+- Fixed jq-compatible grouped dynamic `del(...)` paths such as `del((.foo,.bar,.baz) | .[2,3,0])`, along with mixed deletes where whole-field removal must win over nested element deletes.
+
+### Tradeoffs
+
+- Bound values are copied into runtime environment frames so later pipeline stages can safely reference constructed values as well as input sub-slices.
+- `reduce` currently targets the high-yield jq form `reduce gen as $x (init; update)` and reuses the existing lexical binding frames rather than introducing a broader mutable-control runtime yet.
+- `paths` prioritizes jq-suite parity over the usual hot-path allocation target. The current structural walker allocates on its call path (`17 allocs/op` on the small benchmark) but still stays far below gojq for the same query.
+- `..` is implemented as a parity-first structural generator rather than waiting for a full generic-recursion executor redesign. The focused benchmark currently lands at `224.5 ns/op`, `7 allocs/op` in fastjq versus `2995 ns/op`, `90 allocs/op` in gojq on the same small traversal.
+- `recurse` and `walk` follow the same parity-first posture as `..`: the focused benchmarks currently land at `100.7 ns/op`, `5 allocs/op` for `recurse` and `217.6 ns/op`, `12 allocs/op` for `walk(.)`, still far below gojq on the same queries.
+- `path(expr)` follows the same parity-first posture as the other path-family work: correctness against the official suite takes precedence over the usual hot-path allocation target.
+- `leaf_paths` inherits the same parity-first allocation profile as `paths` because it is implemented as a compatibility alias over the same structural path walker.
+- `@format "...\(...)"` template execution inherits the allocation profile of the underlying formatter (`@html`, `@uri`, `@sh`, etc.) because each interpolation is decoded and re-encoded independently.
+- `with_entries(f)` is implemented as parity-first parser sugar over `to_entries | map(f) | from_entries`, even though the project previously rejected it as a first-class primitive under the stricter allocation posture.
+- User-defined functions are implemented with lexical runtime function scopes and copied result emission rather than macro expansion. That keeps jq scoping semantics correct, especially for filter params and nested defs, at the cost of parity-first runtime allocations on the call path.
+
+### Benchmark results
+
+- Regenerated the full benchmark suite and refreshed `docs/BENCHMARKS.md`, including the CLI throughput section from `bench_vs_jq.sh`.
+- Large-object `.field` now benchmarks at `7.50 µs` for fastjq versus `587 µs` for gojq (`78x`), and large-object `select(.f == "x")` at `32.9 µs` versus `786 µs` (`24x`).
+- Validation-on CLI throughput now lands in the `2.1x–11.4x` faster range versus jq 1.8.1 across the tracked JSONL slice.
+
 ## [Unreleased] — Restore 0 allocs/op for all Tier 0 operations
 
 ### Fixed

@@ -19,6 +19,7 @@
 | `.[2]` | Nth element | `[10,20,30]` | `30` |
 | `.[-1]` | Last element (negative = from end) | `[10,20,30]` | `30` |
 | `.[-2]` | Second-to-last | `[10,20,30]` | `20` |
+| `.[4,2]` | Multi-index selection; emits one result per index | `["a","b","c","d","e"]` | `"e"`, `"c"` |
 | `.[99]` | Out-of-bounds returns null | `[10,20,30]` | `null` |
 
 ### Chained Access
@@ -38,6 +39,7 @@
 | `del(.foo.bar)` | Delete nested field | `{"foo":{"bar":1,"baz":2}}` | `{"foo":{"baz":2}}` |
 | `del(.[0])` | Delete array element | `[10,20,30]` | `[20,30]` |
 | `del(.[1], .[3])` | Delete multiple elements | `[10,20,30,40,50]` | `[10,30,50]` |
+| `del(.[1,2])` | Delete multiple indices from one bracket expression | `["foo","bar","baz"]` | `["foo"]` |
 | `del(.[-1])` | Delete last element | `[10,20,30]` | `[10,20]` |
 | `del(.[2:4])` | Delete slice range | `[0,1,2,3,4,5]` | `[0,1,4,5]` |
 | `del(.[-2:])` | Delete last two elements | `[0,1,2,3,4]` | `[0,1,2]` |
@@ -51,6 +53,27 @@
 | `.[]` | All object values | `{"a":1,"b":2}` | `1`, `2` |
 
 Use `RunAll` or `RunFunc` to consume multiple outputs. `Run`/`RunWithBuffer` return the first result only.
+
+### Recursive Descent
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `..` | Depth-first structural traversal, emitting the current value before descendants | `[1,[[2]],{"a":[1]}]` | `[1,[[2]],{"a":[1]}]`, `1`, `[[2]]`, `[2]`, `2`, `{"a":[1]}`, `[1]`, `1` |
+| `[..]` | Collect the full recursive-descent stream into one array | `[1,[[2]],{"a":[1]}]` | `[[1,[[2]],{"a":[1]}],1,[[2]],[2],2,{"a":[1]},[1],1]` |
+| `.. \| scalars` | Filter the descent stream like any other generator | `{"a":[1,true,{"b":"x"}],"c":null}` | `1`, `true`, `"x"`, `null` |
+
+`..` is implemented as a dedicated structural generator. It composes with the existing pipeline and path-update machinery, so forms like `(.. | select(type=="boolean")) |= ...` behave like jq.
+
+### Recursive Helpers
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `recurse` | Recurse structurally through child values | `{"a":0,"b":[1]}` | `{"a":0,"b":[1]}`, `0`, `[1]`, `1` |
+| `recurse(.foo[])` | Recurse by applying an explicit generator at each step | `{"foo":[{"foo":[]},{"foo":[{"foo":[]}]}]}` | `{"foo":[{"foo":[]},{"foo":[{"foo":[]}]}]}`, `{"foo":[]}`, `{"foo":[{"foo":[]}]}`, `{"foo":[]}` |
+| `recurse(. * .; . < 20)` | Recurse while new outputs satisfy a condition | `2` | `2`, `4`, `16` |
+| `walk(f)` | Rebuild arrays/objects bottom-up, then apply `f` at each node | `[[4,1,7],[8,5,2],[3,6,9]]` with `walk(if type == "array" then sort else . end)` | `[[1,4,7],[2,5,8],[3,6,9]]` |
+
+`recurse` and `walk` are implemented for jq-suite parity. They are not part of the zero-allocation hot path.
 
 ### Object Construction
 
@@ -71,7 +94,12 @@ Use `RunAll` or `RunFunc` to consume multiple outputs. `Run`/`RunWithBuffer` ret
 | `[.name, .age]` | Build array from fields | `{"name":"alice","age":30}` | `["alice",30]` |
 | `[.name]` | Single-element array | `{"name":"alice"}` | `["alice"]` |
 
+Array construction follows jq generator precedence: `[a, b | f]` is parsed as
+`[(a, b) | f]`, not `[a, (b | f)]`.
+
 **Allocation note:** `[.[] | f]` / `map(f)` — when `f` returns an input sub-slice (field access, identity, comparison), the array is built 0-alloc. When `f` constructs new data (object `{…}`, arithmetic, string concat), ~1 alloc per element is needed to prevent result aliasing. `map(.name)` = 0 allocs; `map({name, value})` = ~1 alloc/element.
+
+`map_values(f)` behaves like `map(f)` on arrays. On objects it rewrites through entry objects, applies `f` to each value, and drops fields where `f` produces no outputs.
 
 ### Pipe
 
@@ -83,6 +111,18 @@ Use `RunAll` or `RunFunc` to consume multiple outputs. `Run`/`RunWithBuffer` ret
 | `.items[] \| .name` | Multi-output pipe | `{"items":[{"name":"a"},{"name":"b"}]}` | `"a"`, `"b"` |
 
 Pipes propagate multi-output: if the left side produces N results, the right side runs N times.
+
+### Variables
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `expr as $x \| body` | Bind the result of `expr` to `$x`, then run `body` against the original input | `null` with `1 as $x \| [$x,$x]` | `[1,1]` |
+| `.bar as $x \| .foo \| . + $x` | Bound values remain visible across later pipeline stages | `{"foo":10,"bar":200}` | `210` |
+| `1 as $x \| [$x,$x,$x as $x \| $x]` | Nested binds shadow outer ones lexically | `null` | `[1,1,1]` |
+| `. as [$a, $b] \| [$b, $a]` | Array destructuring bind; missing elements bind to `null` | `[1,2]` | `[2,1]` |
+| `. as {$a, b: [$c, {$d}]} \| [$a, $c, $d]` | Object destructuring with nested patterns | `{"a":1,"b":[2,{"d":3}]}` | `[1,2,3]` |
+
+Destructuring patterns follow jq's soft-missing semantics: absent array slots/object fields bind to `null`, while indexing a non-null value with the wrong container type still raises jq-style errors.
 
 ### Literals
 
@@ -192,6 +232,7 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 | `if .f == "x" then .a else .b end` | Conditional | `{"f":"x","a":1,"b":2}` | `1` |
 | `if .f == "x" then .a end` | Without else — defaults to identity | `{"f":"y"}` | `{"f":"y"}` |
 | `if C then A elif C2 then B else D end` | elif chain — desugars to nested if-then-else | `{"x":2}` | `"two"` |
+| `label $out \| .[] \| if . > 1 then break $out else . end` | Exit a labeled stream early | `[0,1,2]` | `0`, `1` |
 
 `elif` is syntactic sugar: `elif C then X` rewrites to `else (if C then X end)` at parse time. Chains of any length are supported.
 
@@ -221,8 +262,10 @@ When `error` is thrown, the `catch` handler receives the **actual JSON value** (
 | `@csv` | ~1 | Format array as CSV (strings double-quoted, internal quotes doubled) | `[1,"a,b"]` | `"1,\"a,b\""` |
 | `@tsv` | ~1 | Format array as TSV (tab/newline/backslash escaped) | `[1,"a\tb"]` | `"1\ta\\tb"` |
 | `@sh` | ~1 | POSIX shell-quote a string (single-quote wrapping) | `"O'Hara"` | `"'O'\\''Hara'"` |
+| ``@html "<b>\(.)</b>"`` | ~1 | Apply formatter to each interpolation, leave literal template bytes untouched | `"<tag>&"` | `"<b>&lt;tag&gt;&amp;</b>"` |
+| ``@sh "echo \(.)"`` | ~1 | Format only interpolated payloads inside a template string | `"O'Hara"` | `"echo 'O'\\''Hara'"` |
 
-`@base64`, `@uri`, `@html`, `@csv`, `@tsv`, `@sh` allocate because they decode JSON string escape sequences before encoding — `\n` becomes byte `0x0a`, `\uXXXX` decoded to UTF-8. These are Tier 1 (output-encoding) allocations: proportional to the string being encoded, not the document being scanned. `@base64d`, `@json`, `@text` write directly into the output buffer and are 0-alloc.
+`@base64`, `@uri`, `@html`, `@csv`, `@tsv`, `@sh`, and their `@format "...\(...)"` template forms allocate because they decode JSON string escape sequences before encoding — `\n` becomes byte `0x0a`, `\uXXXX` decoded to UTF-8. These are Tier 1 (output-encoding) allocations: proportional to the string being encoded, not the document being scanned. `@base64d`, `@json`, and `@text` write directly into the output buffer and are 0-alloc. `@base64d` now matches jq's stricter invalid-input behavior for malformed trailing bytes, and `@urid` rejects incomplete or invalid percent escapes instead of passing them through.
 
 ### Numeric Rounding and Math
 
@@ -259,13 +302,23 @@ All math functions are zero-alloc. NaN/Infinity results are output as `null` to 
 | `lgamma` | ln\|Γ(x)\| | `1 \| lgamma` | `0` |
 | `j0`, `j1` | Bessel functions of first kind, orders 0 and 1 | `0 \| j0` | `1` |
 
-**Not supported (rejected)**
+**Supported special values, small numeric builtins, and date/time tail**
+
+| Syntax | Notes |
+|--------|-------|
+| `nan`, `infinite`, `-nan`, `-infinite` | Supported as jq-style numeric values. At the API boundary they serialize back out as JSON `null` to preserve valid JSON output. |
+| `isnan`, `isinfinite`, `isfinite`, `isnormal` | Supported predicates over the special-value runtime representation. |
+| `pow(x; y)` | Supported 2-arg numeric builtin. |
+| `hypot(x; y)` | Supported 2-arg numeric builtin. |
+| `fma(x; y; z)` | Supported 3-arg numeric builtin via `math.FMA`. |
+| `todate`, `now` | Supported date/time helpers. `todate` formats numeric epoch seconds as RFC3339 UTC; `now` emits the current epoch seconds as a float. |
+| `date` | Compatibility alias for `todate`. Current jq 1.8.1 does not expose bare `date`, but fastjq accepts it for parity convenience. |
+
+**Still not supported**
 
 | Syntax | Reason |
 |--------|--------|
-| `nan`, `infinite` | Produce non-JSON output, violating the "output is always compact JSON" constraint |
-| `isnan`, `isinfinite`, `isfinite`, `isnormal` | Depend on nan/infinite representation; meaningless without it |
-| `pow(x; y)`, `hypot(x; y)`, `atan(y; x)`, `fma(x;y;z)` | 2/3-arg forms. Every test for these is blocked by `as $` binding (0 exclusive tests). Parser would need 2-arg semicolon-separated forms. |
+| `atan(y; x)` | Remaining higher-arity numeric builtin outside the current float-helper subset. |
 | `frexp`, `modf` | Return array pairs `[mantissa, exponent]`; 0 exclusive tests |
 | `ldexp`, `scalb`, `scalbln` | Take a float + integer exponent; 0 exclusive tests |
 | `significand` | Complex semantics (mantissa in [1,2)); 0 exclusive tests |
@@ -324,23 +377,31 @@ For strings, positions are Unicode codepoint offsets (not byte offsets), matchin
 | `has("key")` | True if object has field (even if null) | `{"x":null}` | `true` |
 | `has(n)` | True if array index n exists (n ≥ 0) | `[1,2,3]` with `has(2)` | `true` |
 | `length` | String → chars, array/object → count, null → 0 | `[1,2,3]` | `3` |
+| `abs` | Numbers become positive; strings pass through unchanged | `-3.5` | `3.5` |
+| `keys` | Object keys sorted lexicographically; array → indices | `{"b":1,"a":2}` | `["a","b"]` |
 | `keys_unsorted` | Object keys in insertion order; array → indices | `{"b":1,"a":2}` | `["b","a"]` |
+| `paths` / `paths(filter)` | Emit non-root structural paths, optionally filtered by value | `[1,[[],{"a":2}]]` with `[paths(type == "number")]` | `[[0],[1,1,"a"]]` |
+| `path(expr)` | Emit the symbolic path taken by a direct field/index/iterator expression | `{"foo":{"bar":4},"baz":"bar"}` with `path(.foo[.baz])` | `["foo","bar"]` |
+| `getpath(path)` | Follow a path array of strings/numbers; variadic args emit multiple outputs | `{"a":{"b":0,"c":1}}` with `[getpath(["a","b"], ["a","c"])]` | `[0,1]` |
+| `setpath(path; value)` | Set or synthesize a nested path | `null` with `setpath(["a","b"]; 1)` | `{"a":{"b":1}}` |
+| `delpaths(paths)` | Delete a list of nested paths | `{"a":{"b":1},"x":{"y":2}}` with `delpaths([["a","b"]])` | `{"a":{},"x":{"y":2}}` |
 
 ### Slicing and Concatenation
 
 | Syntax | Description | Example Input | Example Output |
 |--------|-------------|---------------|----------------|
-| `.[n:m]` | Array/string slice from index n to m (exclusive) | `[0,1,2,3,4]` with `.[1:4]` | `[1,2,3]` |
-| `.[:m]` | Slice from start to m | `"hello world"` with `.[:5]` | `"hello"` |
+| `.[n:m]` | Array/string slice from index n to m (exclusive); bounds may be numeric expressions | `[0,1,2,3,4]` with `.[1.2:3.5]` | `[1,2,3]` |
+| `.[:m]` | Slice from start to m | `"hello world"` with `.[:rindex(" ")]` | `"hello"` |
 | `.[n:]` | Slice from n to end | `[0,1,2,3,4]` with `.[2:]` | `[2,3,4]` |
 | `.[:]` | Full slice (identity for arrays/strings) | `[1,2,3]` | `[1,2,3]` |
 | `.[-n:]` | Last n elements | `[0,1,2,3,4]` with `.[-2:]` | `[3,4]` |
+| `.[n:m]?` | Optional slice: suppress type errors for non-sliceable values while preserving jq's `null` result case | `[1,null]` with `[.[] | .[1:3]?]` | `[null]` |
 | `"a" + "b"` | String concatenation | any | `"ab"` |
 | `[1] + [2,3]` | Array concatenation | any | `[1,2,3]` |
 | `.a + .b` | Field concatenation | `{"a":"foo","b":"bar"}` | `"foobar"` |
 | `null + x` / `x + null` | null is identity for `+` | any | `x` |
 
-Slicing uses **logical characters** for strings: each escape sequence (`\n`, `\uXXXX`, etc.) counts as one character. Negative indices count from the end. Indices are clamped to valid range.
+Slicing uses **logical characters** for strings: each escape sequence (`\n`, `\uXXXX`, etc.) and each UTF-8 codepoint counts as one character. Float bounds follow jq's rules (start floors, end ceils, `nan` becomes start `0` / end `length`). Negative indices count from the end. Indices are clamped to valid range.
 
 `+` supports: strings (concat), arrays (concat), numbers (sum), objects (merge). Null is the identity element. For object merge, right-hand keys win on conflict: `{"a":1} + {"a":2}` = `{"a":2}`.
 
@@ -398,11 +459,22 @@ Numbers compared by value; strings lexicographically. Empty array → `null`. `s
 | `first(expr)` | 0 | First output of expr | `[1,2,3,4,5]` (with `first(.[] \| select(. > 2))`) | `3` |
 | `last(expr)` | 0 | Last output of expr | `[1,2,3,4,5]` (with `last(.[] \| select(. > 2))`) | `5` |
 | `limit(n; expr)` | 0 | First N outputs of expr as a stream | `[1,2,3,4,5]` (with `limit(3; .[])`) | `1`, `2`, `3` |
+| `skip(n; expr)` | 0 | Drop the first N outputs of expr, emit the rest | `[1,2,3,4,5]` (with `skip(2; .[])`) | `3`, `4`, `5` |
+| `reduce gen as $x (init; update)` | output-shaped | Fold generator outputs into one or more accumulator states | `[1,2,4]` (with `reduce .[] as $x (0; . + $x)`) | `7` |
+| `foreach gen as $x (init; update; extract?)` | output-shaped | Emit intermediate accumulator-derived values while folding | `[1,2,4]` (with `foreach .[] as $x (0; . + $x; [., $x])`) | `[1,1]`, `[3,2]`, `[7,4]` |
+| `def f: body; expr` | 0 | Define a zero-arg jq filter with lexical scope and call it later in `expr` | `3` (with `def f: . + 1; f`) | `4` |
+| `def f(a; $b): body; f(arg1; arg2)` | output-shaped | Define jq functions with filter params (`a`) and value params (`$b`) | `[1,2,3]` (with `def y($a;$b): $a + $b; y(.[]; .[]*2)`) | `3`, `5`, `4`, `6`, `5`, `7` |
 | `range(n)` | 1/value | Generate integers 0, 1, …, n−1 | — | `0`, `1`, `2` |
 | `range(from; to)` | 1/value | Generate integers from `from` to `to−1` | — | `2`, `3`, `4` |
 | `range(from; to; step)` | 1/value | Generate with explicit step (float ok, negative ok) | — | `0`, `2`, `4` |
 
 `limit` emits a stream, not an array. Wrap in `[...]` if you need an array: `[limit(3; .[])]`. The body can be a comma-separated generator: `limit(1; a, b)`.
+
+`reduce` evaluates `init` once, then runs `update` against the accumulator for every value produced by `gen` while binding `$x` to the current item. fastjq supports the jq form `reduce gen as $x (init; update)`.
+
+`foreach` shares the same accumulator model as `reduce`, but emits after each update. When the extract clause is omitted, it defaults to identity on the updated accumulator. If `update` produces multiple outputs, `foreach` emits extract results for each one but only carries the last update result forward to the next iteration, matching jq.
+
+`def` uses jq-style lexical scoping. Bare params such as `x` are filter params that re-run against the current input each time they are referenced inside the function body; `$x` params are value params and expand over all outputs of their argument expression. Nested defs shadow outer defs by name/arity, and self-recursion is supported.
 
 `range` is a **Tier 2** operation: 1 alloc per generated value (the output byte slice), proportional to what you asked to generate. Compose with `limit` for lazy evaluation: `limit(3; range(1000))` produces only 3 values and 3 allocs.
 
@@ -429,6 +501,9 @@ All forms short-circuit. `any(gen; cond)` is equivalent to `first(gen \| select(
 | `ascii_upcase` | Convert string to uppercase | `"hello"` | `"HELLO"` |
 | `startswith("s")` | True if string starts with s | `"foobar"` | `true` |
 | `endswith("s")` | True if string ends with s | `"foobar"` | `false` (for `"foo"`) |
+| `trim` | Trim leading and trailing Unicode whitespace | `"  abc  "` | `"abc"` |
+| `ltrim` | Trim leading Unicode whitespace | `"  abc  "` | `"abc  "` |
+| `rtrim` | Trim trailing Unicode whitespace | `"  abc  "` | `"  abc"` |
 | `ltrimstr("s")` | Remove prefix if present | `"prod-auth"` | `"auth"` |
 | `rtrimstr("s")` | Remove suffix if present | `"app.log"` | `"app"` |
 
@@ -458,8 +533,9 @@ Replacement strings in `sub`/`gsub` are literals — `\(...)` capture group refe
 | `fromjson` | Parse a JSON string to its value | `"{\"a\":1}"` | `{"a":1}` |
 | `tostring` | Strings pass through; non-strings serialized via `tojson` | `42` | `"42"` |
 | `tonumber` | Numbers pass through; strings parsed as floats | `"3.14"` | `3.14` |
+| `toboolean` | Booleans pass through; `"true"`/`"false"` strings are parsed | `"true"` | `true` |
 
-`tojson \| fromjson` is an identity round-trip. `tostring \| tonumber` round-trips numbers.
+`tojson \| fromjson` is an identity round-trip. `tostring \| tonumber` round-trips numbers. `toboolean` throws a jq-style error string for invalid input such as `0`, `null`, or `"tru"`.
 
 ### Object Transforms
 
@@ -467,8 +543,10 @@ Replacement strings in `sub`/`gsub` are literals — `\(...)` capture group refe
 |--------|-------------|---------------|----------------|
 | `to_entries` | Object → `[{"key":k,"value":v}]` | `{"a":1}` | `[{"key":"a","value":1}]` |
 | `from_entries` | `[{key,value}]` → object | `[{"key":"a","value":1}]` | `{"a":1}` |
+| `with_entries(.key |= "KEY_" + .)` | Convenience form for `to_entries \| map(f) \| from_entries` | `{"a":1,"b":2}` | `{"KEY_a":1,"KEY_b":2}` |
+| `map_values(.+1)` | Transform object values; arrays use `map(.+1)` semantics | `{"a":1,"b":2}` | `{"a":2,"b":3}` |
 
-`from_entries` accepts both `"key"` and `"name"` as the key field. Use `to_entries | map(f) | from_entries` explicitly in place of `with_entries(f)` (see Rejected below).
+`from_entries` accepts both `"key"` and `"name"` as the key field. `with_entries(f)` is parser sugar for `to_entries | map(f) | from_entries`, and `map_values(f)` uses the same entry-transform shape on objects while behaving like `map(f)` on arrays.
 
 ---
 
@@ -483,29 +561,6 @@ So `a or b and c` parses as `a or (b and c)` — `and` binds tighter than `or`.
 ---
 
 ## Not Yet Supported
-
-### Feasible at zero allocation
-
-| Syntax | Description | Implementation Notes |
-|--------|-------------|---------------------|
-| `path(expr)` | Output path as array | Emit path like `["foo","bar"]` or `["items",0]`. Requires tracking current path as we descend — needs a path accumulator. |
-
-### Feasible but require careful handling
-
-These operations are implementable at zero allocation but involve more complexity or edge cases.
-
-| Syntax | Description | Challenge |
-|--------|-------------|-----------|
-| `as $x \| expr` | Variable binding | Store `(start, end)` offsets into original input. **Zero-alloc only if bound values reference input, not constructed output.** Binding a constructed value (e.g., `{a:1} as $x`) would need to store bytes somewhere. |
-| `def f: body; expr` | Function definitions | AST-level feature, compile-time only. But closures and recursion add parser/AST complexity. |
-| `reduce .[] as $x (init; update)` | Fold/accumulate | Needs mutable accumulator. If accumulator lives in the output buffer, works, but each step reads previous output. May require double-buffering (ping-pong between two buffer slices). |
-| `label-break` | Control flow | `label $out \| foreach ...` — requires unwinding callback stack. Achievable with a sentinel error value. |
-| `foreach` | Stateful iteration | `foreach .[] as $x (init; update; extract)`. Requires mutable state across iterations. Double-buffering approach keeps it zero-alloc. |
-| `@format "template"` combined syntax | Apply format to each interpolated value | `@html "<b>\(.)</b>"` — applies `@html` to each `\(...)` value. Not yet supported; plain `"\(expr)"` string interpolation IS supported. |
-| `getpath(path)` | Get value at path | Navigate nested structure following path array. Zero-alloc via scanner. |
-| `setpath(path; val)` | Set value at path | Navigate to position, reconstruct tree with modified value. Multi-level reconstruction. Zero-alloc feasible but code complexity is high. |
-| `delpaths(paths)` | Delete at multiple paths | Like `setpath` but removing. Same reconstruction complexity. |
-| `walk(f)` | Recursive transform | Apply f to every value bottom-up. Reconstruct entire tree with transformed values. Intermediate results from inner expressions may need temp storage. |
 
 ### Implemented — bounded O(n) allocation (Tier 2)
 
@@ -522,49 +577,30 @@ These operations allocate an auxiliary index structure, but the allocation is **
 | `range(n)`, `range(from;to;step)` | 1 per value | Each integer output is a fresh byte slice (synthesised, not in input). |
 | `{a: .x[]}` multi-output construction | ~n per level | Cartesian product via `execConstructMulti`; single-output pairs use zero-alloc fast path. |
 
-### Feasible — bounded O(n) allocation (Tier 2, planned)
+### Deferred because they cross the library boundary
 
-| Syntax | Alloc model | Notes |
-|--------|-------------|-------|
-| `keys` (sorted) | O(n) index | Sorted object keys. (`keys_unsorted` is already 0-alloc.) |
-| `with_entries(f)` | 1 alloc/call | Needs a small scratch buffer per entry (aliasing constraint). Use `to_entries \| map(f) \| from_entries` as the 0-alloc alternative. |
-| `implode` | O(n) | Array of codepoints → UTF-8 string. |
-| `explode` | O(n) | String → array of Unicode codepoints. |
+These features are intentionally outside the current pure `Compile` + `Run` API shape. They need module loading, stdin, environment variables, or CLI process state rather than only the provided JSON bytes.
 
-### Rejected — allocations proportional to INPUT structure
+| Syntax | Why deferred |
+|--------|--------------|
+| `import`, `include`, `modulemeta` | Need filesystem-backed module resolution, dependency loading, and module scoping rules. |
+| `input`, `inputs` | Need stream/stateful stdin access instead of pure input-byte transforms. |
+| `env`, `$ENV` | Need process-environment access, which breaks the current deterministic library boundary. |
+| `stderr` | Needs host stderr output plumbing as a value-producing builtin instead of the existing `debug` side effect. |
+| CLI flags such as `-r`, `-s`, `--arg`, `--argjson` | CLI concerns, not library query semantics. |
 
-The governing principle rejects operations where allocation scales with the *shape of the data being processed*, not with the result being produced. The caller cannot control these allocations by choosing what to ask for.
+### Deferred because they need broader runtime work
 
-| Syntax | Why rejected |
-|--------|-------------|
-| *(range is now implemented as Tier 2)* | `range(n)`, `range(from;to)`, `range(from;to;step)` are supported. See Stream Control section above. |
-| `recurse` / `..` | **Allocs scale with input depth.** The recursive descent creates an `objectIter`/`arrayIter` closure at every JSON nesting level (~3–4 heap allocs per level). A 10-deep object costs ~40 allocs per call. The caller cannot bound this. Fixing it would require a full stack-based executor redesign incompatible with the callback architecture. |
+| Syntax | Why deferred |
+|--------|--------------|
+| Full `have_decnum` semantics | Requires an exact decimal numeric runtime instead of the current float-based executor. `have_decnum` currently reports capability only. |
 
-### Not yet implemented (feasible, zero-alloc)
+### Compatibility aliases and small remaining tail
 
-| Syntax | Description | Challenge |
-|--------|-------------|-----------|
-| `path(expr)` | Output path as array | Track current path during descent — needs a path accumulator. |
-| `getpath(path)` | Get value at path | Navigate nested structure following path array. |
-| `setpath(path; val)` | Set value at path | Navigate to position, reconstruct tree with modified value. |
-| `delpaths(paths)` | Delete at multiple paths | Like `setpath` but removing. |
-| `as $x \| expr` | Variable binding | Zero-alloc if bound values reference input; allocates if they hold constructed data. |
-| `reduce .[] as $x (init; update)` | Fold/accumulate | Needs mutable accumulator; double-buffering keeps it near-zero-alloc. |
-| `foreach` | Stateful iteration | Same accumulator challenge as `reduce`. |
-| `label-break` | Control flow | Achievable with a sentinel error value for stack unwinding. |
-| `@format "template"` combined syntax | `@html "<b>\(.)</b>"` | Applies format to each interpolated value; requires parser + executor extension. |
-| `def f: body; expr` | User-defined functions | AST-level feature; recursive definitions add complexity. |
-| `walk(f)` | Bottom-up tree transform | Feasible; complex buffer management when `f` constructs new data. |
-
-### Not applicable (streaming/CLI concerns)
-
-| Syntax | Description |
-|--------|-------------|
-| `input`, `inputs` | Read from stdin |
-| `env` | Access environment |
-| `--raw-output`, `-r` | CLI output formatting |
-| `--slurp`, `-s` | CLI input mode |
-| `--arg`, `--argjson` | CLI variable injection |
+| Syntax | Notes |
+|--------|--------------|
+| `leaf_paths` | Implemented as the historical jq compatibility alias for `paths(scalars)`. Current jq 1.8.1 does not expose this name directly. |
+| `date` | Implemented as a compatibility alias for `todate`; current jq 1.8.1 does not expose bare `date`. |
 
 ---
 
@@ -575,4 +611,4 @@ The governing principle rejects operations where allocation scales with the *sha
 - **Tier 0 (zero-alloc):** field access, filtering, comparison, arithmetic, construction, `map(.field)`, math, `test(re)` — the full hot path for log processing.
 - **Tier 1 (alloc ∝ output):** `@base64`, `@uri`, `match`, `capture`, `scan`, `gsub`, `map(f)` with construction — allocate proportional to the data they produce, never to the input size.
 - **Tier 2 (alloc ∝ collection, implemented):** `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `range(n)`, multi-output object construction — O(n) bounded by the array/output the user explicitly requested.
-- **Tier 3 (deferred — executor redesign needed):** `recurse`/`..` — closures heap-allocate per nesting level, proportional to input structure not output.
+- **Still intentionally deferred:** full decimal-mode semantics behind `have_decnum`, module/import loading, and host-boundary helpers such as `input`, `inputs`, `env`, `$ENV`, and `stderr`.
