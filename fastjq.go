@@ -1,3 +1,9 @@
+// Unless explicitly stated otherwise all files in this repository are licensed
+// under the Apache License 2.0.
+//
+// This product includes software developed at Datadog (https://www.datadoghq.com/)
+// Copyright 2025-Present Datadog, Inc.
+
 // Package fastjq provides a fast, zero-allocation JQ engine for Go.
 // It operates directly on raw []byte using slice offsets — no interface{},
 // no map[string]interface{}, no marshal/unmarshal cycle.

@@ -4,6 +4,24 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — Open-source release prep
+
+### Added
+- `LICENSE` (Apache 2.0), `NOTICE`, and `LICENSE-3rdparty.csv` per Datadog's
+  open-source release policy.
+- `CONTRIBUTING.md` for community contributions.
+- `.github/PULL_REQUEST_TEMPLATE.md` plus issue templates under
+  `.github/ISSUE_TEMPLATE/` (bug report, feature request, config).
+- Apache 2.0 / Datadog copyright headers on every first-party `.go` file.
+- README license and contributing sections; license badge.
+
+### Changed
+- Module path: `github.com/brianfloersch/fastjq` →
+  `github.com/DataDog/fastjq` (and the `compare/` submodule). Consumers must
+  update their import paths.
+
+---
+
 ## [Unreleased] — explicit per-run execution state
 
 ### Fixed

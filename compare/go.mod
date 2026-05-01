@@ -1,4 +1,4 @@
-module github.com/brianfloersch/fastjq/compare
+module github.com/DataDog/fastjq/compare
 
 go 1.25.4
 
