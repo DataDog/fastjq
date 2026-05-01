@@ -300,11 +300,12 @@ fastjq_test.go      — Unit tests (~435 tests)
 correctness_test.go — Edge case, no-panic, and Unicode tests
 complex_test.go     — Complex multi-step query tests
 fuzz_test.go        — Fuzz tests (FuzzCompile, FuzzRunFixed, FuzzBoth)
-bench_test.go       — Benchmarks: fastjq vs gojq (255 benchmark cases)
+bench_test.go       — fastjq benchmark suite in the root module
+compare/bench_compare_test.go — gojq comparison benchmark suite in a nested module
 jqtest/run_test.go  — Official jq test harness (jq.test, man.test, optional.test, base64.test, uri.test; 783 total)
 cmd/fastjq/main.go  — JSONL processor CLI
 bench_vs_jq.sh      — CLI throughput benchmark script
-scripts/update_benchmarks.go — Regenerates BENCHMARKS.md
+scripts/update_benchmarks.go — Regenerates BENCHMARKS.md from the root and compare modules
 ```
 
 ## Public API

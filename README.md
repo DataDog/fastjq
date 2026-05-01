@@ -4,7 +4,7 @@ A fast jq engine for Go with a principled allocation model, designed for high-th
 
 fastjq operates directly on raw `[]byte` — no `json.Unmarshal`, no `map[string]interface{}`, no marshal/unmarshal cycle. It compiles a query once and executes it against JSON bytes by scanning byte positions, copying only what it needs into an output buffer.
 
-**This is not a full jq implementation.** It supports a targeted subset of jq operations chosen for log processing workloads. See [Limitations](#limitations) before using.
+fastjq now covers the jq library surface exercised by the upstream test suite we run. The remaining exclusions are narrow and called out in [Limitations](#limitations).
 
 **Requires valid JSON input.** fastjq does not validate its input — behavior on malformed JSON is undefined. It never panics (enforced by fuzz tests), but may silently produce wrong results. Use `json.Valid` if you can't guarantee the source.
 
@@ -21,6 +21,7 @@ The standard approach costs ~800 µs and ~4,600 allocations just to parse a 100K
 ## Benchmarks
 
 Compared against [gojq](https://github.com/itchyny/gojq), the standard jq library for Go. gojq times include the full `json.Unmarshal → execute → json.Marshal` cycle. Apple M4 Max, Go 1.25.
+The core `fastjq` module has zero external Go module dependencies. The `gojq` comparison benchmarks live in the separate `compare/` module so the library stays dependency-free.
 
 **Allocation model — allocations are proportional to what you ask for, never to what the engine scans:**
 
