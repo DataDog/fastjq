@@ -59,10 +59,10 @@ func runFastjq(t *testing.T, query, input string) ([]string, error) {
 }
 
 type compatCase struct {
-	name        string
-	query       string
-	input       string
-	knownDiff   string // non-empty = expect difference; value describes why
+	name      string
+	query     string
+	input     string
+	knownDiff string // non-empty = expect difference; value describes why
 }
 
 func TestJQCompat(t *testing.T) {
@@ -170,6 +170,7 @@ func TestJQCompat(t *testing.T) {
 		// --- Optional ---
 		{`optional on non-object`, `.a?`, `"string"`, ""},
 		{`optional iterator on scalar`, `.[]?`, `42`, ""},
+		{`optional chain null propagation`, `.a.b.c?`, `{"a":null}`, ""},
 
 		// --- Type ---
 		{"type string", "type", `"hello"`, ""},
@@ -308,6 +309,7 @@ func TestJQCompat(t *testing.T) {
 		{"add strings", "add", `["a","b","c"]`, ""},
 		{"add arrays", "add", `[[1,2],[3,4]]`, ""},
 		{"add objects", "add", `[{"a":1},{"b":2}]`, ""},
+		{"add objects duplicate key last wins", "add", `[{"a":1},{"a":2}]`, ""},
 		{"add empty", "add", `[]`, ""},
 		{"add null elements", "add", `[null,1,2]`, ""},
 
@@ -335,6 +337,7 @@ func TestJQCompat(t *testing.T) {
 		{"array difference", `[1,2,3,2,1] - [2]`, `null`, ""},
 		{"array difference empty rhs", `[1,2,3] - []`, `null`, ""},
 		{"string repeat", `"ab" * 3`, `null`, ""},
+		{"string repeat zero", `"ab" * 0`, `null`, ""},
 		{"string split via div", `"a,b,c" / ","`, `null`, ""},
 
 		// --- min / max / min_by / max_by ---
@@ -354,6 +357,7 @@ func TestJQCompat(t *testing.T) {
 		{"uri encode special", `@uri`, `"a/b?c=d&e=f"`, ""},
 		{"uri encode unreserved passthrough", `@uri`, `"abc-._~"`, ""},
 		{"uri encode empty", `@uri`, `""`, ""},
+		{"uri encode decoded newline escape", `"\n" | @uri`, `null`, ""},
 
 		// --- Complex / realistic log processing patterns ---
 		{"log filter level", `select(.level == "error")`, `{"level":"error","msg":"boom","ts":1234}`, ""},
@@ -372,8 +376,6 @@ func TestJQCompat(t *testing.T) {
 		{"unicode in string op", `startswith("日")`, `"日本語"`, ""},
 
 		// --- Edge cases: nested empties, nulls ---
-		// null propagation: jq null-propagates (.a.b where .a=null → null), fastjq errors — see known diffs
-		// {"deep null chain optional", ".a.b.c?", `{"a":null}`, ""},
 		{"empty object identity", ".", `{}`, ""},
 		{"empty array identity", ".", `[]`, ""},
 		{"null identity", ".", `null`, ""},
@@ -427,24 +429,6 @@ func TestJQCompat(t *testing.T) {
 			"jq normalises scientific notation to uppercase E with explicit sign; fastjq preserves raw input bytes",
 		},
 		{
-			"null propagation via chained optional",
-			".a.b.c?", `{"a":null}`,
-			"null", "error",
-			"jq null-propagates: null | .field = null; fastjq errors on .field when the input is null unless the field itself is marked optional. Use .a?.b?.c? in fastjq.",
-		},
-		{
-			"add objects duplicate keys",
-			"add", `[{"a":1},{"a":2}]`,
-			`{"a":2}`, `{"a":1,"a":2}`,
-			"jq deduplicates keys on object merge (last wins); fastjq appends all key-value pairs, producing a duplicate-key object. Use to_entries | ... | from_entries for explicit dedup.",
-		},
-		{
-			"@uri with JSON escape sequences",
-			`"\n" | @uri`, `null`,
-			`"%0A"`, `"%5Cn"`,
-			"jq decodes JSON escape sequences before URI-encoding (\\n → 0x0A → %0A); fastjq operates on raw JSON string bytes (\\n is two bytes: backslash + n → %5Cn). Matches for plain ASCII strings.",
-		},
-		{
 			"null arithmetic (null - x)",
 			`null - 5`, `null`,
 			`error`, `null`,
@@ -455,12 +439,6 @@ func TestJQCompat(t *testing.T) {
 			`5 * null`, `null`,
 			`error`, `null`,
 			"Same as above — jq errors, fastjq returns null.",
-		},
-		{
-			"string repeat zero",
-			`"ab" * 0`, `null`,
-			`""`, `null`,
-			"jq returns empty string for string * 0; fastjq returns null (treating zero/negative as no repetition).",
 		},
 	}
 

@@ -42,6 +42,36 @@ func assertQueryAll(t *testing.T, query, input string, want ...string) {
 	}
 }
 
+// assertQueryMatchesJQ runs the same query through jq and fastjq and requires
+// exact agreement on output count, output bytes, and error shape.
+func assertQueryMatchesJQ(t *testing.T, query, input string) {
+	t.Helper()
+	if !jqAvailable() {
+		t.Skip("jq not in PATH — skipping jq parity assertion")
+	}
+
+	jqOut, jqErr := runJQ(t, query, input)
+	fjOut, fjErr := runFastjq(t, query, input)
+
+	if jqErr != nil && fjErr != nil {
+		return
+	}
+	if jqErr != nil && fjErr == nil {
+		t.Fatalf("jq errors but fastjq succeeds:\n  query: %s\n  input: %s\n  jq err: %v\n  fastjq: %v", query, input, jqErr, fjOut)
+	}
+	if jqErr == nil && fjErr != nil {
+		t.Fatalf("fastjq errors but jq succeeds:\n  query: %s\n  input: %s\n  jq: %v\n  fastjq err: %v", query, input, jqOut, fjErr)
+	}
+	if len(jqOut) != len(fjOut) {
+		t.Fatalf("output count differs:\n  query: %s\n  input: %s\n  jq (%d): %v\n  fastjq (%d): %v", query, input, len(jqOut), jqOut, len(fjOut), fjOut)
+	}
+	for i := range jqOut {
+		if jqOut[i] != fjOut[i] {
+			t.Fatalf("output[%d] differs:\n  query: %s\n  input: %s\n  jq:     %s\n  fastjq: %s", i, query, input, jqOut[i], fjOut[i])
+		}
+	}
+}
+
 // --- Pipeline composition ---
 
 func TestComplexArrayPipeline(t *testing.T) {
@@ -80,7 +110,6 @@ func TestComplexToFromEntriesFiltered(t *testing.T) {
 		`to_entries | map(select(.value != null and (.value | type) != "boolean")) | from_entries`,
 		input, `{"name":"alice","age":30}`)
 }
-
 
 func TestComplexPipelineMultiStageCorrect(t *testing.T) {
 	input := `[{"id":1,"val":5},{"id":2,"val":15},{"id":3,"val":25},{"id":4,"val":8}]`
@@ -445,6 +474,44 @@ func TestComplexMapWithTryCatch(t *testing.T) {
 	assertQuery(t,
 		`[.[] | try tonumber catch null] | map(select(. != null)) | add`,
 		input, `148`)
+}
+
+// --- Direct jq parity checks for multi-feature queries ---
+
+func TestComplexJQParityTryFromJSONMap(t *testing.T) {
+	input := `[{"id":1,"raw":"{\"v\":42}"},{"id":2,"raw":"not-json"},{"id":3,"raw":"{\"v\":7}"}]`
+	assertQueryMatchesJQ(t,
+		`[.[] | {id, val: (try (.raw | fromjson | .v) catch null)}]`,
+		input,
+	)
+}
+
+func TestComplexJQParityOptionalFallbackChain(t *testing.T) {
+	input := `[{"meta":{"owner":{"name":"alice"}},"fallback":"x"},{"meta":{},"fallback":"y"},{"fallback":"z"}]`
+	assertQueryMatchesJQ(t,
+		`[.[] | .meta.owner?.name // .fallback]`,
+		input,
+	)
+}
+
+func TestComplexJQParityEncodedURLBuild(t *testing.T) {
+	input := `{"host":"example.com","path":"/search","q":"hello world","limit":"10"}`
+	assertQueryMatchesJQ(t,
+		`"https://" + .host + (.path | @uri) + "?q=" + (.q | @uri) + "&limit=" + .limit`,
+		input,
+	)
+}
+
+func TestComplexJQParityStringRepeatMap(t *testing.T) {
+	assertQueryMatchesJQ(t, `[0,1,2] | map("ab" * .)`, `null`)
+}
+
+func TestComplexJQParityIfTryMix(t *testing.T) {
+	input := `[{"name":"alice","status":"active","score":1},{"name":"bob","status":"bad","score":2},{"name":"carol","status":"skip","score":3}]`
+	assertQueryMatchesJQ(t,
+		`[.[] | if .status == "active" then (.name | ascii_upcase) elif .status == "bad" then (try (.score / 0) catch "div0") else empty end]`,
+		input,
+	)
 }
 
 func TestComplexLargeChain(t *testing.T) {
