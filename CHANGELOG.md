@@ -18,6 +18,21 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 - The comparison benchmark suite now lives in a nested module, which keeps the library dependency-free while preserving the existing fastjq-vs-gojq tables and benchmark names.
 
+## [Unreleased] — recurse safety and fuzz coverage refresh
+
+### Added
+
+- Expanded the fuzz seed coverage for newer jq-parity features, including lexical binds, `reduce`/`foreach`, `label`/`break`, defs, path/update helpers, recursive traversal helpers, formatter templates, and the newer builtin/date surface.
+
+### Fixed
+
+- Fixed a `recurse(f)` safety bug where self-referential outputs such as `recurse(.foo[])` on `null` could recurse until the Go stack overflowed.
+- Added recursion guards so `recurse(f)` now returns an error on immediate self-loops and on pathological depth instead of crashing the process.
+
+### Tradeoffs
+
+- The arbitrary-input fuzz loop still avoids generator-style `recurse(...)` queries that can legitimately diverge on unrelated inputs, but paired fuzz seeds keep those query forms covered on known-finite structures.
+
 ## [Unreleased] — parser breadth, path updates, jq parity majority, and builtin sweep
 
 ### Added
