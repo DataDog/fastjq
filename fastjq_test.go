@@ -213,6 +213,7 @@ func TestForeachBuiltin(t *testing.T) {
 
 func TestWhileUntilBuiltins(t *testing.T) {
 	assertQuery(t, `[while(.<100; .*2)]`, `1`, `[1,2,4,8,16,32,64]`)
+	assertQuery(t, `[repeat(.*2, error)?]`, `1`, `[2]`)
 	assertQuery(t, `[.,1]|until(.[0] < 1; [.[0] - 1, .[1] * .[0]])|.[1]`, `5`, `120`)
 }
 
@@ -322,6 +323,32 @@ func TestReverseBuiltin(t *testing.T) {
 func TestCombinationsBuiltin(t *testing.T) {
 	assertQueryAll(t, `combinations`, `[[1,2],[3,4]]`, `[1,3]`, `[1,4]`, `[2,3]`, `[2,4]`)
 	assertQueryAll(t, `combinations(2)`, `[0,1]`, `[0,0]`, `[0,1]`, `[1,0]`, `[1,1]`)
+}
+
+func TestReflectionBuiltins(t *testing.T) {
+	assertQuery(t, `builtins|length > 10`, `null`, `true`)
+	assertQuery(t, `"-1"|IN(builtins[] / "/"|.[1])`, `null`, `false`)
+	assertQuery(t, `all(builtins[] / "/"; .[1]|tonumber >= 0)`, `null`, `true`)
+	assertQuery(t, `builtins|any(.[:1] == "_")`, `null`, `false`)
+	assertQuery(t, `try error("\($__loc__)") catch .`, `null`, `"{\"file\":\"<top-level>\",\"line\":1}"`)
+	assertQuery(t, `{ a, $__loc__, c }`, `{"a":[1,2,3],"b":"foo","c":{"hi":"hey"}}`,
+		`{"a":[1,2,3],"__loc__":{"file":"<top-level>","line":1},"c":{"hi":"hey"}}`)
+}
+
+func TestStreamHelpers(t *testing.T) {
+	assertQueryAll(t, `tostream`, `[0,[1,{"a":1},{"b":2}]]`,
+		`[[0],0]`,
+		`[[1,0],1]`,
+		`[[1,1,"a"],1]`,
+		`[[1,1,"a"]]`,
+		`[[1,2,"b"],2]`,
+		`[[1,2,"b"]]`,
+		`[[1,2]]`,
+		`[[1]]`)
+	assertQueryAll(t, `truncate_stream([[0],"a"],[[1,0],"b"],[[1,0]],[[1]])`, `1`,
+		`[[0],"b"]`, `[[0]]`)
+	assertQuery(t, `fromstream(1|truncate_stream([[0],"a"],[[1,0],"b"],[[1,0]],[[1]]))`, `null`, `["b"]`)
+	assertQuery(t, `. as $dot|fromstream($dot|tostream)|.==$dot`, `[0,[1,{"a":1},{"b":2}]]`, `true`)
 }
 
 func TestKeysBuiltin(t *testing.T) {
@@ -2317,6 +2344,68 @@ func TestLtrimStrInSelect(t *testing.T) {
 	}
 }
 
+func TestLtrimStrDynamicArg(t *testing.T) {
+	p, err := Compile(`.[] as [$x, $y] | try ["ok", ($x | ltrimstr($y))] catch ["ko", .]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.RunAll([]byte(`[["hi",1],[1,"hi"],["hi","hi"],[1,1]]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		`["ko","startswith() requires string inputs"]`,
+		`["ko","startswith() requires string inputs"]`,
+		`["ok",""]`,
+		`["ko","startswith() requires string inputs"]`,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results, want %d: %q", len(got), len(want), got)
+	}
+	for i := range want {
+		if string(got[i]) != want[i] {
+			t.Fatalf("result %d: got %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
+func TestRtrimStrDynamicArg(t *testing.T) {
+	p, err := Compile(`.[] as [$x, $y] | try ["ok", ($x | rtrimstr($y))] catch ["ko", .]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.RunAll([]byte(`[["hi",1],[1,"hi"],["hi","hi"],[1,1]]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		`["ko","endswith() requires string inputs"]`,
+		`["ko","endswith() requires string inputs"]`,
+		`["ok",""]`,
+		`["ko","endswith() requires string inputs"]`,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results, want %d: %q", len(got), len(want), got)
+	}
+	for i := range want {
+		if string(got[i]) != want[i] {
+			t.Fatalf("result %d: got %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
+func TestAddGeneratorArgument(t *testing.T) {
+	assertQuery(t, `add(10,range(10))`, `null`, `55`)
+}
+
+func TestAddObjectGeneratorArgument(t *testing.T) {
+	assertQuery(t, `add({(.[]):1}) | keys`, `["b","a","c"]`, `["a","b","c"]`)
+}
+
+func TestRangeGeneratorArgument(t *testing.T) {
+	assertQuery(t, `[range(range(10))]`, `null`, `[0,0,1,0,1,2,0,1,2,3,0,1,2,3,4,0,1,2,3,4,5,0,1,2,3,4,5,6,0,1,2,3,4,5,6,7,0,1,2,3,4,5,6,7,8]`)
+}
+
 func TestStringOpsComposed(t *testing.T) {
 	// Normalize, trim prefix, check suffix
 	p, _ := Compile(`select(.path | ascii_downcase | ltrimstr("/api") | startswith("/users"))`)
@@ -3062,6 +3151,66 @@ func TestIfConditionWithPipe(t *testing.T) {
 	if len(results) != 0 {
 		t.Errorf("expected 0 results for debug=true")
 	}
+}
+
+func TestIfConditionGenerator(t *testing.T) {
+	assertQuery(t, `[if 1,null,2 then 3 else 4 end]`, `null`, `[3,4,3]`)
+}
+
+func TestIfGeneratorElseBranch(t *testing.T) {
+	assertQuery(t, `[if null then 3 else 5,6 end]`, `null`, `[5,6]`)
+}
+
+func TestIfOptionalPostfix(t *testing.T) {
+	assertQuery(t, `[if error then 1 else 2 end?]`, `"foo"`, `[]`)
+}
+
+func TestIfArrayPostfix(t *testing.T) {
+	assertQuery(t, `if true then [.] else . end []`, `null`, `null`)
+}
+
+func TestNthSugar(t *testing.T) {
+	assertQuery(t, `[range(.)]|[first, last, nth(5)]`, `10`, `[0,9,5]`)
+}
+
+func TestMapTryCommaForms(t *testing.T) {
+	assertQuery(t, `map(try .a[] catch ., try .a.[] catch ., .a[]?, .a.[]?)`,
+		`[{"a": [1,2]}, {"a": 123}]`,
+		`[1,2,1,2,1,2,1,2,"Cannot iterate over number (123)","Cannot iterate over number (123)"]`)
+}
+
+func TestTryNumericPostfix(t *testing.T) {
+	assertQuery(t, `try 0[implode] catch .`, `[]`, `"Cannot index number with string \"\""`)
+}
+
+func TestIndexGeneratorArgs(t *testing.T) {
+	assertQuery(t, `[(index(",","|"), rindex(",","|")), indices(",","|")]`,
+		`"a,b|c,d,e||f,g,h,|,|,i,j"`,
+		`[1,3,22,19,[1,5,7,12,14,16,18,20,22],[3,9,10,17,19]]`)
+}
+
+func TestStrfLocaltimeGeneratorArgs(t *testing.T) {
+	p, err := Compile(`strflocaltime("" | ., @uri)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.RunAll([]byte(`0`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{`""`, `""`}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results, want %d: %q", len(got), len(want), got)
+	}
+	for i := range want {
+		if string(got[i]) != want[i] {
+			t.Fatalf("result %d: got %s, want %s", i, got[i], want[i])
+		}
+	}
+}
+
+func TestFloatGroupedIndices(t *testing.T) {
+	assertQuery(t, `[[range(10)] | .[1.1,1.5,1.7]]`, `null`, `[1,1,1]`)
 }
 
 // --- and / or / not ---

@@ -23,6 +23,7 @@ const (
 	opReduce                       // reduce gen as $x (init; update)
 	opForeach                      // foreach gen as $x (init; update; extract?)
 	opWhile                        // while(cond; update)
+	opRepeat                       // repeat(expr)
 	opUntil                        // until(cond; next)
 	opDefScope                     // def f(...): body; expr
 	opCall                         // f / f(a; b)
@@ -71,6 +72,9 @@ const (
 	opMktime                       // mktime
 	opGmtime                       // gmtime
 	opFromdate                     // fromdate
+	opToStream                     // tostream
+	opTruncateStream               // truncate_stream(stream)
+	opFromStream                   // fromstream(stream)
 	opAsciiDowncase                // ascii_downcase
 	opAsciiUpcase                  // ascii_upcase
 	opStartsWith                   // startswith("s")
@@ -93,6 +97,7 @@ const (
 	opPath                         // path(expr)
 	opKeys                         // keys
 	opKeysUnsorted                 // keys_unsorted
+	opBuiltins                     // builtins
 	opPaths                        // paths / paths(filter)
 	opGetPath                      // getpath(path)
 	opSetPath                      // setpath(path; value)
@@ -801,7 +806,11 @@ func parseAtom(s string) (*op, string, error) {
 
 	// if-then-else
 	if strings.HasPrefix(s, "if") && (len(s) == 2 || !isIdentChar(s[2])) {
-		return parseIf(s)
+		node, rest, err := parseIf(s)
+		if err != nil {
+			return nil, rest, err
+		}
+		return applyPostfixPipe(node, rest)
 	}
 
 	// empty — produce zero outputs
@@ -906,6 +915,9 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "keys_unsorted") && (len(s) == 13 || !isIdentChar(s[13])) {
 		return applyPostfixPipe(&op{typ: opKeysUnsorted}, s[13:])
 	}
+	if strings.HasPrefix(s, "builtins") && (len(s) == 8 || !isIdentChar(s[8])) {
+		return applyPostfixPipe(&op{typ: opBuiltins}, s[8:])
+	}
 	if strings.HasPrefix(s, "have_decnum") && (len(s) == 11 || !isIdentChar(s[11])) {
 		return &op{typ: opHaveDecnum}, s[11:], nil
 	}
@@ -980,6 +992,13 @@ func parseAtom(s string) (*op, string, error) {
 			return nil, rest, fmt.Errorf("expected ')' after while() arguments")
 		}
 		return &op{typ: opWhile, left: cond, child: update}, rest[1:], nil
+	}
+	if strings.HasPrefix(s, "repeat(") {
+		node, rest, err := parseGeneratorArgBuiltin(s[7:], opRepeat)
+		if err != nil {
+			return nil, rest, err
+		}
+		return applyPostfixPipe(node, rest)
 	}
 	if strings.HasPrefix(s, "until(") {
 		cond, rest, err := parsePipeExpr(s[6:])
@@ -1076,6 +1095,18 @@ func parseAtom(s string) (*op, string, error) {
 
 	// add
 	if strings.HasPrefix(s, "add") && (len(s) == 3 || !isIdentChar(s[3])) {
+		rest := strings.TrimSpace(s[3:])
+		if len(rest) > 0 && rest[0] == '(' {
+			inner, rest2, err := parseGeneratorExpr(rest[1:])
+			if err != nil {
+				return nil, rest2, err
+			}
+			rest2 = strings.TrimSpace(rest2)
+			if len(rest2) == 0 || rest2[0] != ')' {
+				return nil, rest2, fmt.Errorf("expected ')' after add() expression")
+			}
+			return applyPostfixPipe(addBuiltinNode(inner), rest2[1:])
+		}
 		return &op{typ: opAdd}, s[3:], nil
 	}
 
@@ -1139,13 +1170,13 @@ func parseAtom(s string) (*op, string, error) {
 
 	// index(s) / rindex(s) / indices(s)
 	if strings.HasPrefix(s, "indices(") {
-		return parseUnaryExprBuiltin(s[8:], opIndicesN)
+		return parseGeneratorArgBuiltin(s[8:], opIndicesN)
 	}
 	if strings.HasPrefix(s, "index(") {
-		return parseUnaryExprBuiltin(s[6:], opIndex1)
+		return parseGeneratorArgBuiltin(s[6:], opIndex1)
 	}
 	if strings.HasPrefix(s, "rindex(") {
-		return parseUnaryExprBuiltin(s[7:], opRIndex1)
+		return parseGeneratorArgBuiltin(s[7:], opRIndex1)
 	}
 
 	// debug — print to stderr, pass through
@@ -1238,14 +1269,23 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "join(") {
 		return parseStringArgBuiltin(s[5:], opJoin)
 	}
+	if strings.HasPrefix(s, "tostream") && (len(s) == 8 || !isIdentChar(s[8])) {
+		return &op{typ: opToStream}, s[8:], nil
+	}
+	if strings.HasPrefix(s, "truncate_stream(") {
+		return parseGeneratorArgBuiltin(s[16:], opTruncateStream)
+	}
+	if strings.HasPrefix(s, "fromstream(") {
+		return parseGeneratorArgBuiltin(s[11:], opFromStream)
+	}
 	if strings.HasPrefix(s, "strftime(") {
-		return parseUnaryExprBuiltin(s[9:], opStrftime)
+		return parseGeneratorArgBuiltin(s[9:], opStrftime)
 	}
 	if strings.HasPrefix(s, "strflocaltime(") {
-		return parseUnaryExprBuiltin(s[14:], opStrfLocaltime)
+		return parseGeneratorArgBuiltin(s[14:], opStrfLocaltime)
 	}
 	if strings.HasPrefix(s, "strptime(") {
-		return parseUnaryExprBuiltin(s[9:], opStrptime)
+		return parseGeneratorArgBuiltin(s[9:], opStrptime)
 	}
 	if strings.HasPrefix(s, "mktime") && (len(s) == 6 || !isIdentChar(s[6])) {
 		return &op{typ: opMktime}, s[6:], nil
@@ -1302,13 +1342,13 @@ func parseAtom(s string) (*op, string, error) {
 		return &op{typ: opRtrim}, s[5:], nil
 	}
 	if strings.HasPrefix(s, "trimstr(") {
-		return parseStringArgBuiltin(s[8:], opTrimStr)
+		return parseStringExprArgBuiltin(s[8:], opTrimStr)
 	}
 	if strings.HasPrefix(s, "ltrimstr(") {
-		return parseStringArgBuiltin(s[9:], opLtrimStr)
+		return parseStringExprArgBuiltin(s[9:], opLtrimStr)
 	}
 	if strings.HasPrefix(s, "rtrimstr(") {
-		return parseStringArgBuiltin(s[9:], opRtrimStr)
+		return parseStringExprArgBuiltin(s[9:], opRtrimStr)
 	}
 
 	// to_entries / from_entries
@@ -1495,6 +1535,17 @@ func parseAtom(s string) (*op, string, error) {
 			return nil, rest, err
 		}
 		rest = strings.TrimSpace(rest)
+		if len(rest) > 0 && rest[0] == ')' {
+			nths := make([]*op, 0, len(generatorElems(nExpr)))
+			for _, countExpr := range generatorElems(nExpr) {
+				idx, ok := literalIntValue(countExpr)
+				if !ok {
+					return nil, rest, fmt.Errorf("nth(n) requires integer arguments")
+				}
+				nths = append(nths, &op{typ: opIndex, index: idx})
+			}
+			return collapseGeneratorNodes(nths), rest[1:], nil
+		}
 		if len(rest) == 0 || rest[0] != ';' {
 			return nil, rest, fmt.Errorf("expected ';' in nth(n; gen)")
 		}
@@ -1833,7 +1884,7 @@ func validateVars(node *op, scope map[string]bool) error {
 	}
 	switch node.typ {
 	case opVar:
-		if scope == nil || !scope[node.name] {
+		if node.name != "__loc__" && (scope == nil || !scope[node.name]) {
 			return fmt.Errorf("$%s is not defined", node.name)
 		}
 		return validateVars(node.child, scope)
@@ -1890,6 +1941,9 @@ func validateVars(node *op, scope map[string]bool) error {
 		return validateVars(node.child, scope)
 	case opConstruct:
 		for _, p := range node.pairs {
+			if err := validateVars(p.keyExpr, scope); err != nil {
+				return err
+			}
 			if err := validateVars(p.expr, scope); err != nil {
 				return err
 			}
@@ -2540,8 +2594,17 @@ func parseFieldChain(s string) (*op, string, error) {
 
 	// Check for chained field: .foo.bar
 	if len(rest) > 0 && rest[0] == '.' {
-		// Peek ahead — if next char after '.' is a letter or string quote, it's a chain
-		if len(rest) > 1 && (isIdentStart(rest[1]) || rest[1] == '"') {
+		// Peek ahead — .foo.bar and .foo.[] are both valid chains.
+		if len(rest) > 1 && (isIdentStart(rest[1]) || rest[1] == '"' || rest[1] == '[') {
+			if rest[1] == '[' {
+				child, remaining, err := parseBracketExpr(rest[1:])
+				if err != nil {
+					return nil, rest, err
+				}
+				node.child = child
+				rest = remaining
+				return node, rest, nil
+			}
 			child, remaining, err := parseFieldChain(rest[1:])
 			if err != nil {
 				return nil, rest, err
@@ -2648,6 +2711,35 @@ func parseUnaryGenBuiltin(s string, typ opType) (*op, string, error) {
 func parseUnaryExprBuiltin(s string, typ opType) (*op, string, error) {
 	s = strings.TrimSpace(s)
 	inner, rest, err := parsePipeExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after argument")
+	}
+	return &op{typ: typ, child: inner}, rest[1:], nil
+}
+
+func parseGeneratorArgBuiltin(s string, typ opType) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	inner, rest, err := parseGeneratorExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after argument")
+	}
+	return &op{typ: typ, child: inner}, rest[1:], nil
+}
+
+func parseStringExprArgBuiltin(s string, typ opType) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) > 0 && s[0] == '"' {
+		return parseStringArgBuiltin(s, typ)
+	}
+	inner, rest, err := parseGeneratorExpr(s)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -2791,7 +2883,7 @@ func parseHas(s string) (*op, string, error) {
 func parseIf(s string) (*op, string, error) {
 	s = strings.TrimSpace(s[2:]) // skip "if"
 
-	cond, rest, err := parsePipeExpr(s)
+	cond, rest, err := parseGeneratorExpr(s)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -2801,7 +2893,7 @@ func parseIf(s string) (*op, string, error) {
 	}
 	rest = strings.TrimSpace(rest[4:])
 
-	thenBranch, rest, err := parsePipeExpr(rest)
+	thenBranch, rest, err := parseGeneratorExpr(rest)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -2820,7 +2912,7 @@ func parseIf(s string) (*op, string, error) {
 		elifConsumedEnd = true
 	} else if strings.HasPrefix(rest, "else") && (len(rest) == 4 || !isIdentChar(rest[4])) {
 		rest = strings.TrimSpace(rest[4:])
-		elseBranch, rest, err = parsePipeExpr(rest)
+		elseBranch, rest, err = parseGeneratorExpr(rest)
 		if err != nil {
 			return nil, rest, err
 		}
@@ -3027,6 +3119,20 @@ func literalIntValue(node *op) (int, bool) {
 	return v, true
 }
 
+func literalIndexValue(node *op) (int, bool) {
+	if idx, ok := literalIntValue(node); ok {
+		return idx, true
+	}
+	if node == nil || node.typ != opLiteral {
+		return 0, false
+	}
+	f, ok := parseJSONFloat(node.literal)
+	if !ok {
+		return 0, false
+	}
+	return int(f), true
+}
+
 // parseSliceEnd parses the optional end bound and closing ']' of a slice.
 // s starts after the ':'. Returns the opSlice node.
 func parseSliceEnd(s string, startExpr *op) (*op, string, error) {
@@ -3072,7 +3178,7 @@ func parseBracketExpr(s string) (*op, string, error) {
 
 	if len(rest) > 0 && rest[0] == ',' {
 		nodes := make([]*op, 0, 2)
-		idx, ok := literalIntValue(startExpr)
+		idx, ok := literalIndexValue(startExpr)
 		if !ok {
 			return nil, rest, fmt.Errorf("expected integer array index")
 		}
@@ -3082,7 +3188,7 @@ func parseBracketExpr(s string) (*op, string, error) {
 			if err != nil {
 				return nil, nextRest, err
 			}
-			nextIdx, ok := literalIntValue(nextExpr)
+			nextIdx, ok := literalIndexValue(nextExpr)
 			if !ok {
 				return nil, nextRest, fmt.Errorf("expected integer array index")
 			}
@@ -3131,7 +3237,7 @@ func hasMultiOutput(n *op) bool {
 		return false
 	}
 	switch n.typ {
-	case opIterator, opRange, opScan, opGenerator, opPaths, opReduce, opForeach, opWhile, opPath, opCall, opAssign, opUpdate, opUpdateMath, opBsearch:
+	case opIterator, opRange, opScan, opGenerator, opPaths, opReduce, opForeach, opWhile, opRepeat, opPath, opCall, opAssign, opUpdate, opUpdateMath, opBsearch, opToStream, opTruncateStream:
 		return true
 
 	// Ops that cap or reduce to at most one output regardless of their children:
@@ -3421,6 +3527,14 @@ func mapBuiltinNode(inner *op) *op {
 	return &op{typ: opArrayConstruct, elems: []*op{pipe}}
 }
 
+func addBuiltinNode(inner *op) *op {
+	return &op{
+		typ:   opPipe,
+		left:  &op{typ: opArrayConstruct, elems: []*op{inner}},
+		right: &op{typ: opAdd},
+	}
+}
+
 func withEntriesBuiltinNode(inner *op) *op {
 	return &op{
 		typ:  opPipe,
@@ -3546,7 +3660,7 @@ func parseNumberLiteral(s string) (*op, string, error) {
 			i++
 		}
 	}
-	return &op{typ: opLiteral, literal: []byte(s[:i])}, s[i:], nil
+	return applyPostfixPipe(&op{typ: opLiteral, literal: []byte(s[:i])}, s[i:])
 }
 
 // readIdentifier reads a field name (letters, digits, underscore, hyphen).

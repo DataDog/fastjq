@@ -79,7 +79,7 @@ var unsupportedOps = []string{
 	// env
 	"env", "$ENV",
 	// Reflection
-	"builtins", "modulemeta", "$__loc__",
+	"modulemeta",
 	// walk — requires recursive descent (Tier 3)
 	"walk(",
 }

@@ -128,6 +128,16 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opBreakOp:
 		return &breakSignal{label: node.name}
 	case opVar:
+		if node.name == "__loc__" {
+			value := []byte(`{"file":"<top-level>","line":1}`)
+			if node.child != nil {
+				return execMulti(node.child, value, buf, fn)
+			}
+			if buf == nil {
+				return fn(value[:len(value):len(value)])
+			}
+			return fn(append(buf, value...))
+		}
 		ctx := currentExecContext()
 		value, ok := ctx.lookupVar(node.name)
 		if !ok {
@@ -177,6 +187,19 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(append(buf, "false"...))
 	case opOptional:
+		if node.child != nil && node.child.typ == opRepeat {
+			err := withOptionalScope(func() error {
+				return execMulti(node.child, input, buf, fn)
+			})
+			if err != nil {
+				var bs *breakSignal
+				if errors.As(err, &bs) {
+					return err
+				}
+				return nil
+			}
+			return nil
+		}
 		var outputs [][]byte
 		err := withOptionalScope(func() error {
 			return execMulti(node.child, input, nil, func(result []byte) error {
@@ -242,6 +265,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execForeach(node, input, buf, fn)
 	case opWhile:
 		return execWhile(node, input, buf, fn)
+	case opRepeat:
+		return execRepeat(node, input, buf, fn)
 	case opUntil:
 		result, err := execUntil(node, input, buf)
 		if err != nil {
@@ -294,6 +319,9 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opBuiltins:
+		result := execBuiltins(buf)
+		return fn(result)
 	case opHaveDecnum:
 		return fn(append(buf, "false"...))
 	case opStrftime:
@@ -320,6 +348,16 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opToStream:
+		return execToStream(input, buf, fn)
+	case opTruncateStream:
+		return execTruncateStream(node, input, buf, fn)
+	case opFromStream:
+		result, err := execFromStream(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opCombinations:
 		return execCombinations(node, input, buf, fn)
 	case opAny:
@@ -329,11 +367,11 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opAdd:
 		return execAdd(input, buf, fn)
 	case opIndex1:
-		return fn(execFindIndex(node, input, buf, false, false))
+		return execFindIndexMulti(node, input, buf, fn, false, false)
 	case opRIndex1:
-		return fn(execFindIndex(node, input, buf, true, false))
+		return execFindIndexMulti(node, input, buf, fn, true, false)
 	case opIndicesN:
-		return fn(execFindIndex(node, input, buf, false, true))
+		return execFindIndexMulti(node, input, buf, fn, false, true)
 	case opDebug:
 		execDebug(input)
 		return fn(input)
@@ -413,7 +451,11 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(result)
 	case opTrimStr:
-		return fn(execTrimStrBoth(input, buf, node.field))
+		result, err := execTrimStrBoth(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opBsearch:
 		return execBsearch(node, input, buf, fn)
 	case opAsciiDowncase:
@@ -489,9 +531,17 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(result)
 	case opLtrimStr:
-		return fn(execTrimStr(input, buf, node.field, true))
+		result, err := execTrimStr(node, input, buf, true)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opRtrimStr:
-		return fn(execTrimStr(input, buf, node.field, false))
+		result, err := execTrimStr(node, input, buf, false)
+		if err != nil {
+			return err
+		}
+		return fn(result)
 	case opEmpty:
 		return nil // produce zero outputs — never call fn
 	case opHas:
@@ -852,6 +902,16 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opIndexExpr:
 		return execIndexExpr(node, input, buf)
 	case opVar:
+		if node.name == "__loc__" {
+			value := []byte(`{"file":"<top-level>","line":1}`)
+			if node.child != nil {
+				return exec(node.child, value, buf)
+			}
+			if buf == nil {
+				return value[:len(value):len(value)], nil
+			}
+			return append(buf, value...), nil
+		}
 		ctx := currentExecContext()
 		value, ok := ctx.lookupVar(node.name)
 		if !ok {
@@ -960,6 +1020,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execFirstResult(node, input, buf)
 	case opWhile:
 		return execFirstResult(node, input, buf)
+	case opRepeat:
+		return execFirstResult(node, input, buf)
 	case opUntil:
 		return execUntil(node, input, buf)
 	case opDefScope:
@@ -988,6 +1050,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execDelPaths(node, input, buf)
 	case opKeysUnsorted:
 		return execKeysUnsorted(input, buf)
+	case opBuiltins:
+		return execBuiltins(buf), nil
 	case opHaveDecnum:
 		return append(buf, "false"...), nil
 	case opStrftime, opStrfLocaltime, opStrptime:
@@ -998,6 +1062,12 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execGmtime(input, buf)
 	case opFromdate:
 		return execFromdate(input, buf)
+	case opToStream:
+		return execFirstResult(node, input, buf)
+	case opTruncateStream:
+		return execFirstResult(node, input, buf)
+	case opFromStream:
+		return execFromStream(node, input, buf)
 	case opCombinations:
 		return execFirstResult(node, input, buf)
 	case opAny:
@@ -1082,11 +1152,11 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opRtrim:
 		return execTrim(input, buf, trimRight)
 	case opTrimStr:
-		return execTrimStrBoth(input, buf, node.field), nil
+		return execTrimStrBoth(node, input, buf)
 	case opLtrimStr:
-		return execTrimStr(input, buf, node.field, true), nil
+		return execTrimStr(node, input, buf, true)
 	case opRtrimStr:
-		return execTrimStr(input, buf, node.field, false), nil
+		return execTrimStr(node, input, buf, false)
 	case opExplode:
 		return execExplode(input, buf)
 	case opImplode:
@@ -1712,7 +1782,7 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 		if node.optional {
 			return nil
 		}
-		return errExpectedIterable
+		return fmt.Errorf("Cannot iterate over %s (%s)", jsonTypeName(input), previewJSONValue(input))
 	}
 
 	switch s.data[s.pos] {
@@ -1780,7 +1850,7 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 		if node.optional {
 			return nil
 		}
-		return errExpectedIterable
+		return fmt.Errorf("Cannot iterate over %s (%s)", jsonTypeName(input), previewJSONValue(input))
 	}
 }
 
@@ -4220,6 +4290,247 @@ func execKeys(input []byte, buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
+var supportedBuiltinNames = []string{
+	"IN/1", "INDEX/2", "JOIN/2", "abs/0", "add/0", "all/0", "all/1", "any/0", "any/1",
+	"ascii_downcase/0", "ascii_upcase/0", "bsearch/1", "builtins/0", "capture/1", "ceil/0",
+	"combinations/0", "combinations/1", "contains/1", "debug/0", "delpaths/1", "endswith/1",
+	"error/0", "explode/0", "first/0", "flatten/0", "flatten/1", "floor/0", "foreach/3",
+	"from_entries/0", "fromdate/0", "fromjson/0", "getpath/1", "gmtime/0", "group_by/1",
+	"gsub/2", "has/1", "have_decnum/0", "implode/0", "in/1", "index/1", "indices/1",
+	"isempty/1", "join/1", "keys/0", "keys_unsorted/0", "last/0", "length/0", "limit/2",
+	"ltrim/0", "ltrimstr/1", "map/1", "map_values/1", "match/1", "max/0", "max_by/1",
+	"mktime/0", "min/0", "min_by/1", "nearbyint/0", "nth/2", "path/1", "paths/0", "paths/1",
+	"pick/1", "pow/2", "range/1", "range/2", "range/3", "reduce/3", "repeat/1", "reverse/0",
+	"rindex/1", "round/0", "rtrim/0", "rtrimstr/1", "scan/1", "select/1", "setpath/2",
+	"skip/2", "sort/0", "sort_by/1", "split/1", "sqrt/0", "startswith/1", "strflocaltime/1",
+	"strftime/1", "strptime/1", "sub/2", "test/1", "to_entries/0", "toboolean/0", "todate/0",
+	"tojson/0", "tonumber/0", "tostream/0", "tostring/0", "transpose/0", "trim/0", "trimstr/1",
+	"truncate_stream/1", "type/0", "unique/0", "unique_by/1", "until/2", "utf8bytelength/0",
+	"values/0", "while/2", "fromstream/1",
+	"with_entries/1",
+}
+
+func execBuiltins(buf []byte) []byte {
+	buf = append(buf, '[')
+	for i, name := range supportedBuiltinNames {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, '"')
+		buf = appendJSONStringContent(buf, []byte(name))
+		buf = append(buf, '"')
+	}
+	buf = append(buf, ']')
+	return buf
+}
+
+func execToStream(input []byte, buf []byte, fn func([]byte) error) error {
+	return execToStreamValue(trimWhitespace(input), nil, buf, fn)
+}
+
+func execToStreamValue(value []byte, frame *pathFrame, buf []byte, fn func([]byte) error) error {
+	s := scanner{data: value}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return fn(appendStreamEvent(buf[:0], frame, value, true))
+	}
+	switch s.data[s.pos] {
+	case '[':
+		if s.arrayLen() == 0 {
+			return fn(appendStreamEvent(buf[:0], frame, []byte("[]"), true))
+		}
+		var lastChild *pathFrame
+		var err error
+		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
+			childFrame := &pathFrame{parent: frame, kind: pathStepNumber, index: index}
+			lastChild = childFrame
+			err = execToStreamValue(value[elemStart:elemEnd], childFrame, buf, fn)
+			return err == nil
+		})
+		if err != nil {
+			return err
+		}
+		return fn(appendStreamEvent(buf[:0], lastChild, nil, false))
+	case '{':
+		empty := true
+		var lastChild *pathFrame
+		var err error
+		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
+			empty = false
+			childFrame := &pathFrame{parent: frame, kind: pathStepString, rawKey: key}
+			lastChild = childFrame
+			err = execToStreamValue(value[valueStart:valueEnd], childFrame, buf, fn)
+			return err == nil
+		})
+		if err != nil {
+			return err
+		}
+		if empty {
+			return fn(appendStreamEvent(buf[:0], frame, []byte("{}"), true))
+		}
+		return fn(appendStreamEvent(buf[:0], lastChild, nil, false))
+	default:
+		return fn(appendStreamEvent(buf[:0], frame, value, true))
+	}
+}
+
+func execFindIndexMulti(node *op, input []byte, buf []byte, fn func([]byte) error, last, all bool) error {
+	searchVals, err := collectExecOutputs(node.child, input)
+	if err != nil {
+		if all {
+			return fn(append(buf[:0], "[]"...))
+		}
+		return fn(append(buf[:0], "null"...))
+	}
+	if len(searchVals) == 0 {
+		if all {
+			return fn(append(buf[:0], "[]"...))
+		}
+		return fn(append(buf[:0], "null"...))
+	}
+	for _, searchVal := range searchVals {
+		searchNode := &op{child: &op{typ: opLiteral, literal: searchVal}}
+		if err := fn(execFindIndex(searchNode, input, buf[:0], last, all)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func appendStreamEvent(dst []byte, frame *pathFrame, value []byte, withValue bool) []byte {
+	dst = append(dst, '[')
+	dst = appendPathFrameJSON(dst, frame)
+	if withValue {
+		dst = append(dst, ',')
+		dst = append(dst, normalizeOutputValue(value, nil)...)
+	}
+	dst = append(dst, ']')
+	return dst
+}
+
+func execTruncateStream(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	depthVal, err := execSingle(&op{typ: opIdentity}, input, nil)
+	if err != nil {
+		return err
+	}
+	f, ok := parseJSONFloat(trimWhitespace(depthVal))
+	if !ok {
+		return fmt.Errorf("truncate_stream depth must be numeric")
+	}
+	depth := int(f)
+	return execMulti(node.child, input, nil, func(event []byte) error {
+		truncated, keep, err := truncateStreamEvent(event, depth, buf[:0])
+		if err != nil {
+			return err
+		}
+		if !keep {
+			return nil
+		}
+		return fn(truncated)
+	})
+}
+
+func truncateStreamEvent(event []byte, depth int, buf []byte) ([]byte, bool, error) {
+	pathVal, valueVal, hasValue, err := decodeStreamEvent(event)
+	if err != nil {
+		return nil, false, err
+	}
+	steps, err := decodePath(pathVal)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(steps) <= depth {
+		return nil, false, nil
+	}
+	steps = steps[depth:]
+	out := append(buf, '[')
+	out = append(out, '[')
+	for i, step := range steps {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		switch step.kind {
+		case pathStepString:
+			out = append(out, '"')
+			out = appendCanonicalRawJSONStringContent(out, step.key)
+			out = append(out, '"')
+		case pathStepNumber:
+			out = appendInt(out, step.index)
+		default:
+			return nil, false, fmt.Errorf("Paths must be specified as an array")
+		}
+	}
+	out = append(out, ']')
+	if hasValue {
+		out = append(out, ',')
+		out = append(out, normalizeOutputValue(valueVal, nil)...)
+	}
+	out = append(out, ']')
+	return out, true, nil
+}
+
+func execFromStream(node *op, input []byte, buf []byte) ([]byte, error) {
+	events, err := collectExecOutputs(node.child, input)
+	if err != nil {
+		return nil, err
+	}
+	current := []byte("null")
+	seen := false
+	for _, event := range events {
+		pathVal, valueVal, hasValue, err := decodeStreamEvent(event)
+		if err != nil {
+			return nil, err
+		}
+		if !hasValue {
+			continue
+		}
+		steps, err := decodePath(pathVal)
+		if err != nil {
+			return nil, err
+		}
+		if len(steps) == 0 {
+			current = cloneExecBytes(valueVal)
+			seen = true
+			continue
+		}
+		current, err = setPathDecoded(current, steps, 0, valueVal, nil)
+		if err != nil {
+			return nil, err
+		}
+		seen = true
+	}
+	if !seen {
+		return append(buf, "null"...), nil
+	}
+	return normalizeOutputValue(current, buf), nil
+}
+
+func decodeStreamEvent(event []byte) (pathVal []byte, valueVal []byte, hasValue bool, err error) {
+	event = trimWhitespace(event)
+	s := scanner{data: event}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		return nil, nil, false, fmt.Errorf("Stream event must be an array")
+	}
+	parts := make([][]byte, 0, 2)
+	s.arrayIter(func(_ int, start, end int) bool {
+		parts = append(parts, cloneExecBytes(event[start:end]))
+		return len(parts) < 3
+	})
+	if len(parts) == 0 {
+		return nil, nil, false, fmt.Errorf("Stream event must be an array")
+	}
+	if len(parts) > 2 {
+		return nil, nil, false, fmt.Errorf("Stream event must be an array")
+	}
+	pathVal = parts[0]
+	if len(parts) == 2 {
+		valueVal = parts[1]
+		hasValue = true
+	}
+	return pathVal, valueVal, hasValue, nil
+}
+
 func execGetPath(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	return execMulti(node.child, input, nil, func(pathVal []byte) error {
 		result, err := execGetPathOne(input, pathVal, buf)
@@ -4968,6 +5279,14 @@ func execWhile(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		current = cloneExecBytes(next)
+	}
+}
+
+func execRepeat(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	for {
+		if err := execMulti(node.child, input, buf, fn); err != nil {
+			return err
+		}
 	}
 }
 
@@ -6369,19 +6688,41 @@ func execStringPredicate(input []byte, buf []byte, s string, start, end bool) []
 	return boolResult(buf, match)
 }
 
+func resolveStringLikeArg(node *op, input []byte) ([]byte, error) {
+	if node.child == nil {
+		return []byte(node.field), nil
+	}
+	value, err := execSingle(node.child, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	sc := &scanner{data: value}
+	sc.skipWhitespace()
+	if sc.pos >= len(sc.data) || sc.data[sc.pos] != '"' {
+		return nil, fmt.Errorf("string argument must be a string")
+	}
+	return sc.readString(), nil
+}
+
 // execTrimStr implements ltrimstr (left=true) and rtrimstr (left=false).
 // If the input string starts/ends with s, returns the trimmed string.
 // If no match, returns the input unchanged (cap-limited zero-alloc sub-slice when buf is nil).
-func execTrimStr(input []byte, buf []byte, s string, left bool) []byte {
+func execTrimStr(node *op, input []byte, buf []byte, left bool) ([]byte, error) {
+	s, err := resolveStringLikeArg(node, input)
+	if err != nil {
+		if left {
+			return nil, &transparentError{err: fmt.Errorf("startswith() requires string inputs")}
+		}
+		return nil, &transparentError{err: fmt.Errorf("endswith() requires string inputs")}
+	}
 	sc := &scanner{data: input}
 	sc.skipWhitespace()
 	start := sc.pos
 	if sc.pos >= len(sc.data) || sc.data[sc.pos] != '"' {
-		if buf == nil {
-			end := sc.pos
-			return input[start:end:end]
+		if left {
+			return nil, &transparentError{err: fmt.Errorf("startswith() requires string inputs")}
 		}
-		return append(buf, input[start:]...)
+		return nil, &transparentError{err: fmt.Errorf("endswith() requires string inputs")}
 	}
 	content := sc.readString()
 	end := sc.pos
@@ -6389,12 +6730,12 @@ func execTrimStr(input []byte, buf []byte, s string, left bool) []byte {
 	var match bool
 	var trimmed []byte
 	if left {
-		match = len(content) >= len(s) && bytesEqualStr(content[:len(s)], s)
+		match = len(content) >= len(s) && bytesEqualStr(content[:len(s)], string(s))
 		if match {
 			trimmed = content[len(s):]
 		}
 	} else {
-		match = len(content) >= len(s) && bytesEqualStr(content[len(content)-len(s):], s)
+		match = len(content) >= len(s) && bytesEqualStr(content[len(content)-len(s):], string(s))
 		if match {
 			trimmed = content[:len(content)-len(s)]
 		}
@@ -6402,19 +6743,29 @@ func execTrimStr(input []byte, buf []byte, s string, left bool) []byte {
 
 	if !match {
 		if buf == nil {
-			return input[start:end:end]
+			return input[start:end:end], nil
 		}
-		return append(buf, input[start:end]...)
+		return append(buf, input[start:end]...), nil
 	}
 
 	buf = append(buf, '"')
 	buf = append(buf, trimmed...)
 	buf = append(buf, '"')
-	return buf
+	return buf, nil
 }
 
-func execTrimStrBoth(input []byte, buf []byte, s string) []byte {
-	return execTrimStr(execTrimStr(input, nil, s, true), buf, s, false)
+func execTrimStrBoth(node *op, input []byte, buf []byte) ([]byte, error) {
+	s, err := resolveStringLikeArg(node, input)
+	if err != nil {
+		return nil, &transparentError{err: fmt.Errorf("startswith() requires string inputs")}
+	}
+	leftNode := &op{field: string(s)}
+	left, err := execTrimStr(leftNode, input, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	rightNode := &op{field: string(s)}
+	return execTrimStr(rightNode, left, buf, false)
 }
 
 type trimMode int
@@ -8983,47 +9334,59 @@ func execGSub(node *op, input []byte, buf []byte) ([]byte, error) {
 // Supports errBreak for early exit: limit(3; range(100)) stops after 3 values.
 // Float steps and negative steps are supported. Step of 0 returns an error.
 func execRange(node *op, input []byte, fn func([]byte) error) error {
-	fromBytes, err := execSingle(node.left, input, nil)
+	fromVals, err := collectExecOutputs(node.left, input)
 	if err != nil {
 		return err
 	}
-	toBytes, err := execSingle(node.right, input, nil)
+	toVals, err := collectExecOutputs(node.right, input)
 	if err != nil {
 		return err
 	}
-
-	from, ok := parseJSONFloat(fromBytes)
-	if !ok {
-		return fmt.Errorf("range: 'from' must be a number, got %s", fromBytes)
-	}
-	to, ok := parseJSONFloat(toBytes)
-	if !ok {
-		return fmt.Errorf("range: 'to' must be a number, got %s", toBytes)
+	if len(fromVals) == 0 || len(toVals) == 0 {
+		return nil
 	}
 
-	step := 1.0
+	stepVals := [][]byte{[]byte("1")}
 	if node.child != nil {
-		stepBytes, err := execSingle(node.child, input, nil)
+		stepVals, err = collectExecOutputs(node.child, input)
 		if err != nil {
 			return err
 		}
-		step, ok = parseJSONFloat(stepBytes)
-		if !ok {
-			return fmt.Errorf("range: 'step' must be a number, got %s", stepBytes)
-		}
-		if step == 0 {
-			return fmt.Errorf("range: step cannot be zero")
+		if len(stepVals) == 0 {
+			return nil
 		}
 	}
 
-	for i := from; (step > 0 && i < to) || (step < 0 && i > to); i += step {
-		// 1 alloc per value — proportional to what was asked for (Tier 2).
-		out := appendJSONFloat(nil, i)
-		if err := fn(out); err != nil {
-			if err == errBreak {
-				return nil
+	for _, fromBytes := range fromVals {
+		from, ok := parseJSONFloat(fromBytes)
+		if !ok {
+			return fmt.Errorf("range: 'from' must be a number, got %s", fromBytes)
+		}
+		for _, toBytes := range toVals {
+			to, ok := parseJSONFloat(toBytes)
+			if !ok {
+				return fmt.Errorf("range: 'to' must be a number, got %s", toBytes)
 			}
-			return err
+			for _, stepBytes := range stepVals {
+				step, ok := parseJSONFloat(stepBytes)
+				if !ok {
+					return fmt.Errorf("range: 'step' must be a number, got %s", stepBytes)
+				}
+				if step == 0 {
+					return fmt.Errorf("range: step cannot be zero")
+				}
+
+				for i := from; (step > 0 && i < to) || (step < 0 && i > to); i += step {
+					// 1 alloc per value — proportional to what was asked for (Tier 2).
+					out := appendJSONFloat(nil, i)
+					if err := fn(out); err != nil {
+						if err == errBreak {
+							return nil
+						}
+						return err
+					}
+				}
+			}
 		}
 	}
 	return nil
