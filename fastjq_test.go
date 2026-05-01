@@ -256,6 +256,7 @@ func TestAssignmentPaths(t *testing.T) {
 		`{"a":[{"c":3,"b":5}]}`)
 	assertQuery(t, `def inc(x): x |= .+1; inc(.[].a)`, `[{"a":1,"b":2},{"a":2,"b":4},{"a":7,"b":8}]`, `[{"a":2,"b":2},{"a":3,"b":4},{"a":8,"b":8}]`)
 	assertQuery(t, `def x: .[1,2]; x=10`, `[0,1,2]`, `[0,10,10]`)
+	assertQuery(t, `(.. | select(type=="boolean")) |= if . then 1 else 0 end`, `[true,false,[5,true,[true,[false]],false]]`, `[1,0,[5,1,[1,[0]],0]]`)
 }
 
 func TestAssignmentErrors(t *testing.T) {
@@ -994,6 +995,18 @@ func TestIteratorObject(t *testing.T) {
 			t.Errorf("result[%d] = %s, want %s", i, r, expected[i])
 		}
 	}
+}
+
+func TestRecursiveDescentArray(t *testing.T) {
+	assertQuery(t, `[..]`, `[1,[[2]],{"a":[1]}]`, `[[1,[[2]],{"a":[1]}],1,[[2]],[2],2,{"a":[1]},[1],1]`)
+}
+
+func TestRecursiveDescentScalars(t *testing.T) {
+	assertQuery(t, `[.. | scalars]`, `{"a":[1,true,{"b":"x"}],"c":null}`, `[1,true,"x",null]`)
+}
+
+func TestRecursiveDescentScalarInput(t *testing.T) {
+	assertQuery(t, `..`, `42`, `42`)
 }
 
 func TestIteratorEmptyArray(t *testing.T) {

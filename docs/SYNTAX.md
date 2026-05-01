@@ -54,6 +54,16 @@
 
 Use `RunAll` or `RunFunc` to consume multiple outputs. `Run`/`RunWithBuffer` return the first result only.
 
+### Recursive Descent
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `..` | Depth-first structural traversal, emitting the current value before descendants | `[1,[[2]],{"a":[1]}]` | `[1,[[2]],{"a":[1]}]`, `1`, `[[2]]`, `[2]`, `2`, `{"a":[1]}`, `[1]`, `1` |
+| `[..]` | Collect the full recursive-descent stream into one array | `[1,[[2]],{"a":[1]}]` | `[[1,[[2]],{"a":[1]}],1,[[2]],[2],2,{"a":[1]},[1],1]` |
+| `.. \| scalars` | Filter the descent stream like any other generator | `{"a":[1,true,{"b":"x"}],"c":null}` | `1`, `true`, `"x"`, `null` |
+
+`..` is implemented as a dedicated structural generator. It composes with the existing pipeline and path-update machinery, so forms like `(.. | select(type=="boolean")) |= ...` behave like jq.
+
 ### Object Construction
 
 | Syntax | Description | Example Input | Example Output |
@@ -568,7 +578,7 @@ The governing principle rejects operations where allocation scales with the *sha
 | Syntax | Why rejected |
 |--------|-------------|
 | *(range is now implemented as Tier 2)* | `range(n)`, `range(from;to)`, `range(from;to;step)` are supported. See Stream Control section above. |
-| `recurse` / `..` | **Allocs scale with input depth.** The recursive descent creates an `objectIter`/`arrayIter` closure at every JSON nesting level (~3–4 heap allocs per level). A 10-deep object costs ~40 allocs per call. The caller cannot bound this. Fixing it would require a full stack-based executor redesign incompatible with the callback architecture. |
+| `recurse` | Full recursive helper over arbitrary filters | Still deferred. The dedicated `..` generator is supported, but generic recursive fanout over arbitrary filters would need broader executor changes to keep control flow and allocation behavior predictable. |
 
 ### Not yet implemented (feasible, zero-alloc)
 
@@ -595,4 +605,4 @@ The governing principle rejects operations where allocation scales with the *sha
 - **Tier 0 (zero-alloc):** field access, filtering, comparison, arithmetic, construction, `map(.field)`, math, `test(re)` — the full hot path for log processing.
 - **Tier 1 (alloc ∝ output):** `@base64`, `@uri`, `match`, `capture`, `scan`, `gsub`, `map(f)` with construction — allocate proportional to the data they produce, never to the input size.
 - **Tier 2 (alloc ∝ collection, implemented):** `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `range(n)`, multi-output object construction — O(n) bounded by the array/output the user explicitly requested.
-- **Tier 3 (deferred — executor redesign needed):** `recurse`/`..` — closures heap-allocate per nesting level, proportional to input structure not output.
+- **Tier 3 (deferred — executor redesign needed):** `recurse`, `walk(f)` — generic recursive helpers still need broader executor support than the dedicated `..` traversal.

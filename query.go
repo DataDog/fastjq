@@ -11,129 +11,130 @@ import (
 type opType int
 
 const (
-	opIdentity       opType = iota // .
-	opField                        // .foo
-	opDelete                       // del(.foo)
-	opPipe                         // expr | expr
-	opApply                        // expr[...], expr.foo — postfix application with original-input scope
-	opBind                         // expr as $x | body
-	opLabel                        // label $x | body
-	opBreakOp                      // break $x
-	opVar                          // $x
-	opReduce                       // reduce gen as $x (init; update)
-	opForeach                      // foreach gen as $x (init; update; extract?)
-	opWhile                        // while(cond; update)
-	opRepeat                       // repeat(expr)
-	opUntil                        // until(cond; next)
-	opDefScope                     // def f(...): body; expr
-	opCall                         // f / f(a; b)
-	opAssign                       // lhs = rhs
-	opUpdate                       // lhs |= rhs
-	opUpdateMath                   // lhs += rhs, -=, *=, /=, %=
-	opIndex                        // .[0], .[-1]
-	opIndexExpr                    // .[expr] dynamic index/key expression
-	opIterator                     // .[]
-	opConstruct                    // {name, a: .foo}
-	opArrayConstruct               // [.foo, .bar]
-	opLiteral                      // null, true, false, "string", 123
-	opCompare                      // ==, !=, <, <=, >, >=
-	opSelect                       // select(cond)
-	opAlternative                  // expr // expr
-	opTypeBuiltin                  // type builtin
-	opAnd                          // expr and expr
-	opOr                           // expr or expr
-	opNot                          // not
-	opNeg                          // -expr
-	opOptional                     // expr? — suppress errors from child expression
-	opEmpty                        // empty — produce zero outputs
-	opHas                          // has("key")
-	opIf                           // if cond then expr else expr end
-	opLength                       // length
-	opAbs                          // abs
-	opToEntries                    // to_entries
-	opFromEntries                  // from_entries
-	opAdd                          // add
-	opFlatten                      // flatten / flatten(n)
-	opSlice                        // .[n:m], .[:m], .[n:]
-	opPlus                         // expr + expr
-	opIndex1                       // index(s) — first occurrence
-	opRIndex1                      // rindex(s) — last occurrence
-	opIndicesN                     // indices(s) — all occurrences
-	opDebug                        // debug — print to stderr, pass through
-	opBase64                       // @base64 — encode string to base64
-	opBase64D                      // @base64d — decode base64 string
-	opValues                       // values — stream non-null values of object/array
-	opIn                           // in(obj) — reverse membership test
-	opSplit                        // split("s")
-	opJoin                         // join("s")
-	opStrftime                     // strftime(fmt)
-	opStrfLocaltime                // strflocaltime(fmt)
-	opStrptime                     // strptime(fmt)
-	opMktime                       // mktime
-	opGmtime                       // gmtime
-	opFromdate                     // fromdate
-	opToStream                     // tostream
-	opTruncateStream               // truncate_stream(stream)
-	opFromStream                   // fromstream(stream)
-	opAsciiDowncase                // ascii_downcase
-	opAsciiUpcase                  // ascii_upcase
-	opStartsWith                   // startswith("s")
-	opEndsWith                     // endswith("s")
-	opTrim                         // trim
-	opLtrim                        // ltrim
-	opRtrim                        // rtrim
-	opTrimStr                      // trimstr("s")
-	opLtrimStr                     // ltrimstr("s")
-	opRtrimStr                     // rtrimstr("s")
-	opHaveDecnum                   // have_decnum
-	opUTF8ByteLength               // utf8bytelength
-	opReverse                      // reverse
-	opCombinations                 // combinations / combinations(n)
-	opPick                         // pick(path, ...)
-	opBsearch                      // bsearch(x)
-	opINBuiltin                    // IN(gen) / IN(lhs; rhs)
-	opINDEXBuiltin                 // INDEX(gen; key)
-	opJOINBuiltin                  // JOIN(index; key)
-	opPath                         // path(expr)
-	opKeys                         // keys
-	opKeysUnsorted                 // keys_unsorted
-	opBuiltins                     // builtins
-	opPaths                        // paths / paths(filter)
-	opGetPath                      // getpath(path)
-	opSetPath                      // setpath(path; value)
-	opDelPaths                     // delpaths(paths)
-	opAny                          // any / any(expr)
-	opAll                          // all / all(expr)
-	opFirst                        // first(expr)
-	opLast                         // last(expr)
-	opLimit                        // limit(n; expr)
-	opSkip                         // skip(n; expr)
-	opMinus                        // expr - expr
-	opMul                          // expr * expr
-	opDiv                          // expr / expr
-	opMod                          // expr % expr
-	opMin                          // min
-	opMax                          // max
-	opMinBy                        // min_by(f)
-	opMaxBy                        // max_by(f)
-	opURIEncode                    // @uri
-	opTry                          // try expr / try expr catch handler
-	opToJSON                       // tojson / @json
-	opFromJSON                     // fromjson
-	opToString                     // tostring
-	opToNumber                     // tonumber
-	opToBoolean                    // toboolean
-	opContains                     // contains(val) — recursive containment; optional=true for inside()
-	opFloor                        // floor
-	opCeil                         // ceil
-	opRound                        // round
-	opError                        // error — throw input as error
-	opGenerator                    // a, b — multi-output sequence; elems = exprs to run in order
-	opHTMLEncode                   // @html
-	opCSVEncode                    // @csv
-	opTSVEncode                    // @tsv
-	opShEncode                     // @sh
-	opURIDecode                    // @urid
+	opIdentity         opType = iota // .
+	opField                          // .foo
+	opDelete                         // del(.foo)
+	opPipe                           // expr | expr
+	opApply                          // expr[...], expr.foo — postfix application with original-input scope
+	opBind                           // expr as $x | body
+	opLabel                          // label $x | body
+	opBreakOp                        // break $x
+	opVar                            // $x
+	opReduce                         // reduce gen as $x (init; update)
+	opForeach                        // foreach gen as $x (init; update; extract?)
+	opWhile                          // while(cond; update)
+	opRepeat                         // repeat(expr)
+	opUntil                          // until(cond; next)
+	opDefScope                       // def f(...): body; expr
+	opCall                           // f / f(a; b)
+	opAssign                         // lhs = rhs
+	opUpdate                         // lhs |= rhs
+	opUpdateMath                     // lhs += rhs, -=, *=, /=, %=
+	opIndex                          // .[0], .[-1]
+	opIndexExpr                      // .[expr] dynamic index/key expression
+	opIterator                       // .[]
+	opRecursiveDescent               // ..
+	opConstruct                      // {name, a: .foo}
+	opArrayConstruct                 // [.foo, .bar]
+	opLiteral                        // null, true, false, "string", 123
+	opCompare                        // ==, !=, <, <=, >, >=
+	opSelect                         // select(cond)
+	opAlternative                    // expr // expr
+	opTypeBuiltin                    // type builtin
+	opAnd                            // expr and expr
+	opOr                             // expr or expr
+	opNot                            // not
+	opNeg                            // -expr
+	opOptional                       // expr? — suppress errors from child expression
+	opEmpty                          // empty — produce zero outputs
+	opHas                            // has("key")
+	opIf                             // if cond then expr else expr end
+	opLength                         // length
+	opAbs                            // abs
+	opToEntries                      // to_entries
+	opFromEntries                    // from_entries
+	opAdd                            // add
+	opFlatten                        // flatten / flatten(n)
+	opSlice                          // .[n:m], .[:m], .[n:]
+	opPlus                           // expr + expr
+	opIndex1                         // index(s) — first occurrence
+	opRIndex1                        // rindex(s) — last occurrence
+	opIndicesN                       // indices(s) — all occurrences
+	opDebug                          // debug — print to stderr, pass through
+	opBase64                         // @base64 — encode string to base64
+	opBase64D                        // @base64d — decode base64 string
+	opValues                         // values — stream non-null values of object/array
+	opIn                             // in(obj) — reverse membership test
+	opSplit                          // split("s")
+	opJoin                           // join("s")
+	opStrftime                       // strftime(fmt)
+	opStrfLocaltime                  // strflocaltime(fmt)
+	opStrptime                       // strptime(fmt)
+	opMktime                         // mktime
+	opGmtime                         // gmtime
+	opFromdate                       // fromdate
+	opToStream                       // tostream
+	opTruncateStream                 // truncate_stream(stream)
+	opFromStream                     // fromstream(stream)
+	opAsciiDowncase                  // ascii_downcase
+	opAsciiUpcase                    // ascii_upcase
+	opStartsWith                     // startswith("s")
+	opEndsWith                       // endswith("s")
+	opTrim                           // trim
+	opLtrim                          // ltrim
+	opRtrim                          // rtrim
+	opTrimStr                        // trimstr("s")
+	opLtrimStr                       // ltrimstr("s")
+	opRtrimStr                       // rtrimstr("s")
+	opHaveDecnum                     // have_decnum
+	opUTF8ByteLength                 // utf8bytelength
+	opReverse                        // reverse
+	opCombinations                   // combinations / combinations(n)
+	opPick                           // pick(path, ...)
+	opBsearch                        // bsearch(x)
+	opINBuiltin                      // IN(gen) / IN(lhs; rhs)
+	opINDEXBuiltin                   // INDEX(gen; key)
+	opJOINBuiltin                    // JOIN(index; key)
+	opPath                           // path(expr)
+	opKeys                           // keys
+	opKeysUnsorted                   // keys_unsorted
+	opBuiltins                       // builtins
+	opPaths                          // paths / paths(filter)
+	opGetPath                        // getpath(path)
+	opSetPath                        // setpath(path; value)
+	opDelPaths                       // delpaths(paths)
+	opAny                            // any / any(expr)
+	opAll                            // all / all(expr)
+	opFirst                          // first(expr)
+	opLast                           // last(expr)
+	opLimit                          // limit(n; expr)
+	opSkip                           // skip(n; expr)
+	opMinus                          // expr - expr
+	opMul                            // expr * expr
+	opDiv                            // expr / expr
+	opMod                            // expr % expr
+	opMin                            // min
+	opMax                            // max
+	opMinBy                          // min_by(f)
+	opMaxBy                          // max_by(f)
+	opURIEncode                      // @uri
+	opTry                            // try expr / try expr catch handler
+	opToJSON                         // tojson / @json
+	opFromJSON                       // fromjson
+	opToString                       // tostring
+	opToNumber                       // tonumber
+	opToBoolean                      // toboolean
+	opContains                       // contains(val) — recursive containment; optional=true for inside()
+	opFloor                          // floor
+	opCeil                           // ceil
+	opRound                          // round
+	opError                          // error — throw input as error
+	opGenerator                      // a, b — multi-output sequence; elems = exprs to run in order
+	opHTMLEncode                     // @html
+	opCSVEncode                      // @csv
+	opTSVEncode                      // @tsv
+	opShEncode                       // @sh
+	opURIDecode                      // @urid
 	// 1-arg floating-point math builtins — all zero-alloc, all take number input.
 	// 2-arg forms (pow, hypot, atan2, fma) and nan/infinite constants are rejected;
 	// see docs/SYNTAX.md "Rejected" section for rationale.
@@ -2537,6 +2538,11 @@ func parseForeach(s string) (*op, string, error) {
 func parseDotExpr(s string) (*op, string, error) {
 	s = s[1:] // skip '.'
 
+	// Recursive descent: ..
+	if len(s) > 0 && s[0] == '.' {
+		return applyPostfixPipe(&op{typ: opRecursiveDescent}, s[1:])
+	}
+
 	// Check for .[...] — array index or iterator
 	if len(s) > 0 && s[0] == '[' {
 		return parseBracketExpr(s)
@@ -3237,7 +3243,7 @@ func hasMultiOutput(n *op) bool {
 		return false
 	}
 	switch n.typ {
-	case opIterator, opRange, opScan, opGenerator, opPaths, opReduce, opForeach, opWhile, opRepeat, opPath, opCall, opAssign, opUpdate, opUpdateMath, opBsearch, opToStream, opTruncateStream:
+	case opIterator, opRecursiveDescent, opRange, opScan, opGenerator, opPaths, opReduce, opForeach, opWhile, opRepeat, opPath, opCall, opAssign, opUpdate, opUpdateMath, opBsearch, opToStream, opTruncateStream:
 		return true
 
 	// Ops that cap or reduce to at most one output regardless of their children:

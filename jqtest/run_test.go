@@ -49,7 +49,7 @@ const manTestLocalCache = "testdata/man.test"
 //
 // Skip families currently driving the branch:
 //   - leaf_paths
-//   - recursive descent / walk
+//   - walk
 //   - stream, module, env, and reflection helpers
 //   - smaller parser tail and low-yield builtin stragglers
 //
@@ -57,8 +57,8 @@ const manTestLocalCache = "testdata/man.test"
 // A test whose program contains any of these tokens is skipped — NOT counted
 // as a failure. Keep this list tight: only skip what we genuinely don't support.
 var unsupportedOps = []string{
-	// Recursive descent — permanently rejected (allocs scale with input depth, not output)
-	"..", "recurse",
+	// recurse/walk remain out of scope for the library executor.
+	"recurse",
 	// Path operations
 	"leaf_paths",
 	// Decimal-mode capability flag — fastjq intentionally does not claim jq's full decnum semantics.
@@ -80,7 +80,7 @@ var unsupportedOps = []string{
 	"env", "$ENV",
 	// Reflection
 	"modulemeta",
-	// walk — requires recursive descent (Tier 3)
+	// walk — recursive tree transform still deferred
 	"walk(",
 }
 

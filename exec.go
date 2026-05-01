@@ -156,6 +156,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execIndexExprMulti(node, input, buf, fn)
 	case opIterator:
 		return execIterator(node, input, buf, fn)
+	case opRecursiveDescent:
+		return execRecursiveDescent(input, buf, fn)
 	case opConstruct:
 		if node.multiValuePairs {
 			return execConstructMulti(node, input, buf, fn)
@@ -1022,6 +1024,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execFirstResult(node, input, buf)
 	case opRepeat:
 		return execFirstResult(node, input, buf)
+	case opRecursiveDescent:
+		return execFirstResult(node, input, buf)
 	case opUntil:
 		return execUntil(node, input, buf)
 	case opDefScope:
@@ -1851,6 +1855,41 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 			return nil
 		}
 		return fmt.Errorf("Cannot iterate over %s (%s)", jsonTypeName(input), previewJSONValue(input))
+	}
+}
+
+func execRecursiveDescent(input []byte, buf []byte, fn func([]byte) error) error {
+	return execRecursiveValue(trimWhitespace(input), buf, fn)
+}
+
+func execRecursiveValue(value []byte, buf []byte, fn func([]byte) error) error {
+	if err := fn(append(buf[:0], value...)); err != nil {
+		return err
+	}
+
+	s := scanner{data: value}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return nil
+	}
+
+	switch s.data[s.pos] {
+	case '[':
+		var walkErr error
+		s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
+			walkErr = execRecursiveValue(value[elemStart:elemEnd], buf, fn)
+			return walkErr == nil
+		})
+		return walkErr
+	case '{':
+		var walkErr error
+		s.objectIter(func(_ []byte, valueStart, valueEnd int) bool {
+			walkErr = execRecursiveValue(value[valueStart:valueEnd], buf, fn)
+			return walkErr == nil
+		})
+		return walkErr
+	default:
+		return nil
 	}
 }
 
@@ -4646,6 +4685,11 @@ func execPathExpr(node *op, state pathTraceState, buf []byte, emit func(pathTrac
 		return withIndexScope(chainedIndexScope(state.value), func() error {
 			return execPathIterator(node, state, buf, emit)
 		})
+	case opRecursiveDescent:
+		if err := emit(state); err != nil {
+			return err
+		}
+		return execPathRecursive(state, buf, emit)
 	case opPipe:
 		return execPathExpr(node.left, state, buf, func(next pathTraceState) error {
 			return execPathExpr(node.right, next, buf, emit)
@@ -4732,6 +4776,56 @@ func execPathIterator(node *op, state pathTraceState, buf []byte, emit func(path
 	default:
 		return nil
 	}
+}
+
+func execPathRecursive(state pathTraceState, buf []byte, emit func(pathTraceState) error) error {
+	s := scanner{data: state.value}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return nil
+	}
+
+	switch s.data[s.pos] {
+	case '[':
+		var walkErr error
+		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
+			next := pathTraceState{
+				value: state.value[elemStart:elemEnd],
+				frame: &pathFrame{
+					parent: state.frame,
+					kind:   pathStepNumber,
+					index:  index,
+				},
+			}
+			walkErr = execPathRecursiveNode(next, buf, emit)
+			return walkErr == nil
+		})
+		return walkErr
+	case '{':
+		var walkErr error
+		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
+			next := pathTraceState{
+				value: state.value[valueStart:valueEnd],
+				frame: &pathFrame{
+					parent: state.frame,
+					kind:   pathStepString,
+					rawKey: key,
+				},
+			}
+			walkErr = execPathRecursiveNode(next, buf, emit)
+			return walkErr == nil
+		})
+		return walkErr
+	default:
+		return nil
+	}
+}
+
+func execPathRecursiveNode(state pathTraceState, buf []byte, emit func(pathTraceState) error) error {
+	if err := emit(state); err != nil {
+		return err
+	}
+	return execPathRecursive(state, buf, emit)
 }
 
 func execPick(node *op, input []byte, buf []byte) ([]byte, error) {

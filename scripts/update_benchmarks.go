@@ -95,6 +95,7 @@ var tableRows = []row{
 	{"`while(.<100; .*2)`", "integer 1", "Small_While", "Small_While"},
 	{"``[.,1]|until(...)|.[1]``", "integer 5", "Small_Until", "Small_Until"},
 	{"`paths`", "Small (~100B)", "Small_Paths", "Small_Paths"},
+	{"`..`", "Small (~100B)", "Small_RecursiveDescent", "Small_RecursiveDescent"},
 	{"`path(.field_0)`", "Small (~100B)", "Small_Path", "Small_Path"},
 	// Object transforms
 	{"`to_entries`", "Small (~100B)", "Small_ToEntries", "Small_ToEntries"},
