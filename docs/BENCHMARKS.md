@@ -4,7 +4,7 @@ Benchmarks comparing fastjq against [gojq](https://github.com/itchyny/gojq). The
 
 All benchmarks run with `go test -bench=. -benchmem`. Results from Apple M4 Max, Go 1.25.
 
-> **Current note**: This full sweep includes the expanded five-file upstream jq harness. Tier 0 library operations still benchmark at 0 allocs/op on the hot path; the parity-first recursive/path/stateful helpers do allocate, but they remain dramatically lighter than gojq for the same queries.
+> **Benchmark scope**: This snapshot uses the five-file upstream jq library harness. Tier 0 library operations benchmark at 0 allocs/op on the hot path; the recursive/path/stateful parity helpers do allocate, but they remain dramatically lighter than gojq for the same queries.
 
 
 > **Note on benchmark reliability**: Large benchmarks use rotating input copies (8 distinct pre-generated
@@ -163,8 +163,8 @@ All times in µs. ¹Large Select uses the last field — fastjq scans the full d
 
 - **Tier 0 hot-path ops remain zero-alloc** under `RunWithBuffer` / `RunFunc` for direct access, filtering, arithmetic, construction, and most string/math work. Allocating features here are the deliberate parity exceptions or output-shaped helpers.
 - **Large-object access stays roughly **80x** faster than gojq**: `.field` on the ~100KB benchmark is 7.44 µs for fastjq versus 597 µs for gojq, and large-object `select` remains about **26x** faster (32.7 µs versus 834 µs).
-- **Recursive parity helpers are still materially faster than gojq despite allocs**: `..` is **13x**, `recurse` is **19x**, and `walk(.)` is **12x** on the focused small cases.
-- **gojq still wins on tiny primitive-array reductions and some stateful/value-synthesizing helpers** such as `first`, `last`, `reduce`, `foreach`, and `range`, where its unmarshaled in-memory representation is cheaper than rescanning raw JSON bytes or emitting many fresh outputs.
+- **Recursive parity helpers are materially faster than gojq despite allocs**: `..` is **13x**, `recurse` is **19x**, and `walk(.)` is **12x** on the focused small cases.
+- **gojq wins on tiny primitive-array reductions and some stateful/value-synthesizing helpers** such as `first`, `last`, `reduce`, `foreach`, and `range`, where its unmarshaled in-memory representation is cheaper than rescanning raw JSON bytes or emitting many fresh outputs.
 
 ## Raw Output
 
@@ -501,8 +501,8 @@ End-to-end JSONL throughput benchmarks comparing `fastjq-bench` (Go CLI using th
 ### Key Takeaways (CLI)
 
 - **2.2x–13.9x faster than jq** across this validation-on CLI slice, with the biggest wins on filter/projection work rather than raw field extraction.
-- **`to_entries` and case-insensitive filtering are the standout CLI wins** in this run, because fastjq keeps the work to a streaming scan while jq still pays the full parse cost per line.
-- **Large-object field extraction is still only a modest CLI win** because both tools validate/parse the whole record; the much larger speedups show up when you call the library directly on already-valid JSON and skip the extra validation pass.
+- **`to_entries` and case-insensitive filtering are the largest CLI wins** in this benchmark set, because fastjq keeps the work to a streaming scan while jq still pays the full parse cost per line.
+- **Large-object field extraction is a modest CLI win** because both tools validate/parse the whole record; the much larger speedups show up when you call the library directly on already-valid JSON and skip the extra validation pass.
 - **The CLI numbers are intentionally conservative**: they include JSON validation and process startup overhead that do not apply to the hot-path library API.
 
 ### Reproducing

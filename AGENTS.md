@@ -52,6 +52,9 @@ Every code change that affects the public surface, supported operations, or perf
 | `bench_test.go` | Add fastjq + gojq benchmarks for every new operation (required, not optional) |
 | `CHANGELOG.md` | Add an entry for every meaningful change (see format below) |
 
+#### Documentation voice
+Write project docs in present tense and describe the current state of the codebase. Avoid historical or rollout phrasing such as `now`, `still`, `expanded`, `this branch`, or language that narrates how the project changed, unless you are writing `CHANGELOG.md`.
+
 #### CHANGELOG format
 Add a new `## [Unreleased] — short description` section at the top. Include:
 - **Added** — new operations or APIs

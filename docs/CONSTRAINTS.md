@@ -81,10 +81,10 @@ These operations are not rejected on principle — they're deferred because impl
 - **Input format**: valid JSON objects or arrays — no streaming, no JSONL
 - **No validation**: assumes well-formed JSON input; behavior on malformed input is undefined
 - **No pretty-printing**: output is compact JSON only, with canonical string escaping on emitted strings
-- **`paths`, `leaf_paths`, `path(expr)`, `..`, `recurse`, and `walk` are parity-first exceptions**: these implementations unlock official jq-suite coverage even though they are not held to the usual zero-alloc target. `paths`, `leaf_paths`, and `path(expr)` allocate on the path-building call path, `..` currently benchmarks at `7 allocs/op`, `recurse` at `5 allocs/op`, and `walk(.)` at `12 allocs/op` on the focused small benchmarks, all still well below gojq for the same queries.
+- **`paths`, `leaf_paths`, `path(expr)`, `..`, `recurse`, and `walk` are parity-first exceptions**: these implementations unlock official jq-suite coverage even though they are not held to the usual zero-alloc target. `paths`, `leaf_paths`, and `path(expr)` allocate on the path-building call path, `..` benchmarks at `7 allocs/op`, `recurse` at `5 allocs/op`, and `walk(.)` at `12 allocs/op` on the focused small benchmarks, all well below gojq for the same queries.
 - **`if-then-else` condition supports multi-output**: `execIf` uses `execMulti` for the condition, so generators like `if empty then x end` correctly produce zero outputs. Single-output conditions take a fast path to avoid closure allocation.
 - **`del` paths must be literal field, index, or slice expressions**: `del(.foo)`, `del(.foo.bar)`, `del(.[0])`, `del(.foo, .bar)`, `del(.[n:m])`, and `del(.[-n:])` are supported. Dynamic paths are not: `del(.items[])` and `del(.items[] | select(...))` both return an error. There is no way to delete multiple elements matched by a runtime condition.
-- **Numeric slice bounds are expression-driven but still local**: `.[1.2:3.5]`, `.[:rindex("x")]`, and chained forms like `.[3:3][1:]` are supported because bounds are evaluated once and clamped. This does not widen indexing into general dynamic path semantics.
+- **Numeric slice bounds are expression-driven and local**: `.[1.2:3.5]`, `.[:rindex("x")]`, and chained forms like `.[3:3][1:]` are supported because bounds are evaluated once and clamped. This does not widen indexing into general dynamic path semantics.
 
 ## Design Constraints
 

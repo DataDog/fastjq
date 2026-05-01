@@ -265,7 +265,7 @@ When `error` is thrown, the `catch` handler receives the **actual JSON value** (
 | ``@html "<b>\(.)</b>"`` | ~1 | Apply formatter to each interpolation, leave literal template bytes untouched | `"<tag>&"` | `"<b>&lt;tag&gt;&amp;</b>"` |
 | ``@sh "echo \(.)"`` | ~1 | Format only interpolated payloads inside a template string | `"O'Hara"` | `"echo 'O'\\''Hara'"` |
 
-`@base64`, `@uri`, `@html`, `@csv`, `@tsv`, `@sh`, and their `@format "...\(...)"` template forms allocate because they decode JSON string escape sequences before encoding — `\n` becomes byte `0x0a`, `\uXXXX` decoded to UTF-8. These are Tier 1 (output-encoding) allocations: proportional to the string being encoded, not the document being scanned. `@base64d`, `@json`, and `@text` write directly into the output buffer and are 0-alloc. `@base64d` now matches jq's stricter invalid-input behavior for malformed trailing bytes, and `@urid` rejects incomplete or invalid percent escapes instead of passing them through.
+`@base64`, `@uri`, `@html`, `@csv`, `@tsv`, `@sh`, and their `@format "...\(...)"` template forms allocate because they decode JSON string escape sequences before encoding — `\n` becomes byte `0x0a`, `\uXXXX` decoded to UTF-8. These are Tier 1 (output-encoding) allocations: proportional to the string being encoded, not the document being scanned. `@base64d`, `@json`, and `@text` write directly into the output buffer and are 0-alloc. `@base64d` matches jq's stricter invalid-input behavior for malformed trailing bytes, and `@urid` rejects incomplete or invalid percent escapes instead of passing them through.
 
 ### Numeric Rounding and Math
 
