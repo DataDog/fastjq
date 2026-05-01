@@ -151,7 +151,7 @@ Key-value content is copied verbatim from input (zero-copy for kept fields).
 ### 4. Negative Indexing
 
 `arrayLen()` does a counting pass first (no allocation), then `arrayIter` stops
-at the resolved index. Two-pass but still zero-alloc.
+at the resolved index. Two-pass and zero-alloc.
 
 ### 5. Object Construction (Zero-Copy)
 
@@ -224,7 +224,7 @@ ensures `{"a":1,"b":2} == {"b":2,"a":1}` returns `true`, matching jq semantics.
 The `error` builtin returns a `*jsonError{payload []byte}` instead of a Go
 `fmt.Errorf`. `try-catch` handlers receive the payload directly as the input
 JSON value, not a string representation. Regular built-in errors (wrong type,
-division by zero, etc.) still produce string messages in catch.
+division by zero, etc.) produce string messages in catch.
 
 ### 16. Iterator Error Propagation
 
