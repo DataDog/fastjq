@@ -92,6 +92,8 @@ var tableRows = []row{
 	{"`skip(2; .[])`", "5-elem array", "Small_Skip", "Small_Skip"},
 	{"`reduce .[] as $x (0; . + $x)`", "5-elem array", "Small_Reduce", "Small_Reduce"},
 	{"`foreach .[] as $x (0; . + $x)`", "5-elem array", "Small_Foreach", "Small_Foreach"},
+	{"`while(.<100; .*2)`", "integer 1", "Small_While", "Small_While"},
+	{"``[.,1]|until(...)|.[1]``", "integer 5", "Small_Until", "Small_Until"},
 	{"`paths`", "Small (~100B)", "Small_Paths", "Small_Paths"},
 	{"`path(.field_0)`", "Small (~100B)", "Small_Path", "Small_Path"},
 	// Object transforms
@@ -103,12 +105,17 @@ var tableRows = []row{
 	{"`keys`", "Small (~100B)", "Small_Keys", "Small_Keys"},
 	{"`keys_unsorted`", "Small (~100B)", "Small_KeysUnsorted", "Small_KeysUnsorted"},
 	{"`keys_unsorted`", "Large (~100KB)", "Large_KeysUnsorted", "Large_KeysUnsorted"},
+	{"`pick(.field_0, .field_2)`", "Small (~100B)", "Small_Pick", "Small_Pick"},
+	{"`INDEX(range(5)... )`", "null", "Small_INDEX", "Small_INDEX"},
+	{"`JOIN({...}; .[0]|tostring)`", "3-pair array", "Small_JOIN", "Small_JOIN"},
+	{"`have_decnum`", "null", "Small_HaveDecnum", "Small_HaveDecnum"},
 	{"`object merge .a + .b`", "Small (~100B)", "Small_ObjectMerge", "Small_ObjectMerge"},
 	// Type conversion
 	{"`tojson`", "Small (~100B)", "Small_ToJSON", "Small_ToJSON"},
 	{"`fromjson`", "JSON string", "Small_FromJSON", "Small_FromJSON"},
 	{"`tonumber`", "`\"42\"` string", "Small_ToNumber", "Small_ToNumber"},
 	{"`toboolean`", "`\"true\"` string", "Small_ToBoolean", "Small_ToBoolean"},
+	{"`utf8bytelength`", "`\"asdf\\u03bc\"`", "Small_UTF8ByteLength", "Small_UTF8ByteLength"},
 	// Strings
 	{"`split(\",\")`", "short string", "Small_Split", "Small_Split"},
 	{"`join(\",\")`", "5-elem array", "Small_Join", "Small_Join"},
@@ -120,8 +127,10 @@ var tableRows = []row{
 	{"`trim`", "short string", "Small_Trim", "Small_Trim"},
 	{"`ltrim`", "short string", "Small_Ltrim", "Small_Ltrim"},
 	{"`rtrim`", "short string", "Small_Rtrim", "Small_Rtrim"},
+	{"`trimstr(\"s\")`", "short string", "Small_Trimstr", "Small_Trimstr"},
 	{"`ltrimstr(\"s\")`", "Small (~100B)", "Small_Ltrimstr", "Small_Ltrimstr"},
 	{"`rtrimstr(\"s\")`", "Small (~100B)", "Small_Rtrimstr", "Small_Rtrimstr"},
+	{"`reverse`", "5-elem array", "Small_Reverse", "Small_Reverse"},
 	// Complex multi-feature (array-building queries; allocs expected per element)
 	{"`select` + string ops + arith + construct", "~200B log event", "Complex_LogNormalize", "Complex_LogNormalize"},
 	{"`[.[] | select + arith + construct]`", "20-elem array (~1.5KB)", "Complex_ArrayPipeline", "Complex_ArrayPipeline"},
@@ -134,9 +143,12 @@ var tableRows = []row{
 	{"`@base64`", "34-char string", "Small_Base64Encode", "Small_Base64Encode"},
 	{"`@base64d`", "48-char encoded", "Small_Base64Decode", "Small_Base64Decode"},
 	{"`@uri`", "36-char URL string", "Small_URIEncode", "Small_URIEncode"},
+	{"``@html \"<b>\\(.field_0)</b>\"``", "Small (~100B)", "Small_HTMLTemplate", "Small_HTMLTemplate"},
 	// Search
 	{"`index(\",\")`", "short string", "Small_IndexFind", "Small_IndexFind"},
 	{"`indices(\",\")`", "short string", "Small_IndicesAll", "Small_IndicesAll"},
+	{"`bsearch(42)`", "7-elem sorted array", "Small_Bsearch", "Small_Bsearch"},
+	{"`5 | IN(range(10))`", "null", "Small_IN", "Small_IN"},
 	// Math builtins
 	{"`sqrt`", "float (e≈2.718)", "Small_Sqrt", "Small_Sqrt"},
 	{"`log`", "float (e≈2.718)", "Small_Log", "Small_Log"},
@@ -148,6 +160,7 @@ var tableRows = []row{
 	{"`abs`", "float -3.14", "Small_Abs", "Small_Abs"},
 	// Bindings
 	{"`expr as $x | body`", "Small (~20B object)", "Small_Bind", "Small_Bind"},
+	{"`def inc: . + 1; inc`", "integer 1", "Small_Def", "Small_Def"},
 	// String interpolation
 	{"``\"\\(.level): \\(.svc)\"``", "~45B object", "Small_StringInterp", "Small_StringInterp"},
 	{"``\"user \\(.name) …\"``", "~45B object", "Small_StringInterpNum", "Small_StringInterpNum"},

@@ -78,6 +78,8 @@ Array construction follows jq generator precedence: `[a, b | f]` is parsed as
 
 **Allocation note:** `[.[] | f]` / `map(f)` — when `f` returns an input sub-slice (field access, identity, comparison), the array is built 0-alloc. When `f` constructs new data (object `{…}`, arithmetic, string concat), ~1 alloc per element is needed to prevent result aliasing. `map(.name)` = 0 allocs; `map({name, value})` = ~1 alloc/element.
 
+`map_values(f)` behaves like `map(f)` on arrays. On objects it rewrites through entry objects, applies `f` to each value, and drops fields where `f` produces no outputs.
+
 ### Pipe
 
 | Syntax | Description | Example Input | Example Output |
@@ -96,8 +98,10 @@ Pipes propagate multi-output: if the left side produces N results, the right sid
 | `expr as $x \| body` | Bind the result of `expr` to `$x`, then run `body` against the original input | `null` with `1 as $x \| [$x,$x]` | `[1,1]` |
 | `.bar as $x \| .foo \| . + $x` | Bound values remain visible across later pipeline stages | `{"foo":10,"bar":200}` | `210` |
 | `1 as $x \| [$x,$x,$x as $x \| $x]` | Nested binds shadow outer ones lexically | `null` | `[1,1,1]` |
+| `. as [$a, $b] \| [$b, $a]` | Array destructuring bind; missing elements bind to `null` | `[1,2]` | `[2,1]` |
+| `. as {$a, b: [$c, {$d}]} \| [$a, $c, $d]` | Object destructuring with nested patterns | `{"a":1,"b":[2,{"d":3}]}` | `[1,2,3]` |
 
-Only simple `$name` bindings are supported in this branch. Destructuring forms like `. as [$a, $b]` are still deferred.
+Destructuring patterns follow jq's soft-missing semantics: absent array slots/object fields bind to `null`, while indexing a non-null value with the wrong container type still raises jq-style errors.
 
 ### Literals
 
@@ -207,6 +211,7 @@ Ordering works on numbers (float comparison) and strings (lexicographic). Cross-
 | `if .f == "x" then .a else .b end` | Conditional | `{"f":"x","a":1,"b":2}` | `1` |
 | `if .f == "x" then .a end` | Without else — defaults to identity | `{"f":"y"}` | `{"f":"y"}` |
 | `if C then A elif C2 then B else D end` | elif chain — desugars to nested if-then-else | `{"x":2}` | `"two"` |
+| `label $out \| .[] \| if . > 1 then break $out else . end` | Exit a labeled stream early | `[0,1,2]` | `0`, `1` |
 
 `elif` is syntactic sugar: `elif C then X` rewrites to `else (if C then X end)` at parse time. Chains of any length are supported.
 
@@ -236,8 +241,10 @@ When `error` is thrown, the `catch` handler receives the **actual JSON value** (
 | `@csv` | ~1 | Format array as CSV (strings double-quoted, internal quotes doubled) | `[1,"a,b"]` | `"1,\"a,b\""` |
 | `@tsv` | ~1 | Format array as TSV (tab/newline/backslash escaped) | `[1,"a\tb"]` | `"1\ta\\tb"` |
 | `@sh` | ~1 | POSIX shell-quote a string (single-quote wrapping) | `"O'Hara"` | `"'O'\\''Hara'"` |
+| ``@html "<b>\(.)</b>"`` | ~1 | Apply formatter to each interpolation, leave literal template bytes untouched | `"<tag>&"` | `"<b>&lt;tag&gt;&amp;</b>"` |
+| ``@sh "echo \(.)"`` | ~1 | Format only interpolated payloads inside a template string | `"O'Hara"` | `"echo 'O'\\''Hara'"` |
 
-`@base64`, `@uri`, `@html`, `@csv`, `@tsv`, `@sh` allocate because they decode JSON string escape sequences before encoding — `\n` becomes byte `0x0a`, `\uXXXX` decoded to UTF-8. These are Tier 1 (output-encoding) allocations: proportional to the string being encoded, not the document being scanned. `@base64d`, `@json`, `@text` write directly into the output buffer and are 0-alloc.
+`@base64`, `@uri`, `@html`, `@csv`, `@tsv`, `@sh`, and their `@format "...\(...)"` template forms allocate because they decode JSON string escape sequences before encoding — `\n` becomes byte `0x0a`, `\uXXXX` decoded to UTF-8. These are Tier 1 (output-encoding) allocations: proportional to the string being encoded, not the document being scanned. `@base64d`, `@json`, `@text` write directly into the output buffer and are 0-alloc.
 
 ### Numeric Rounding and Math
 
@@ -424,6 +431,8 @@ Numbers compared by value; strings lexicographically. Empty array → `null`. `s
 | `skip(n; expr)` | 0 | Drop the first N outputs of expr, emit the rest | `[1,2,3,4,5]` (with `skip(2; .[])`) | `3`, `4`, `5` |
 | `reduce gen as $x (init; update)` | output-shaped | Fold generator outputs into one or more accumulator states | `[1,2,4]` (with `reduce .[] as $x (0; . + $x)`) | `7` |
 | `foreach gen as $x (init; update; extract?)` | output-shaped | Emit intermediate accumulator-derived values while folding | `[1,2,4]` (with `foreach .[] as $x (0; . + $x; [., $x])`) | `[1,1]`, `[3,2]`, `[7,4]` |
+| `def f: body; expr` | 0 | Define a zero-arg jq filter with lexical scope and call it later in `expr` | `3` (with `def f: . + 1; f`) | `4` |
+| `def f(a; $b): body; f(arg1; arg2)` | output-shaped | Define jq functions with filter params (`a`) and value params (`$b`) | `[1,2,3]` (with `def y($a;$b): $a + $b; y(.[]; .[]*2)`) | `3`, `5`, `4`, `6`, `5`, `7` |
 | `range(n)` | 1/value | Generate integers 0, 1, …, n−1 | — | `0`, `1`, `2` |
 | `range(from; to)` | 1/value | Generate integers from `from` to `to−1` | — | `2`, `3`, `4` |
 | `range(from; to; step)` | 1/value | Generate with explicit step (float ok, negative ok) | — | `0`, `2`, `4` |
@@ -433,6 +442,8 @@ Numbers compared by value; strings lexicographically. Empty array → `null`. `s
 `reduce` evaluates `init` once, then runs `update` against the accumulator for every value produced by `gen` while binding `$x` to the current item. This branch supports the simple jq form `reduce gen as $x (init; update)`.
 
 `foreach` shares the same accumulator model as `reduce`, but emits after each update. When the extract clause is omitted, it defaults to identity on the updated accumulator. If `update` produces multiple outputs, `foreach` emits extract results for each one but only carries the last update result forward to the next iteration, matching jq.
+
+`def` uses jq-style lexical scoping. Bare params such as `x` are filter params that re-run against the current input each time they are referenced inside the function body; `$x` params are value params and expand over all outputs of their argument expression. Nested defs shadow outer defs by name/arity, and self-recursion is supported.
 
 `range` is a **Tier 2** operation: 1 alloc per generated value (the output byte slice), proportional to what you asked to generate. Compose with `limit` for lazy evaluation: `limit(3; range(1000))` produces only 3 values and 3 allocs.
 
@@ -501,8 +512,10 @@ Replacement strings in `sub`/`gsub` are literals — `\(...)` capture group refe
 |--------|-------------|---------------|----------------|
 | `to_entries` | Object → `[{"key":k,"value":v}]` | `{"a":1}` | `[{"key":"a","value":1}]` |
 | `from_entries` | `[{key,value}]` → object | `[{"key":"a","value":1}]` | `{"a":1}` |
+| `with_entries(.key |= "KEY_" + .)` | Convenience form for `to_entries \| map(f) \| from_entries` | `{"a":1,"b":2}` | `{"KEY_a":1,"KEY_b":2}` |
+| `map_values(.+1)` | Transform object values; arrays use `map(.+1)` semantics | `{"a":1,"b":2}` | `{"a":2,"b":3}` |
 
-`from_entries` accepts both `"key"` and `"name"` as the key field. Use `to_entries | map(f) | from_entries` explicitly in place of `with_entries(f)` (see Rejected below).
+`from_entries` accepts both `"key"` and `"name"` as the key field. `with_entries(f)` is parser sugar for `to_entries | map(f) | from_entries`, and `map_values(f)` uses the same entry-transform shape on objects while behaving like `map(f)` on arrays.
 
 ---
 
@@ -524,9 +537,6 @@ These operations are implementable at zero allocation but involve more complexit
 
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
-| `def f: body; expr` | Function definitions | AST-level feature, compile-time only. But closures and recursion add parser/AST complexity. |
-| `label-break` | Control flow | `label $out \| foreach ...` — requires unwinding callback stack. Achievable with a sentinel error value. |
-| `@format "template"` combined syntax | Apply format to each interpolated value | `@html "<b>\(.)</b>"` — applies `@html` to each `\(...)` value. Not yet supported; plain `"\(expr)"` string interpolation IS supported. |
 | `walk(f)` | Recursive transform | Apply f to every value bottom-up. Reconstruct entire tree with transformed values. Intermediate results from inner expressions may need temp storage. |
 
 ### Implemented — bounded O(n) allocation (Tier 2)
@@ -548,7 +558,6 @@ These operations allocate an auxiliary index structure, but the allocation is **
 
 | Syntax | Alloc model | Notes |
 |--------|-------------|-------|
-| `with_entries(f)` | 1 alloc/call | Needs a small scratch buffer per entry (aliasing constraint). Use `to_entries \| map(f) \| from_entries` as the 0-alloc alternative. |
 | `implode` | O(n) | Array of codepoints → UTF-8 string. |
 | `explode` | O(n) | String → array of Unicode codepoints. |
 
@@ -565,9 +574,6 @@ The governing principle rejects operations where allocation scales with the *sha
 
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
-| `label-break` | Control flow | Achievable with a sentinel error value for stack unwinding. |
-| `@format "template"` combined syntax | `@html "<b>\(.)</b>"` | Applies format to each interpolated value; requires parser + executor extension. |
-| `def f: body; expr` | User-defined functions | AST-level feature; recursive definitions add complexity. |
 | `walk(f)` | Bottom-up tree transform | Feasible; complex buffer management when `f` constructs new data. |
 
 ### Not applicable (streaming/CLI concerns)

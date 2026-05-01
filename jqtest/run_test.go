@@ -42,16 +42,16 @@ const manTestLocalCache = "testdata/man.test"
 //
 // Official-suite snapshot for this branch:
 //   - Total: 751
-//   - Skipped: 245
-//   - Attempted: 506
-//   - Passed: 506
+//   - Skipped: 79
+//   - Attempted: 672
+//   - Passed: 672
 //   - Failed: 0
 //
 // Skip families currently driving the branch:
-//   - label / break
 //   - leaf_paths
-//   - def
-//   - assignment/update syntax, @format templates, and remaining parser breadth gaps
+//   - recursive descent / walk
+//   - stream, module, env, and reflection helpers
+//   - smaller parser tail and low-yield builtin stragglers
 //
 // unsupportedOps lists functions/syntax that fastjq does not implement.
 // A test whose program contains any of these tokens is skipped — NOT counted
@@ -61,10 +61,8 @@ var unsupportedOps = []string{
 	"..", "recurse",
 	// Path operations
 	"leaf_paths",
-	// User-defined functions
-	"def ",
-	// label-break
-	"label", "break",
+	// Decimal-mode capability flag — fastjq intentionally does not claim jq's full decnum semantics.
+	"have_decnum",
 	// nan/infinite/predicates: now implemented
 	// 2/3-arg math: hypot/fma REJECTED — 0 exclusive tests (all also blocked by as-$)
 	// pow(x;y) is now implemented
@@ -74,7 +72,7 @@ var unsupportedOps = []string{
 	// splits( — streaming split variant, 0 exclusive tests
 	"splits(",
 	// Date/time operations
-	"strftime", "strptime", "mktime", "gmtime", "dateadd", "todate", "fromdate",
+	"dateadd", "todate",
 	"date", "now",
 	// Streaming / IO
 	"input", "inputs", "stderr",

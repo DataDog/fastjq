@@ -149,6 +149,14 @@ func TestBindMultiOutput(t *testing.T) {
 	}
 }
 
+func TestBindDestructuring(t *testing.T) {
+	assertQueryAll(t, `[1, {"c":3, "d":4}] as [$a, {c:$b, b:$c}] | $a, $b, $c`, `null`, `1`, `3`, `null`)
+	assertQuery(t, `. as {as: $kw, "str": $str, ("e"+"x"+"p"): $exp} | [$kw, $str, $exp]`, `{"as":1,"str":2,"exp":3}`, `[1,2,3]`)
+	assertQueryAll(t, `.[] as [$a, $b] | [$b, $a]`, `[[1], [1, 2, 3]]`, `[null,1]`, `[2,1]`)
+	assertQuery(t, `. as {$a, b: [$c, {$d}]} | [$a, $c, $d]`, `{"a":1,"b":[2,{"d":3}]}`, `[1,2,3]`)
+	assertQuery(t, `. as {$a, $b:[$c, $d]} | [$a, $b, $c, $d]`, `{"a":1,"b":[2,{"d":3}]}`, `[1,[2,{"d":3}],2,{"d":3}]`)
+}
+
 func TestBindUndefinedVariableCompileError(t *testing.T) {
 	_, err := Compile(`. as $foo | [$foo, $bar]`)
 	if err == nil {
@@ -157,6 +165,27 @@ func TestBindUndefinedVariableCompileError(t *testing.T) {
 	if err.Error() != "$bar is not defined" {
 		t.Fatalf("got %q, want %q", err.Error(), "$bar is not defined")
 	}
+}
+
+func TestBindDestructuringCompileErrors(t *testing.T) {
+	if _, err := Compile(`. as [] | null`); err == nil {
+		t.Fatal("expected compile error for empty array binding pattern")
+	}
+	if _, err := Compile(`. as {} | null`); err == nil {
+		t.Fatal("expected compile error for empty object binding pattern")
+	}
+	if _, err := Compile(`. as {(true):$foo} | $foo`); err == nil {
+		t.Fatal("expected compile error for non-string object binding key")
+	}
+}
+
+func TestBindDestructuringAlternation(t *testing.T) {
+	assertQueryAll(t, `.[] | . as {$a, b: [$c, {$d}]} ?// [$a, {$b}, $e] ?// $f | [$a, $b, $c, $d, $e, $f]`,
+		`[{"a":1,"b":[2,{"d":3}]},[4,{"b":5,"c":6},7,8,9],"foo"]`,
+		`[1,null,2,3,null,null]`, `[4,5,null,null,7,null]`, `[null,null,null,null,null,"foo"]`)
+	assertQueryAll(t, `.[] as {a:$a} ?// {a:$a} ?// $a | $a`, `[[3],[4],[5],6]`, `[3]`, `[4]`, `[5]`, `6`)
+	assertQueryAll(t, `.[] as $a ?// {a:$a} ?// {a:$a} | $a`, `[[3],[4],[5],6]`, `[3]`, `[4]`, `[5]`, `6`)
+	assertQuery(t, `.[] as [$a] ?// [$b] | if $a != null then error("err: \($a)") else {$a,$b} end`, `[[3]]`, `{"a":null,"b":3}`)
 }
 
 func TestReduceBuiltin(t *testing.T) {
@@ -170,6 +199,8 @@ func TestReduceBuiltinCompositions(t *testing.T) {
 	assertQuery(t, `[-reduce -.[] as $x (0; . + $x)]`, `[1,2,3]`, `[6]`)
 	assertQuery(t, `reduce .[] as $x (0; . + $x) as $x | $x`, `[1,2,3]`, `6`)
 	assertQuery(t, `reduce .[] as $x (0; ., . + $x)`, `[1,2]`, `3`)
+	assertQuery(t, `reduce [[1,2,10], [3,4,10]][] as [$i,$j] (0; . + $i * $j)`, `null`, `14`)
+	assertQuery(t, `reduce .[] as [$i, {j:$j}] (0; . + $i - $j)`, `[[2,{"j":1}], [5,{"j":3}], [6,{"j":4}]]`, `5`)
 }
 
 func TestForeachBuiltin(t *testing.T) {
@@ -177,6 +208,63 @@ func TestForeachBuiltin(t *testing.T) {
 	assertQueryAll(t, `foreach .[] as $x (0; . + $x; [., $x])`, `[1,2,4]`, `[1,1]`, `[3,2]`, `[7,4]`)
 	assertQueryAll(t, `10 as $y | foreach .[] as $x (0; . + $x + $y; [., $x, $y])`, `[1,2]`, `[11,1,10]`, `[23,2,10]`)
 	assertQueryAll(t, `foreach .[] as $x (0; ., . + $x; .)`, `[1,2]`, `0`, `1`, `1`, `3`)
+	assertQueryAll(t, `foreach .[] as [$i, $j] (0; . + $i - $j)`, `[[1,2],[3,4]]`, `-1`, `-2`)
+}
+
+func TestWhileUntilBuiltins(t *testing.T) {
+	assertQuery(t, `[while(.<100; .*2)]`, `1`, `[1,2,4,8,16,32,64]`)
+	assertQuery(t, `[.,1]|until(.[0] < 1; [.[0] - 1, .[1] * .[0]])|.[1]`, `5`, `120`)
+}
+
+func TestDefBuiltin(t *testing.T) {
+	assertQueryAll(t, `def f: (1000,2000); f`, `null`, `1000`, `2000`)
+	assertQuery(t, `def f(a;b;c;d;e;f): [a+1,b,c,d,e,f]; f(.[0];.[1];.[0];.[0];.[0];.[0])`, `[2,3]`, `[3,3,2,2,2,2]`)
+	assertQuery(t, `def x(a;b): a as $a | b as $b | $a + $b; def y($a;$b): $a + $b; def check(a;b): [x(a;b)] == [y(a;b)]; check(.[];.[]*2)`, `[1,2,3]`, `true`)
+	assertQuery(t, `def id(x):x; 2000 as $x | def f(x):1 as $x | id([$x, x, x]); def g(x): 100 as $x | f($x,$x+x); g($x)`, `"more testing"`, `[1,100,2100,100,2100]`)
+	assertQuery(t, `def fac: if . == 1 then 1 else . * (. - 1 | fac) end; [.[] | fac]`, `[1,2,3,4]`, `[1,2,6,24]`)
+}
+
+func TestAssignmentBuiltin(t *testing.T) {
+	assertQuery(t, `.message = "goodbye"`, `{"message":"hello"}`, `{"message":"goodbye"}`)
+	assertQuery(t, `.foo = .bar`, `{"bar":42}`, `{"bar":42,"foo":42}`)
+	assertQuery(t, `.foo |= .+1`, `{"foo":42}`, `{"foo":43}`)
+	assertQueryAll(t, `.[] += 2, .[] *= 2, .[] -= 2, .[] /= 2, .[] %=2`, `[1,3,5]`, `[3,5,7]`, `[2,6,10]`, `[-1,1,3]`, `[0.5,1.5,2.5]`, `[1,1,1]`)
+	assertQuery(t, `.foo += .foo`, `{"foo":2}`, `{"foo":4}`)
+	assertQuery(t, `.[0].a |= {"old":., "new":(.+1)}`, `[{"a":1,"b":2}]`, `[{"a":{"old":1,"new":2},"b":2}]`)
+	assertQuery(t, `.[] = 1`, `[1,null,Infinity,-Infinity,NaN,-NaN]`, `[1,1,1,1,1,1]`)
+}
+
+func TestAssignmentPaths(t *testing.T) {
+	assertQuery(t, `(.[] | select(. >= 2)) |= empty`, `[1,5,3,0,7]`, `[1,0]`)
+	assertQuery(t, `.[] |= select(. % 2 == 0)`, `[0,1,2,3,4,5]`, `[0,2,4]`)
+	assertQuery(t, `.foo[1,4,2,3] |= empty`, `{"foo":[0,1,2,3,4,5]}`, `{"foo":[0,5]}`)
+	assertQueryAll(t, `.[2:4] = ([], ["a","b"], ["a","b","c"])`, `[0,1,2,3,4,5,6,7]`,
+		`[0,1,4,5,6,7]`, `[0,1,"a","b",4,5,6,7]`, `[0,1,"a","b","c",4,5,6,7]`)
+	assertQuery(t, `.[2][3] = 1`, `[4]`, `[4,null,[null,null,null,1]]`)
+	assertQuery(t, `.foo[2].bar = 1`, `{"foo":[11],"bar":42}`, `{"foo":[11,null,{"bar":1}],"bar":42}`)
+	assertQueryAll(t, `(.a, .b) = range(3)`, `null`, `{"a":0,"b":0}`, `{"a":1,"b":1}`, `{"a":2,"b":2}`)
+	assertQuery(t, `(.a, .b) |= range(3)`, `null`, `{"a":0,"b":0}`)
+	assertQueryAll(t, `.[] | try (getpath(["a",0,"b"]) |= 5) catch .`, `[null,{"b":0},{"a":0},{"a":null},{"a":[0,1]},{"a":{"b":1}},{"a":[{}]},{"a":[{"c":3}]}]`,
+		`{"a":[{"b":5}]}`,
+		`{"b":0,"a":[{"b":5}]}`,
+		`"Cannot index number with number"`,
+		`{"a":[{"b":5}]}`,
+		`"Cannot index number with string \"b\""`,
+		`"Cannot index object with number"`,
+		`{"a":[{"b":5}]}`,
+		`{"a":[{"c":3,"b":5}]}`)
+	assertQuery(t, `def inc(x): x |= .+1; inc(.[].a)`, `[{"a":1,"b":2},{"a":2,"b":4},{"a":7,"b":8}]`, `[{"a":2,"b":2},{"a":3,"b":4},{"a":8,"b":8}]`)
+	assertQuery(t, `def x: .[1,2]; x=10`, `[0,1,2]`, `[0,10,10]`)
+}
+
+func TestAssignmentErrors(t *testing.T) {
+	assertQuery(t, `try (.foo[-1] = 0) catch .`, `null`, `"Out of bounds negative array index"`)
+	assertQuery(t, `try (.foo[-2] = 0) catch .`, `null`, `"Out of bounds negative array index"`)
+	assertQuery(t, `try (.[999999999] = 0) catch .`, `null`, `"Array index too large"`)
+	assertQuery(t, `try (.[nan] = 9) catch .`, `[0,1,2]`, `"Cannot set array element at NaN index"`)
+	assertQuery(t, `try ("foobar" | .[1.5:3.5] = "xyz") catch .`, `null`, `"Cannot update string slices"`)
+	assertQuery(t, `try ((map(select(.a == 1))[].b) = 10) catch .`, `[{"a":0},{"a":1}]`, `"Invalid path expression near attempt to iterate through [{\"a\":1}]"`)
+	assertQuery(t, `try ((map(select(.a == 1))[].a) |= .+1) catch .`, `[{"a":0},{"a":1}]`, `"Invalid path expression near attempt to iterate through [{\"a\":1}]"`)
 }
 
 func TestToBoolean(t *testing.T) {
@@ -205,6 +293,12 @@ func TestTrimBuiltinErrors(t *testing.T) {
 	assertQuery(t, `try rtrim catch .`, `123`, `"trim input must be a string"`)
 }
 
+func TestTrimStrBuiltin(t *testing.T) {
+	assertQuery(t, `trimstr("foo")`, `"foobarfoo"`, `"bar"`)
+	assertQuery(t, `trimstr("foo")`, `"foob"`, `"b"`)
+	assertQuery(t, `trimstr("")`, `"a"`, `"a"`)
+}
+
 func TestAbsBuiltin(t *testing.T) {
 	assertQuery(t, `abs`, `"abc"`, `"abc"`)
 	assertQuery(t, `abs`, `-10`, `10`)
@@ -212,9 +306,46 @@ func TestAbsBuiltin(t *testing.T) {
 	assertQuery(t, `abs`, `1000000000000000002`, `1000000000000000002`)
 }
 
+func TestHaveDecnumBuiltin(t *testing.T) {
+	assertQuery(t, `have_decnum`, `null`, `false`)
+}
+
+func TestUTF8ByteLengthBuiltin(t *testing.T) {
+	assertQuery(t, `utf8bytelength`, `"asdf\u03bc"`, `6`)
+	assertQuery(t, `try utf8bytelength catch .`, `[]`, `"array ([]) only strings have UTF-8 byte length"`)
+}
+
+func TestReverseBuiltin(t *testing.T) {
+	assertQuery(t, `reverse`, `[1,2,3,4]`, `[4,3,2,1]`)
+}
+
+func TestCombinationsBuiltin(t *testing.T) {
+	assertQueryAll(t, `combinations`, `[[1,2],[3,4]]`, `[1,3]`, `[1,4]`, `[2,3]`, `[2,4]`)
+	assertQueryAll(t, `combinations(2)`, `[0,1]`, `[0,0]`, `[0,1]`, `[1,0]`, `[1,1]`)
+}
+
 func TestKeysBuiltin(t *testing.T) {
 	assertQuery(t, `keys`, `[42,3,35]`, `[0,1,2]`)
 	assertQuery(t, `keys`, `{"b":1,"a":2}`, `["a","b"]`)
+}
+
+func TestPickBuiltin(t *testing.T) {
+	assertQuery(t, `pick(.a, .b.c, .x)`, `{"a":1,"b":{"c":2,"d":3},"e":4}`, `{"a":1,"b":{"c":2},"x":null}`)
+	assertQuery(t, `pick(.[2], .[0], .[0])`, `[1,2,3,4]`, `[1,null,3]`)
+	assertQuery(t, `pick(first|first)`, `[[10,20],30]`, `[[10]]`)
+	assertQuery(t, `try pick(last) catch .`, `[1,2]`, `"Out of bounds negative array index"`)
+}
+
+func TestSearchBuiltins(t *testing.T) {
+	assertQueryAll(t, `bsearch(0,1,2,3,4)`, `[1,2,3]`, `-1`, `0`, `1`, `2`, `-4`)
+	assertQuery(t, `bsearch({x:1})`, `[{"x":0},{"x":1},{"x":2}]`, `1`)
+	assertQuery(t, `try ["OK", bsearch(0)] catch ["KO",.]`, `"aa"`, `["KO","string (\"aa\") cannot be searched from"]`)
+	assertQueryAll(t, `range(5;10)|IN(range(10))`, `null`, `true`, `true`, `true`, `true`, `true`)
+	assertQuery(t, `IN(range(10;20); range(10))`, `null`, `false`)
+	assertQuery(t, `IN(range(5;20); range(10))`, `null`, `true`)
+	assertQuery(t, `INDEX(range(5)|[., "foo\(.)"]; .[0])`, `null`, `{"0":[0,"foo0"],"1":[1,"foo1"],"2":[2,"foo2"],"3":[3,"foo3"],"4":[4,"foo4"]}`)
+	assertQuery(t, `JOIN({"0":[0,"abc"],"1":[1,"bcd"],"2":[2,"def"],"3":[3,"efg"],"4":[4,"fgh"]}; .[0]|tostring)`, `[[5,"foo"],[3,"bar"],[1,"foobar"]]`,
+		`[[[5,"foo"],null],[[3,"bar"],[3,"efg"]],[[1,"foobar"],[1,"bcd"]]]`)
 }
 
 func TestPathsBuiltin(t *testing.T) {
@@ -285,6 +416,15 @@ func TestParserBreadthGeneratorsAndPostfix(t *testing.T) {
 	assertQueryAll(t, `{x:(1,2)} | .x`, `null`, `1`, `2`)
 	assertQuery(t, `[][.]`, `1000000000000000000`, `null`)
 	assertQuery(t, `map([1,2][0:.])`, `[-1,1,2,3,1000000000000000000]`, `[[1],[1],[1,2],[1,2],[1,2]]`)
+	assertQuery(t, `."foo"."bar"`, `{"foo":{"bar":42}}`, `42`)
+	assertQuery(t, `try -.? catch .`, `"foo"`, `"string (\"foo\") cannot be negated"`)
+	assertQuery(t, `first(.?,.?)`, `null`, `null`)
+}
+
+func TestAnyAllGeneratorArgumentBreadth(t *testing.T) {
+	assertQuery(t, `any(true, error; .)`, `"badness"`, `true`)
+	assertQuery(t, `all(false, error; .)`, `"badness"`, `false`)
+	assertQuery(t, `any(keys[]|tostring?;true)`, `{"a":"1","b":"2","c":"3"}`, `true`)
 }
 
 func TestHugeExponentComparison(t *testing.T) {
@@ -990,6 +1130,27 @@ func TestConstructMissingField(t *testing.T) {
 	}
 	if string(got) != `{"name":"alice","missing":null}` {
 		t.Errorf("got %s, want %s", got, `{"name":"alice","missing":null}`)
+	}
+}
+
+func TestConstructDynamicKeysAndVarShorthand(t *testing.T) {
+	assertQuery(t, `{a,b,(.d):.a,e:.b}`, `{"a":1,"b":2,"c":3,"d":"c"}`, `{"a":1,"b":2,"c":1,"e":2}`)
+	assertQuery(t, `{"a",b,"a$\(1+1)"}`, `{"a":1,"b":2,"c":3,"a$2":4}`, `{"a":1,"b":2,"a$2":4}`)
+	assertQuery(t, `1 as $foreach | 2 as $and | 3 as $or | { $foreach, $and, $or, a }`, `{"a":4,"b":5}`, `{"foreach":1,"and":2,"or":3,"a":4}`)
+	assertQuery(t, `1 as $x | "2" as $y | "3" as $z | { $x, as, $y: 4, ($z): 5, if: 6, foo: 7 }`, `{"as":8}`, `{"x":1,"as":8,"2":4,"3":5,"if":6,"foo":7}`)
+}
+
+func TestConstructDynamicKeyError(t *testing.T) {
+	p, err := Compile(`try {(0):1} catch .`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Run([]byte(`null`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `"Cannot use number (0) as object key"` {
+		t.Fatalf("got %s, want %s", got, `"Cannot use number (0) as object key"`)
 	}
 }
 
@@ -2638,6 +2799,22 @@ func TestMapEmptyArray(t *testing.T) {
 	}
 }
 
+func TestMapValuesObject(t *testing.T) {
+	assertQuery(t, `map_values(.+1)`, `{"a":1,"b":2,"c":3}`, `{"a":2,"b":3,"c":4}`)
+}
+
+func TestMapValuesArray(t *testing.T) {
+	assertQuery(t, `map_values(.+1)`, `[0,1,2]`, `[1,2,3]`)
+}
+
+func TestMapValuesDropsEmptyObjectValues(t *testing.T) {
+	assertQuery(t, `map_values(. // empty)`, `{"a":null,"b":true,"c":false}`, `{"b":true}`)
+}
+
+func TestWithEntries(t *testing.T) {
+	assertQuery(t, `with_entries(.key |= "KEY_" + .)`, `{"a":1,"b":2}`, `{"KEY_a":1,"KEY_b":2}`)
+}
+
 func TestArrayConstructMultiOutput(t *testing.T) {
 	// [.items[]] should collect all elements
 	p, _ := Compile("[.items[]]")
@@ -3743,6 +3920,22 @@ func TestTryMapTolerant(t *testing.T) {
 	}
 }
 
+func TestLabelBreakIterator(t *testing.T) {
+	assertQuery(t, `[(label $here | .[] | if .>1 then break $here else . end), "hi!"]`, `[0,1,2]`, `[0,1,"hi!"]`)
+	assertQuery(t, `[(label $here | .[] | if .>1 then break $here else . end), "hi!"]`, `[0,2,1]`, `[0,"hi!"]`)
+}
+
+func TestLabelBreakForeach(t *testing.T) {
+	assertQuery(t, `[label $out | foreach .[] as $item ([3, null]; if .[0] < 1 then break $out else [.[0] -1, $item] end; .[1])]`,
+		`[11,22,33,44,55,66,77,88,99]`, `[11,22,33]`)
+}
+
+func TestLabelBreakCompileError(t *testing.T) {
+	if _, err := Compile(`. as $foo | break $foo`); err == nil {
+		t.Fatal("expected compile error for undefined label")
+	}
+}
+
 // --- elif ---
 
 func TestElif(t *testing.T) {
@@ -4142,6 +4335,9 @@ func TestHTMLEncode(t *testing.T) {
 func TestHTMLEncodeAllEntities(t *testing.T) {
 	assertQuery(t, `@html`, `"!()<>&'\"\t"`, `"!()&lt;&gt;&amp;&apos;&quot;\t"`)
 }
+func TestHTMLTemplate(t *testing.T) {
+	assertQuery(t, `@html "<b>\(.)</b>"`, `"<tag>&"`, `"<b>&lt;tag&gt;&amp;</b>"`)
+}
 
 // --- @csv ---
 
@@ -4176,6 +4372,9 @@ func TestSHEncodeQuote(t *testing.T) {
 func TestSHEncodeAllChars(t *testing.T) {
 	assertQuery(t, `@sh`, `"!()<>&'\"\t"`, `"'!()<>&'\\''\"\t'"`)
 }
+func TestSHTemplate(t *testing.T) {
+	assertQuery(t, `@sh "echo \(.)"`, `"O'Hara"`, `"echo 'O'\\''Hara'"`)
+}
 
 // --- @urid ---
 
@@ -4190,6 +4389,11 @@ func TestTextFormat(t *testing.T) {
 	// @text is an alias for tostring
 	assertQuery(t, `@text`, `"hello"`, `"hello"`)
 	assertQuery(t, `@text`, `42`, `"42"`)
+}
+func TestFormatTemplates(t *testing.T) {
+	assertQuery(t, `@uri "https://x.example/?q=\(.)"`, `"a b"`, `"https://x.example/?q=a%20b"`)
+	assertQuery(t, `@text "count=\(.)"`, `42`, `"count=42"`)
+	assertQuery(t, `@json "json=\(.)"`, `{"a":1}`, `"json={\"a\":1}"`)
 }
 
 // --- 1-arg math builtins ---

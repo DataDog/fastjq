@@ -131,16 +131,17 @@ fastjq supports a large targeted subset of jq. The complete reference with examp
 
 - **Access:** `.`, `.foo`, `.[0]`, `.[i,j]`, `.[]`, `.[n:m]`, `.foo?`, `paths`, `path(expr)`, chained access
 - **Modification:** `del(.foo)`, `del(.[i,j])`, `del(.[n:m])`, `setpath(path; value)`, `delpaths(paths)`, `{name, a: .b}`, `[.a, .b]`
-- **Control flow:** `\|`, `select`, `if-elif-else`, `try-catch`, `//`, `empty`, `expr as $x | body`, `reduce`, `foreach`, `"\(expr)"`
+- **Control flow:** `\|`, `select`, `if-elif-else`, `try-catch`, `//`, `empty`, `expr as $x | body`, destructuring `as` binds, `?//` binding alternation, `def f: body; expr`, parameterized defs, `reduce`, `foreach`, `while`, `until`, `label` / `break`, `"\(expr)"`
 - **Arithmetic:** `+`, `-`, `*`, `/`, `%`, `add`, `floor`, `ceil`, `round`, `nearbyint`
 - **Math:** `abs`, `sqrt`, `log`, `exp`, `sin`, `cos`, `atan`, `tgamma`, `j0`, `pow(x;y)`, and 15 more — all zero-alloc
 - **Special values:** `nan`, `infinite`, `-nan`, `-infinite`; `isnan`, `isinfinite`, `isfinite`, `isnormal`; `nan`/`infinite` output as `null` (JSON-safe)
-- **Arrays:** `map`, `flatten`, `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `min/max`, `min_by/max_by`, `any/all`, `first/last`, `limit`, `skip`, `nth`, `isempty`, `values`, type filters, `index/indices`, `paths`, `path(expr)`, `getpath`, `setpath`, `delpaths`
-- **Strings:** `split/join`, `ascii_downcase/upcase`, `startswith/endswith`, `trim/ltrim/rtrim`, `ltrimstr/rtrimstr`, `"\(expr)"` interpolation, `explode`, `implode`
-- **Format strings:** `@base64/d`, `@uri/d`, `@html`, `@csv`, `@tsv`, `@sh`, `@text`, `@json`
+- **Arrays:** `map`, `map_values`, `flatten`, `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `reverse`, `combinations`, `min/max`, `min_by/max_by`, `any/all`, `first/last`, `limit`, `skip`, `nth`, `isempty`, `values`, `pick`, `bsearch`, `IN`, `INDEX`, `JOIN`, type filters, `index/indices`, `paths`, `path(expr)`, `getpath`, `setpath`, `delpaths`
+- **Strings:** `split/join`, `ascii_downcase/upcase`, `startswith/endswith`, `trim/ltrim/rtrim`, `trimstr/ltrimstr/rtrimstr`, `utf8bytelength`, `"\(expr)"` interpolation, `explode`, `implode`
+- **Format strings:** `@base64/d`, `@uri/d`, `@html`, `@csv`, `@tsv`, `@sh`, `@text`, `@json`, and `@format "...\(...)"` template forms
 - **Regex (Go RE2):** `test(re)` *(0 allocs)*, `match(re)`, `capture(re)`, `scan(re)`, `sub(re; s)`, `gsub(re; s)`
-- **Objects:** `to_entries`, `from_entries`, `keys`, `keys_unsorted`, `paths`, `path(expr)`, `getpath`, `setpath`, `delpaths`, `length`, `has`, `in`, `contains`, `inside`
-- **Type:** `type`, `tojson/fromjson`, `tostring/tonumber/toboolean`, `debug`, `error`
+- **Objects:** `to_entries`, `from_entries`, `with_entries`, `keys`, `keys_unsorted`, `paths`, `path(expr)`, `getpath`, `setpath`, `delpaths`, `length`, `has`, `in`, `contains`, `inside`, `map_values`
+- **Date/time:** `strftime`, `strflocaltime`, `strptime`, `mktime`, `gmtime`, `fromdate`
+- **Type:** `type`, `tojson/fromjson`, `tostring/tonumber/toboolean`, `have_decnum`, `debug`, `error`
 
 ## Official jq test suite coverage
 
@@ -148,39 +149,22 @@ fastjq is validated against two official jq test files (`go test ./jqtest/`).
 
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
-| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 185 | 336 | **336 (100.0%)** | 0 |
-| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 60 | 170 | **170 (100.0%)** | 0 |
-| **Combined** | **751** | **245** | **506** | **506 (100.0%)** | **0** |
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 56 | 465 | **465 (100.0%)** | 0 |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 23 | 207 | **207 (100.0%)** | 0 |
+| **Combined** | **751** | **79** | **672** | **672 (100.0%)** | **0** |
 
-All currently attempted official jq tests pass on this branch, and the branch now clears a wider majority of the full official suite. Recent parity work also removed compile skips around unary minus, dynamic slice bounds, `paths`, `path(...)`, `getpath(...)`, `setpath(...)`, `delpaths(...)`, `reduce`, `foreach`, jq-style multi-index array access/deletion (`.[4,2]`, `del(.[1,2])`), and identity-before-operator forms like `.-.`. The remaining skipped tests are concentrated in still-unimplemented families such as recursive descent (`..`), user-defined functions (`def`), assignment/update syntax, date functions, `env`, and other items listed in the [Limitations](#limitations) section.
+All currently attempted official jq tests pass on this branch, and the branch now clears a much larger majority of the full official suite. Recent parity work removed compile skips around destructuring `as` binds, `?//` binding alternation, user-defined functions (`def`), `@format "template"` strings, `map_values`, `with_entries`, `label` / `break`, unary minus, postfix optional `expr?`, quoted field access (`."foo"`), `while` / `until`, dynamic slice bounds, `paths`, `path(...)`, `getpath(...)`, `setpath(...)`, `delpaths(...)`, `reduce`, `foreach`, richer object construction, date/time builtins (`strftime`, `strflocaltime`, `strptime`, `mktime`, `gmtime`, `fromdate`), `pick`, `bsearch`, `IN`, `INDEX`, `JOIN`, `combinations`, jq-style multi-index array access/deletion (`.[4,2]`, `del(.[1,2])`), root slice assignment, and identity-before-operator forms like `.-.`. The remaining skipped tests are concentrated in still-unimplemented families such as recursive descent (`..` / `recurse` / `walk`), stream/module helpers, environment/reflection builtins, and a smaller parser tail listed in the [Limitations](#limitations) section.
 
 ## Limitations
 
-**`select` conditions must be single-valued.**
-`select(.items[] == "x")` silently tests only the first element. Use `any(.[]; . == "x")` instead.
-
-**`.field` on non-object types errors — use `.field?` for null-safe access.**
-`null | .field` returns `null` (matching jq). Other non-object types (`1 | .field`, `"s" | .field`) return an error. Use `.a?.b?` to suppress errors on any type.
-
-**`map(f)` allocates when `f` constructs new data** (Tier 1 — proportional to output).
-`map(.name)` is 0 allocs (field access returns an input sub-slice). `map({name, price})` allocates ~1 buffer per element to prevent result aliasing. Still 5–8x fewer allocations than gojq.
-
-**String output is compact, canonical JSON.**
-Escaped control characters are emitted in jq-compatible compact JSON form when a string value is produced as output.
-
 **Regex uses Go RE2, not PCRE/Oniguruma.**
 Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are unsupported. `test(re)` is 0-alloc; `match`/`capture` alloc one `[]int` on a hit; `scan`/`gsub` alloc per match. Replacement strings in `sub`/`gsub` are literals.
-
-**`@format "template"` combined syntax not supported.**
-`@html "<b>\(.)</b>"` is not yet implemented. Plain `"\(.field)"` and standalone `@html`, `@csv`, `@sh`, etc. all work.
 
 **No recursive descent** (`..|..` / `recurse`) — allocations scale with input depth, not output. Permanently rejected.
 
 **`nan`/`infinite` are supported but serialize to `null` at output.** `nan | type` = `"number"`, `nan | isnan` = `true`, `infinite * -1 < 0` = `true`. `nan` and `infinite` values convert to JSON `null` at the API boundary. Values inside arrays/objects are also normalized to `null`.
 
-**Not yet implemented:** `leaf_paths`, `label-break`, user-defined functions (`def`), `@format "template"`, assignment/update syntax, `hypot(x;y)`, `fma(x;y;z)`.
-
-**Output is always compact JSON.** fastjq never panics — malformed input may produce wrong results but the process is always safe.
+**Still not implemented:** `leaf_paths`; recursive helpers built on descent such as `walk`; module/import syntax; stream builders such as `repeat`, `truncate_stream`, `fromstream`; environment/reflection/IO helpers such as `env`, `$ENV`, `input`, `inputs`, `stderr`, `builtins`, `modulemeta`, `$__loc__`; and a few remaining math/date helpers such as `hypot(x;y)`, `fma(x;y;z)`, `date`, `now`, and `todate`.
 
 See [SYNTAX.md](docs/SYNTAX.md) for the full allocation-tiered roadmap.
 

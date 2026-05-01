@@ -396,6 +396,9 @@ func BenchmarkFastjq_Large_Ltrimstr(b *testing.B) {
 func BenchmarkFastjq_Small_Rtrimstr(b *testing.B) {
 	benchFastjqObj(b, `.field_2 | rtrimstr("xxx")`, smallJSON)
 }
+func BenchmarkFastjq_Small_Trimstr(b *testing.B) {
+	benchFastjqObj(b, `trimstr("xxx")`, []byte(`"xxhelloxxx"`))
+}
 func BenchmarkFastjq_Small_Trim(b *testing.B) {
 	benchFastjqObj(b, `trim`, []byte(`"  abc  "`))
 }
@@ -404,6 +407,12 @@ func BenchmarkFastjq_Small_Ltrim(b *testing.B) {
 }
 func BenchmarkFastjq_Small_Rtrim(b *testing.B) {
 	benchFastjqObj(b, `rtrim`, []byte(`"  abc  "`))
+}
+func BenchmarkFastjq_Small_UTF8ByteLength(b *testing.B) {
+	benchFastjqObj(b, `utf8bytelength`, []byte(`"asdf\u03bc"`))
+}
+func BenchmarkFastjq_Small_Reverse(b *testing.B) {
+	benchFastjqObj(b, `reverse`, []byte(`[1,2,3,4,5]`))
 }
 func BenchmarkFastjq_Small_First(b *testing.B) {
 	benchFastjqObj(b, `first(.[] | select(. > 2))`, []byte(`[1,2,3,4,5]`))
@@ -428,6 +437,30 @@ func BenchmarkFastjq_Small_Reduce(b *testing.B) {
 }
 func BenchmarkFastjq_Small_Foreach(b *testing.B) {
 	benchFastjqFunc(b, `foreach .[] as $x (0; . + $x)`, []byte(`[1,2,3,4,5]`))
+}
+func BenchmarkFastjq_Small_While(b *testing.B) {
+	benchFastjqFunc(b, `while(.<100; .*2)`, []byte(`1`))
+}
+func BenchmarkFastjq_Small_Until(b *testing.B) {
+	benchFastjqObj(b, `[.,1]|until(.[0] < 1; [.[0] - 1, .[1] * .[0]])|.[1]`, []byte(`5`))
+}
+func BenchmarkFastjq_Small_Bsearch(b *testing.B) {
+	benchFastjqObj(b, `bsearch(42)`, []byte(`[1,10,20,30,40,42,50]`))
+}
+func BenchmarkFastjq_Small_Pick(b *testing.B) {
+	benchFastjqObj(b, `pick(.field_0, .field_2)`, smallJSON)
+}
+func BenchmarkFastjq_Small_IN(b *testing.B) {
+	benchFastjqObj(b, `5 | IN(range(10))`, []byte(`null`))
+}
+func BenchmarkFastjq_Small_INDEX(b *testing.B) {
+	benchFastjqObj(b, `INDEX(range(5)|[., "foo\(.)"]; .[0])`, []byte(`null`))
+}
+func BenchmarkFastjq_Small_JOIN(b *testing.B) {
+	benchFastjqObj(b, `JOIN({"0":[0,"abc"],"1":[1,"bcd"],"2":[2,"def"]}; .[0]|tostring)`, []byte(`[[2,"x"],[1,"y"],[5,"z"]]`))
+}
+func BenchmarkFastjq_Small_HaveDecnum(b *testing.B) {
+	benchFastjqObj(b, `have_decnum`, []byte(`null`))
 }
 func BenchmarkFastjq_Large_Limit(b *testing.B) {
 	benchFastjqFunc(b, `limit(10; .[])`, largeIntArr)
@@ -577,6 +610,9 @@ func BenchmarkGojq_Small_Ltrimstr(b *testing.B) {
 func BenchmarkGojq_Small_Rtrimstr(b *testing.B) {
 	benchGojqObj(b, `.field_2 | rtrimstr("xxx")`, smallJSON)
 }
+func BenchmarkGojq_Small_Trimstr(b *testing.B) {
+	benchGojqObj(b, `trimstr("xxx")`, []byte(`"xxhelloxxx"`))
+}
 func BenchmarkGojq_Small_Trim(b *testing.B) {
 	benchGojqObj(b, `trim`, []byte(`"  abc  "`))
 }
@@ -585,6 +621,12 @@ func BenchmarkGojq_Small_Ltrim(b *testing.B) {
 }
 func BenchmarkGojq_Small_Rtrim(b *testing.B) {
 	benchGojqObj(b, `rtrim`, []byte(`"  abc  "`))
+}
+func BenchmarkGojq_Small_UTF8ByteLength(b *testing.B) {
+	benchGojqObj(b, `utf8bytelength`, []byte(`"asdf\u03bc"`))
+}
+func BenchmarkGojq_Small_Reverse(b *testing.B) {
+	benchGojqObj(b, `reverse`, []byte(`[1,2,3,4,5]`))
 }
 func BenchmarkGojq_Small_First(b *testing.B) {
 	benchGojqObj(b, `first(.[] | select(. > 2))`, []byte(`[1,2,3,4,5]`))
@@ -609,6 +651,30 @@ func BenchmarkGojq_Small_Reduce(b *testing.B) {
 }
 func BenchmarkGojq_Small_Foreach(b *testing.B) {
 	benchGojqIter(b, `foreach .[] as $x (0; . + $x)`, []byte(`[1,2,3,4,5]`))
+}
+func BenchmarkGojq_Small_While(b *testing.B) {
+	benchGojqIter(b, `while(.<100; .*2)`, []byte(`1`))
+}
+func BenchmarkGojq_Small_Until(b *testing.B) {
+	benchGojqObj(b, `[.,1]|until(.[0] < 1; [.[0] - 1, .[1] * .[0]])|.[1]`, []byte(`5`))
+}
+func BenchmarkGojq_Small_Bsearch(b *testing.B) {
+	benchGojqObj(b, `bsearch(42)`, []byte(`[1,10,20,30,40,42,50]`))
+}
+func BenchmarkGojq_Small_Pick(b *testing.B) {
+	benchGojqObj(b, `pick(.field_0, .field_2)`, smallJSON)
+}
+func BenchmarkGojq_Small_IN(b *testing.B) {
+	benchGojqObj(b, `5 | IN(range(10))`, []byte(`null`))
+}
+func BenchmarkGojq_Small_INDEX(b *testing.B) {
+	benchGojqObj(b, `INDEX(range(5)|[., "foo\(.)"]; .[0])`, []byte(`null`))
+}
+func BenchmarkGojq_Small_JOIN(b *testing.B) {
+	benchGojqObj(b, `JOIN({"0":[0,"abc"],"1":[1,"bcd"],"2":[2,"def"]}; .[0]|tostring)`, []byte(`[[2,"x"],[1,"y"],[5,"z"]]`))
+}
+func BenchmarkGojq_Small_HaveDecnum(b *testing.B) {
+	benchGojqObj(b, `have_decnum`, []byte(`null`))
 }
 func BenchmarkGojq_Large_Limit(b *testing.B) {
 	benchGojqIter(b, `limit(10; .[])`, largeIntArr)
@@ -665,6 +731,12 @@ func BenchmarkFastjq_Small_URIEncode(b *testing.B) {
 }
 func BenchmarkGojq_Small_URIEncode(b *testing.B) {
 	benchGojqObj(b, `@uri`, []byte(`"/api/v1/users?filter=active&page=1"`))
+}
+func BenchmarkFastjq_Small_HTMLTemplate(b *testing.B) {
+	benchFastjqObj(b, `@html "<b>\(.field_0)</b>"`, smallJSON)
+}
+func BenchmarkGojq_Small_HTMLTemplate(b *testing.B) {
+	benchGojqObj(b, `@html "<b>\(.field_0)</b>"`, smallJSON)
 }
 
 func BenchmarkFastjq_Small_ArrayDiff(b *testing.B) {
@@ -887,6 +959,12 @@ func BenchmarkFastjq_Small_Bind(b *testing.B) {
 }
 func BenchmarkGojq_Small_Bind(b *testing.B) {
 	benchGojqObj(b, `.bar as $x | .foo | . + $x`, []byte(`{"foo":10,"bar":200}`))
+}
+func BenchmarkFastjq_Small_Def(b *testing.B) {
+	benchFastjqObj(b, `def inc: . + 1; inc`, []byte(`1`))
+}
+func BenchmarkGojq_Small_Def(b *testing.B) {
+	benchGojqObj(b, `def inc: . + 1; inc`, []byte(`1`))
 }
 
 // --- String interpolation ---

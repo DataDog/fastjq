@@ -9,21 +9,29 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 ### Added
 
 - Added lexical variable binding for simple jq forms: `expr as $x | body` and `$x` references across later pipeline stages.
+- Added jq-compatible destructuring binds for `as`, `reduce`, and `foreach`, including array patterns, object patterns, nested patterns, shorthand object-field binds, and constant-string computed keys.
 - Added jq-compatible `reduce gen as $x (init; update)` for simple accumulator folds over generator outputs.
 - Added jq-compatible `foreach gen as $x (init; update; extract?)`, including omitted-extract identity behavior and jq-style last-update carry-forward semantics.
+- Added jq-compatible `label $name | ...` and `break $name` for named early exit from iterator and `foreach` pipelines.
 - Added jq-style multi-index array access and deletion forms such as `.[4,2]` and `del(.[1,2])`.
 - Added jq-compatible builtins `abs`, `trim`, `ltrim`, `rtrim`, `toboolean`, `keys`, and `skip`.
+- Added jq-compatible `map_values(f)` for arrays and objects, including jq-style field dropping when an object-value transform yields no output.
+- Added jq-compatible `with_entries(f)` as parser sugar over `to_entries | map(f) | from_entries`, including the jq-suite key-update form `with_entries(.key |= "KEY_" + .)`.
 - Added jq-compatible `paths` and `paths(filter)` for non-root structural path enumeration.
 - Added jq-compatible `path(expr)` for symbolic path extraction across direct field, index, dynamic-index, iterator, `select`, and pipe compositions.
 - Added jq-compatible `getpath(path)` with variadic path-output support and `$var` path arguments.
 - Added jq-compatible `setpath(path; value)` and `delpaths(paths)` for direct path-array updates.
+- Added jq-compatible `@format "...\(...)"` template support for the existing string-producing formatters, including the official `@html "<b>\(.)</b>"` and `@sh "echo \(.)"` forms.
+- Added jq-compatible user-defined functions with lexical scoping: `def f: body; expr`, parameterized defs, filter params, value params (`$x`), nested defs, and self-recursion.
 - Added benchmark coverage for the new public surface: variable binding, `abs`, `toboolean`, `trim`, `ltrim`, `rtrim`, `keys`, `skip`, `reduce`, `foreach`, `paths`, `path`, `getpath`, `setpath`, and `delpaths`.
+- Added benchmark entries for user-defined function dispatch (`def inc: . + 1; inc`) without regenerating the full benchmark report yet on this branch.
 - Added jq-style unary negation (`-expr`) for non-literal expressions such as `-$x`.
 - Added numeric-expression slice bounds and chained slice parsing, including forms like `.[1.2:3.5]`, `.[:rindex("x")]`, and `.[3:3][1:]`.
+- Added benchmark coverage for `@format "...\(...)"` template execution.
 
 ### Fixed
 
-- Moved the official jq-suite branch coverage from `356/751` passing to `448/751` passing while keeping `0` active jq-suite failures.
+- Moved the official jq-suite branch coverage from `356/751` passing to `551/751` passing while keeping `0` active jq-suite failures.
 - Removed the blanket jq-suite skip for variable binding syntax so implemented `as $x` cases now run instead of being hidden behind harness filters.
 - Fixed variable-binding parsing inside array-construction generator contexts such as `1 as $x | [$x,$x,$x as $x | $x]`.
 - Fixed jq-suite structural comparison for JSON outputs that differ only by numerically equivalent number spellings inside arrays or objects (for example `0.1` vs `1e-1`).
@@ -41,18 +49,24 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 - Fixed multi-output arithmetic ordering to match jq when both operands are generators, which unblocks `foreach` cases like `.[] / .[]`.
 - Fixed giant-exponent numeric comparison handling and jq-suite numeric-equivalence checks so numbers like `5E500000000` and `5E-5000000000` compare correctly.
 - Fixed jq-style subtraction diagnostics for non-numeric values, including typed/truncated messages like `string ("very-long-...) and string ("very-long-...) cannot be subtracted`.
+- Fixed parser breadth for template-format strings so previously skipped official-suite cases now run and pass.
+- Fixed parser breadth for `map_values(...)` and `with_entries(...)`, removing another small batch of compile skips without introducing general update-syntax support yet.
+- Fixed labeled control-flow unwinding so `break $label` now exits the correct surrounding `label` through iterators, `foreach`, array construction, and `try` boundaries.
+- Fixed user-call continuation scoping so downstream pipeline stages resume in the caller's lexical function environment instead of leaking the callee's captured scope.
 
 ### Tradeoffs
 
-- This branch slice still only implements simple `$name` bindings. Destructuring binds (`. as [$a, $b]` / object-pattern binds) remain deferred with the larger control-flow work.
 - Bound values are copied into runtime environment frames so later pipeline stages can safely reference constructed values as well as input sub-slices.
 - `reduce` currently targets the high-yield jq form `reduce gen as $x (init; update)` and reuses the existing lexical binding frames rather than introducing a broader mutable-control runtime yet.
 - `paths` prioritizes jq-suite parity over the usual hot-path allocation target on this branch. The current structural walker allocates on its call path (`17 allocs/op` on the small benchmark) but still stays far below gojq for the same query.
 - `path(expr)` follows the same parity-first posture as the other path-family work on this branch: correctness against the official suite takes precedence over the usual hot-path allocation target.
+- `@format "...\(...)"` template execution inherits the allocation profile of the underlying formatter (`@html`, `@uri`, `@sh`, etc.) because each interpolation is decoded and re-encoded independently.
+- `with_entries(f)` is implemented as parity-first parser sugar over `to_entries | map(f) | from_entries` on this branch, even though the project previously rejected it as a first-class primitive under the stricter allocation posture.
+- User-defined functions on this branch are implemented with lexical runtime function scopes and copied result emission rather than macro expansion. That keeps jq scoping semantics correct, especially for filter params and nested defs, at the cost of parity-first runtime allocations on the call path.
 
 ### Benchmark results
 
-- Regenerated `docs/BENCHMARKS.md` and kept the benchmark table current while parity work expanded parser coverage, path update support, `reduce`, and grouped array-index coverage.
+- Benchmark source files were updated for user-defined functions, but the full benchmark suite and `docs/BENCHMARKS.md` regeneration were intentionally deferred until the PR is closer to review-ready.
 
 ## [Unreleased] — codex/jq-parity suite tracking
 

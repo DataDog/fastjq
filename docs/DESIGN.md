@@ -47,10 +47,12 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `if cond then expr [elif cond then expr]* [else expr] end` (conditional; elif and else optional)
 - `empty` (produce zero outputs)
 - `reduce gen as $x (init; update)` / `foreach gen as $x (init; update; extract?)`
+- `def f: body; expr`, `def f(args...): body; f(...)` (lexically scoped user-defined functions with filter/value params)
+- `label $name | body` / `break $name` (named control-flow escape)
 - `(expr)` (parenthesized grouping)
 - `select(cond)` (filter — emit input if condition truthy, nothing if falsy)
 - `.foo // "default"` (alternative — use right if left is null/false)
-- `expr as $x | body` (lexical variable binding; body runs against the original input)
+- `expr as $x | body` and destructuring binds like `. as [$a, $b] | body` (lexical binding; body runs against the original input)
 - `.foo?`, `.[0]?`, `.[]?` (optional — suppress errors, produce nothing)
 - `try expr` / `try expr catch handler` (error suppression; handler receives JSON value from `error`, or string for built-in errors)
 - `error` (throw input as a `jsonError`; `catch` receives original JSON value)
@@ -81,6 +83,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `first`, `last` (first/last element; one-arg forms take an expr)
 - `limit(n; expr)`, `skip(n; expr)` (stream control over generator outputs)
 - `reduce gen as $x (init; update)` (stateful accumulation over generator outputs)
+- `map_values(f)` (array/object value transform; object fields drop when `f` yields no output)
 - `values` (filter nulls from stream)
 - `numbers`, `strings`, `arrays`, `objects`, `booleans`, `nulls`, `iterables`, `scalars` (type filters)
 - `index(s)`, `rindex(s)`, `indices(s)` (first/last/all occurrences; overlapping; Unicode codepoint positions; array subsequence search)
@@ -108,6 +111,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `@html` (HTML-escape `&<>'"`)
 - `@csv`, `@tsv` (CSV/TSV formatting from array)
 - `@sh` (POSIX shell quoting)
+- `@format "...\(...)"` template forms (apply the formatter only to interpolated values)
 
 **Debugging**
 - `debug` (print to stderr, pass through)
@@ -231,7 +235,9 @@ to short-circuit across generator elements cleanly.
 All format strings that operate on string content (`@base64`, `@uri`, `@html`,
 `@csv`, `@tsv`, `@sh`) first decode JSON string escape sequences
 (`decodeJSONStringContent`) before encoding. This ensures `"\n"` becomes
-byte `0x0a` in base64 output, not the two ASCII bytes `\` and `n`.
+byte `0x0a` in base64 output, not the two ASCII bytes `\` and `n`. Template
+forms such as `@html "<b>\(.)</b>"` reuse the same formatter helpers on each
+interpolated value while leaving the surrounding literal string bytes untouched.
 
 ### 19. Containment (Zero-Alloc Parallel Scan)
 

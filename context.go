@@ -1,6 +1,9 @@
 package fastjq
 
-import "sync"
+import (
+	"strconv"
+	"sync"
+)
 
 // execContext threads runtime state (variables, function table, label
 // sentinels, recursion depth) through the executor. A nil *execContext is a
@@ -69,9 +72,16 @@ type funcTable struct {
 // while `x` is a filter parameter (the argument is bound by name as a closure
 // expression). For Phase 0, we just record the raw parameter strings.
 type funcDef struct {
-	name   string
-	params []string
-	body   *op
+	name          string
+	params        []string
+	valueParams   []bool
+	body          *op
+	capturedEnv   *envFrame
+	capturedFuncs *funcTable
+}
+
+func funcKey(name string, arity int) string {
+	return name + "/" + strconv.Itoa(arity)
 }
 
 // lookup returns the funcDef registered under "name/arity", walking parents.

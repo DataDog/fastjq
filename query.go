@@ -17,9 +17,18 @@ const (
 	opPipe                         // expr | expr
 	opApply                        // expr[...], expr.foo — postfix application with original-input scope
 	opBind                         // expr as $x | body
+	opLabel                        // label $x | body
+	opBreakOp                      // break $x
 	opVar                          // $x
 	opReduce                       // reduce gen as $x (init; update)
 	opForeach                      // foreach gen as $x (init; update; extract?)
+	opWhile                        // while(cond; update)
+	opUntil                        // until(cond; next)
+	opDefScope                     // def f(...): body; expr
+	opCall                         // f / f(a; b)
+	opAssign                       // lhs = rhs
+	opUpdate                       // lhs |= rhs
+	opUpdateMath                   // lhs += rhs, -=, *=, /=, %=
 	opIndex                        // .[0], .[-1]
 	opIndexExpr                    // .[expr] dynamic index/key expression
 	opIterator                     // .[]
@@ -34,6 +43,7 @@ const (
 	opOr                           // expr or expr
 	opNot                          // not
 	opNeg                          // -expr
+	opOptional                     // expr? — suppress errors from child expression
 	opEmpty                        // empty — produce zero outputs
 	opHas                          // has("key")
 	opIf                           // if cond then expr else expr end
@@ -55,6 +65,12 @@ const (
 	opIn                           // in(obj) — reverse membership test
 	opSplit                        // split("s")
 	opJoin                         // join("s")
+	opStrftime                     // strftime(fmt)
+	opStrfLocaltime                // strflocaltime(fmt)
+	opStrptime                     // strptime(fmt)
+	opMktime                       // mktime
+	opGmtime                       // gmtime
+	opFromdate                     // fromdate
 	opAsciiDowncase                // ascii_downcase
 	opAsciiUpcase                  // ascii_upcase
 	opStartsWith                   // startswith("s")
@@ -62,8 +78,18 @@ const (
 	opTrim                         // trim
 	opLtrim                        // ltrim
 	opRtrim                        // rtrim
+	opTrimStr                      // trimstr("s")
 	opLtrimStr                     // ltrimstr("s")
 	opRtrimStr                     // rtrimstr("s")
+	opHaveDecnum                   // have_decnum
+	opUTF8ByteLength               // utf8bytelength
+	opReverse                      // reverse
+	opCombinations                 // combinations / combinations(n)
+	opPick                         // pick(path, ...)
+	opBsearch                      // bsearch(x)
+	opINBuiltin                    // IN(gen) / IN(lhs; rhs)
+	opINDEXBuiltin                 // INDEX(gen; key)
+	opJOINBuiltin                  // JOIN(index; key)
 	opPath                         // path(expr)
 	opKeys                         // keys
 	opKeysUnsorted                 // keys_unsorted
@@ -106,30 +132,31 @@ const (
 	// 1-arg floating-point math builtins — all zero-alloc, all take number input.
 	// 2-arg forms (pow, hypot, atan2, fma) and nan/infinite constants are rejected;
 	// see docs/SYNTAX.md "Rejected" section for rationale.
-	opMathSqrt      // sqrt
-	opMathFabs      // fabs  (absolute value of number; distinct from length)
-	opMathAtan      // atan  (1-arg: atan(x); 2-arg atan(y;x) not supported)
-	opMathLog       // log   (natural log)
-	opMathLog2      // log2
-	opMathLog10     // log10
-	opMathExp       // exp   (e^x)
-	opMathExp2      // exp2  (2^x)
-	opMathExp10     // exp10 (10^x; implemented as pow(10,x))
-	opMathCbrt      // cbrt  (cube root)
-	opMathLogb      // logb  (base-2 exponent)
-	opMathNearbyint // nearbyint (round; approximation: uses round-half-away-from-zero)
-	opMathJ0        // j0   (Bessel function of first kind, order 0)
-	opMathJ1        // j1   (Bessel function of first kind, order 1)
-	opMathSin       // sin
-	opMathCos       // cos
-	opMathTan       // tan
-	opMathAsin      // asin
-	opMathAcos      // acos
-	opMathTgamma    // tgamma (gamma function, Γ(x))
-	opMathLgamma    // lgamma (log of absolute gamma, ln|Γ(x)|)
-	opStringInterp  // "\(expr)" string interpolation; elems=expressions, segs=literal segments
-	opIsEmpty       // isempty(expr) — true if expr produces no outputs
-	opNth           // nth(n; gen) — nth output of gen (0-indexed); left=n, child=gen
+	opMathSqrt       // sqrt
+	opMathFabs       // fabs  (absolute value of number; distinct from length)
+	opMathAtan       // atan  (1-arg: atan(x); 2-arg atan(y;x) not supported)
+	opMathLog        // log   (natural log)
+	opMathLog2       // log2
+	opMathLog10      // log10
+	opMathExp        // exp   (e^x)
+	opMathExp2       // exp2  (2^x)
+	opMathExp10      // exp10 (10^x; implemented as pow(10,x))
+	opMathCbrt       // cbrt  (cube root)
+	opMathLogb       // logb  (base-2 exponent)
+	opMathNearbyint  // nearbyint (round; approximation: uses round-half-away-from-zero)
+	opMathJ0         // j0   (Bessel function of first kind, order 0)
+	opMathJ1         // j1   (Bessel function of first kind, order 1)
+	opMathSin        // sin
+	opMathCos        // cos
+	opMathTan        // tan
+	opMathAsin       // asin
+	opMathAcos       // acos
+	opMathTgamma     // tgamma (gamma function, Γ(x))
+	opMathLgamma     // lgamma (log of absolute gamma, ln|Γ(x)|)
+	opStringInterp   // "\(expr)" string interpolation; elems=expressions, segs=literal segments
+	opFormatTemplate // @html "...\(...)..." — format each interpolation inside a template string
+	opIsEmpty        // isempty(expr) — true if expr produces no outputs
+	opNth            // nth(n; gen) — nth output of gen (0-indexed); left=n, child=gen
 	// Regex operations (Go RE2 engine — linear time, pattern compiled once at Compile())
 	opTest    // test(re) / test(re; flags)  — 0 allocs via re.Match
 	opMatchRe // match(re) / match(re; flags) — 1 alloc on match (FindSubmatchIndex []int)
@@ -169,10 +196,21 @@ const (
 	cmpGe                     // >=
 )
 
+type updateOperator int
+
+const (
+	updatePlus updateOperator = iota
+	updateMinus
+	updateMul
+	updateDiv
+	updateMod
+)
+
 // pair represents a key-expression pair in object construction.
 type pair struct {
-	key  string
-	expr *op
+	key     string
+	keyExpr *op
+	expr    *op
 }
 
 // op is a node in the query AST.
@@ -180,20 +218,46 @@ type op struct {
 	typ             opType
 	field           string         // for opField
 	name            string         // for opVar/opBind
+	fn              *funcDef       // for opDefScope
+	pattern         *bindPattern   // for opBind/opReduce/opForeach destructuring bindings
+	altPatterns     []*bindPattern // for opBind: fallback binding targets joined by ?//
 	fields          []op           // for opDelete: list of field-access/index paths to delete
 	left            *op            // for opPipe, opCompare, opAlternative, opNth
 	right           *op            // for opPipe, opCompare, opAlternative
 	child           *op            // for opField chaining, opSelect condition, opIsEmpty, opNth body
 	extra           *op            // for opForeach: extract expression
+	format          opType         // for opFormatTemplate: formatter applied to each interpolation
 	index           int            // for opIndex: array index (negative = from end)
 	pairs           []pair         // for opConstruct: {key: expr} pairs
 	multiValuePairs bool           // for opConstruct: true if any pair expr may produce >1 output
-	elems           []*op          // for opArrayConstruct, opStringInterp: expressions
-	segs            [][]byte       // for opStringInterp: literal segments between expressions
+	elems           []*op          // for opArrayConstruct, opStringInterp, opFormatTemplate: expressions
+	segs            [][]byte       // for opStringInterp/opFormatTemplate: literal segments between expressions
 	literal         []byte         // for opLiteral: raw JSON bytes
 	re              *regexp.Regexp // for regex ops (opTest/opMatchRe/opCapture/opScan/opSub/opGSub)
 	cmpOp           cmpOperator    // for opCompare: comparison operator
+	updateOp        updateOperator // for opUpdateMath
 	optional        bool           // for opField/opIndex/opIterator: suppress errors
+}
+
+type bindPatternKind int
+
+const (
+	bindPatternVar bindPatternKind = iota
+	bindPatternArray
+	bindPatternObject
+)
+
+type bindPattern struct {
+	kind   bindPatternKind
+	name   string
+	elems  []*bindPattern
+	fields []bindPatternField
+}
+
+type bindPatternField struct {
+	key      string
+	bindName string
+	pattern  *bindPattern
 }
 
 // parse compiles a jq query string into an AST.
@@ -216,6 +280,12 @@ func parse(query string) (*op, error) {
 	result = simplify(result)
 
 	if err := validateVars(result, nil); err != nil {
+		return nil, err
+	}
+	if err := validateLabels(result, nil); err != nil {
+		return nil, err
+	}
+	if err := validateFuncs(result, nil, nil); err != nil {
 		return nil, err
 	}
 
@@ -246,7 +316,7 @@ func parsePipeExpr(s string) (*op, string, error) {
 // parseBindExpr parses `expr as $name | body`.
 // The bound value is produced by expr, but body runs against the original input.
 func parseBindExpr(s string) (*op, string, error) {
-	left, rest, err := parseExpr(s)
+	left, rest, err := parseAssignExpr(s)
 	if err != nil {
 		return nil, rest, err
 	}
@@ -256,22 +326,161 @@ func parseBindExpr(s string) (*op, string, error) {
 	}
 	asRest := rest
 	rest = strings.TrimSpace(rest[2:])
-	if len(rest) == 0 || rest[0] != '$' {
-		return left, asRest, nil
+	name, pattern, remaining, ok, err := parseBindingTarget(rest)
+	if err != nil {
+		return nil, remaining, err
 	}
-	name, remaining := readIdentifier(rest[1:])
-	if name == "" {
+	if !ok {
 		return left, asRest, nil
 	}
 	remaining = strings.TrimSpace(remaining)
+	primaryPattern := bindingPatternFromTarget(name, pattern)
+	var altPatterns []*bindPattern
+	for strings.HasPrefix(remaining, "?//") {
+		nextName, nextPattern, nextRemaining, nextOK, err := parseBindingTarget(strings.TrimSpace(remaining[3:]))
+		if err != nil {
+			return nil, nextRemaining, err
+		}
+		if !nextOK {
+			return nil, remaining, fmt.Errorf("expected binding target after ?//")
+		}
+		altPatterns = append(altPatterns, bindingPatternFromTarget(nextName, nextPattern))
+		remaining = strings.TrimSpace(nextRemaining)
+	}
 	if len(remaining) == 0 || remaining[0] != '|' {
 		return left, asRest, nil
 	}
-	body, rest, err := parsePipeExpr(remaining[1:])
+	body, rest, err := parseGeneratorExpr(remaining[1:])
 	if err != nil {
 		return nil, rest, err
 	}
-	return &op{typ: opBind, name: name, left: left, right: body}, rest, nil
+	return &op{typ: opBind, name: name, pattern: primaryPattern, altPatterns: altPatterns, left: left, right: body}, rest, nil
+}
+
+func bindingPatternFromTarget(name string, pattern *bindPattern) *bindPattern {
+	if pattern != nil {
+		return pattern
+	}
+	if name == "" {
+		return nil
+	}
+	return &bindPattern{kind: bindPatternVar, name: name}
+}
+
+func parseAssignExpr(s string) (*op, string, error) {
+	left, rest, err := parseExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if !canStartAssignment(left) {
+		return left, rest, nil
+	}
+
+	switch {
+	case strings.HasPrefix(rest, "|="):
+		right, remaining, err := parseExpr(strings.TrimSpace(rest[2:]))
+		if err != nil {
+			return nil, remaining, err
+		}
+		return &op{typ: opUpdate, left: left, right: right}, remaining, nil
+	case strings.HasPrefix(rest, "+="):
+		return parseUpdateMathExpr(left, rest[2:], updatePlus)
+	case strings.HasPrefix(rest, "-="):
+		return parseUpdateMathExpr(left, rest[2:], updateMinus)
+	case strings.HasPrefix(rest, "*="):
+		return parseUpdateMathExpr(left, rest[2:], updateMul)
+	case strings.HasPrefix(rest, "/="):
+		return parseUpdateMathExpr(left, rest[2:], updateDiv)
+	case strings.HasPrefix(rest, "%="):
+		return parseUpdateMathExpr(left, rest[2:], updateMod)
+	case len(rest) > 0 && rest[0] == '=' && (len(rest) == 1 || rest[1] != '='):
+		right, remaining, err := parseExpr(strings.TrimSpace(rest[1:]))
+		if err != nil {
+			return nil, remaining, err
+		}
+		return &op{typ: opAssign, left: left, right: right}, remaining, nil
+	default:
+		return left, rest, nil
+	}
+}
+
+func parseUpdateMathExpr(left *op, s string, update updateOperator) (*op, string, error) {
+	right, remaining, err := parseExpr(strings.TrimSpace(s))
+	if err != nil {
+		return nil, remaining, err
+	}
+	return &op{typ: opUpdateMath, left: left, right: right, updateOp: update}, remaining, nil
+}
+
+func canStartAssignment(node *op) bool {
+	if node == nil {
+		return false
+	}
+	if containsUnsupportedAssignNode(node) {
+		return false
+	}
+	return true
+}
+
+func containsUnsupportedAssignNode(node *op) bool {
+	if node == nil {
+		return false
+	}
+	switch node.typ {
+	case opBind, opReduce, opForeach, opDefScope:
+		return true
+	case opIndexExpr:
+		return containsUnsupportedAssignNode(node.left) || containsUnsupportedAssignNode(node.child)
+	case opConstruct:
+		for _, p := range node.pairs {
+			if containsUnsupportedAssignNode(p.expr) {
+				return true
+			}
+		}
+		return false
+	case opArrayConstruct, opGenerator, opStringInterp, opFormatTemplate:
+		for _, elem := range node.elems {
+			if containsUnsupportedAssignNode(elem) {
+				return true
+			}
+		}
+		return false
+	default:
+		return containsUnsupportedAssignNode(node.left) || containsUnsupportedAssignNode(node.right) || containsUnsupportedAssignNode(node.child)
+	}
+}
+
+func parseLabelExpr(s string) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 || s[0] != '$' {
+		return nil, s, fmt.Errorf("expected label name after label")
+	}
+	name, rest := readIdentifier(s[1:])
+	if name == "" {
+		return nil, rest, fmt.Errorf("expected label name after label")
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != '|' {
+		return nil, rest, fmt.Errorf("expected '|' after label $%s", name)
+	}
+	body, rest, err := parseGeneratorExpr(rest[1:])
+	if err != nil {
+		return nil, rest, err
+	}
+	return &op{typ: opLabel, name: name, child: body}, rest, nil
+}
+
+func parseBreakExpr(s string) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 || s[0] != '$' {
+		return nil, s, fmt.Errorf("expected label name after break")
+	}
+	name, rest := readIdentifier(s[1:])
+	if name == "" {
+		return nil, rest, fmt.Errorf("expected label name after break")
+	}
+	return &op{typ: opBreakOp, name: name}, rest, nil
 }
 
 // parseGeneratorExpr parses generator syntax in contexts where commas produce
@@ -410,6 +619,9 @@ func parseAddExpr(s string) (*op, string, error) {
 	for {
 		rest = strings.TrimSpace(rest)
 		if len(rest) > 0 && rest[0] == '+' {
+			if len(rest) > 1 && rest[1] == '=' {
+				break
+			}
 			rest = strings.TrimSpace(rest[1:])
 			right, remainder, err := parseMulExpr(rest)
 			if err != nil {
@@ -420,6 +632,9 @@ func parseAddExpr(s string) (*op, string, error) {
 			continue
 		}
 		if len(rest) > 0 && rest[0] == '-' {
+			if len(rest) > 1 && rest[1] == '=' {
+				break
+			}
 			rest = strings.TrimSpace(rest[1:])
 			right, remainder, err := parseMulExpr(rest)
 			if err != nil {
@@ -467,10 +682,16 @@ func parseMulExpr(s string) (*op, string, error) {
 		rest = strings.TrimSpace(rest)
 		var typ opType
 		if len(rest) > 0 && rest[0] == '*' {
+			if len(rest) > 1 && rest[1] == '=' {
+				break
+			}
 			typ = opMul
-		} else if len(rest) > 0 && rest[0] == '/' && !(len(rest) >= 2 && rest[1] == '/') {
+		} else if len(rest) > 0 && rest[0] == '/' && !(len(rest) >= 2 && (rest[1] == '/' || rest[1] == '=')) {
 			typ = opDiv
 		} else if len(rest) > 0 && rest[0] == '%' {
+			if len(rest) > 1 && rest[1] == '=' {
+				break
+			}
 			typ = opMod
 		} else {
 			break
@@ -538,6 +759,12 @@ func parseAtom(s string) (*op, string, error) {
 	if s[0] == '$' {
 		return parseVarRef(s)
 	}
+	if strings.HasPrefix(s, "break") && (len(s) == 5 || !isIdentChar(s[5])) {
+		return parseBreakExpr(s[5:])
+	}
+	if strings.HasPrefix(s, "def") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return parseDefExpr(s[3:])
+	}
 
 	// del()
 	if strings.HasPrefix(s, "del(") {
@@ -568,6 +795,9 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "try") && (len(s) == 3 || !isIdentChar(s[3])) {
 		return parseTry(s[3:])
 	}
+	if strings.HasPrefix(s, "label") && (len(s) == 5 || !isIdentChar(s[5])) {
+		return parseLabelExpr(s[5:])
+	}
 
 	// if-then-else
 	if strings.HasPrefix(s, "if") && (len(s) == 2 || !isIdentChar(s[2])) {
@@ -578,7 +808,6 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "empty") && (len(s) == 5 || !isIdentChar(s[5])) {
 		return &op{typ: opEmpty}, s[5:], nil
 	}
-
 	// has("key")
 	if strings.HasPrefix(s, "has(") {
 		return parseHas(s)
@@ -672,10 +901,13 @@ func parseAtom(s string) (*op, string, error) {
 
 	// keys / keys_unsorted
 	if strings.HasPrefix(s, "keys") && (len(s) == 4 || !isIdentChar(s[4])) {
-		return &op{typ: opKeys}, s[4:], nil
+		return applyPostfixPipe(&op{typ: opKeys}, s[4:])
 	}
 	if strings.HasPrefix(s, "keys_unsorted") && (len(s) == 13 || !isIdentChar(s[13])) {
-		return &op{typ: opKeysUnsorted}, s[13:], nil
+		return applyPostfixPipe(&op{typ: opKeysUnsorted}, s[13:])
+	}
+	if strings.HasPrefix(s, "have_decnum") && (len(s) == 11 || !isIdentChar(s[11])) {
+		return &op{typ: opHaveDecnum}, s[11:], nil
 	}
 	if strings.HasPrefix(s, "path(") {
 		node, rest, err := parseUnaryExprBuiltin(s[5:], opPath)
@@ -729,6 +961,117 @@ func parseAtom(s string) (*op, string, error) {
 	}
 	if strings.HasPrefix(s, "all") && (len(s) == 3 || !isIdentChar(s[3])) {
 		return parseAnyAll(s[3:], opAll)
+	}
+	if strings.HasPrefix(s, "while(") {
+		cond, rest, err := parsePipeExpr(s[6:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected ';' in while(cond; update)")
+		}
+		update, rest, err := parsePipeExpr(strings.TrimSpace(rest[1:]))
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after while() arguments")
+		}
+		return &op{typ: opWhile, left: cond, child: update}, rest[1:], nil
+	}
+	if strings.HasPrefix(s, "until(") {
+		cond, rest, err := parsePipeExpr(s[6:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected ';' in until(cond; next)")
+		}
+		next, rest, err := parsePipeExpr(strings.TrimSpace(rest[1:]))
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after until() arguments")
+		}
+		return &op{typ: opUntil, left: cond, child: next}, rest[1:], nil
+	}
+	if strings.HasPrefix(s, "pick(") {
+		args, rest, err := parseCommaArgList(s[5:])
+		if err != nil {
+			return nil, rest, err
+		}
+		return &op{typ: opPick, elems: args}, rest, nil
+	}
+	if strings.HasPrefix(s, "bsearch(") {
+		return parseUnaryGenBuiltin(s[8:], opBsearch)
+	}
+	if strings.HasPrefix(s, "IN(") {
+		left, rest, err := parseGeneratorExpr(s[3:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 {
+			return nil, rest, fmt.Errorf("unclosed IN()")
+		}
+		if rest[0] == ')' {
+			return &op{typ: opINBuiltin, child: left}, rest[1:], nil
+		}
+		if rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected ';' or ')' in IN()")
+		}
+		right, rest, err := parseGeneratorExpr(strings.TrimSpace(rest[1:]))
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after IN() arguments")
+		}
+		return &op{typ: opINBuiltin, left: left, child: right}, rest[1:], nil
+	}
+	if strings.HasPrefix(s, "INDEX(") {
+		stream, rest, err := parseGeneratorExpr(s[6:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected ';' in INDEX(gen; key)")
+		}
+		key, rest, err := parseGeneratorExpr(strings.TrimSpace(rest[1:]))
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after INDEX() arguments")
+		}
+		return &op{typ: opINDEXBuiltin, left: stream, child: key}, rest[1:], nil
+	}
+	if strings.HasPrefix(s, "JOIN(") {
+		indexExpr, rest, err := parsePipeExpr(s[5:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected ';' in JOIN(index; key)")
+		}
+		key, rest, err := parseGeneratorExpr(strings.TrimSpace(rest[1:]))
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after JOIN() arguments")
+		}
+		return &op{typ: opJOINBuiltin, left: indexExpr, child: key}, rest[1:], nil
 	}
 
 	// add
@@ -856,34 +1199,34 @@ func parseAtom(s string) (*op, string, error) {
 	// Format strings: @base64d, @base64, @uri, @urid, @json, @html, @csv, @tsv, @sh, @text
 	if s[0] == '@' {
 		if strings.HasPrefix(s, "@base64d") && (len(s) == 8 || !isIdentChar(s[8])) {
-			return &op{typ: opBase64D}, s[8:], nil
+			return parseFormatBuiltin(s[8:], opBase64D)
 		}
 		if strings.HasPrefix(s, "@base64") && (len(s) == 7 || !isIdentChar(s[7])) {
-			return &op{typ: opBase64}, s[7:], nil
+			return parseFormatBuiltin(s[7:], opBase64)
 		}
 		if strings.HasPrefix(s, "@urid") && (len(s) == 5 || !isIdentChar(s[5])) {
-			return &op{typ: opURIDecode}, s[5:], nil
+			return parseFormatBuiltin(s[5:], opURIDecode)
 		}
 		if strings.HasPrefix(s, "@uri") && (len(s) == 4 || !isIdentChar(s[4])) {
-			return &op{typ: opURIEncode}, s[4:], nil
+			return parseFormatBuiltin(s[4:], opURIEncode)
 		}
 		if strings.HasPrefix(s, "@json") && (len(s) == 5 || !isIdentChar(s[5])) {
-			return &op{typ: opToJSON}, s[5:], nil
+			return parseFormatBuiltin(s[5:], opToJSON)
 		}
 		if strings.HasPrefix(s, "@html") && (len(s) == 5 || !isIdentChar(s[5])) {
-			return &op{typ: opHTMLEncode}, s[5:], nil
+			return parseFormatBuiltin(s[5:], opHTMLEncode)
 		}
 		if strings.HasPrefix(s, "@csv") && (len(s) == 4 || !isIdentChar(s[4])) {
-			return &op{typ: opCSVEncode}, s[4:], nil
+			return parseFormatBuiltin(s[4:], opCSVEncode)
 		}
 		if strings.HasPrefix(s, "@tsv") && (len(s) == 4 || !isIdentChar(s[4])) {
-			return &op{typ: opTSVEncode}, s[4:], nil
+			return parseFormatBuiltin(s[4:], opTSVEncode)
 		}
 		if strings.HasPrefix(s, "@sh") && (len(s) == 3 || !isIdentChar(s[3])) {
-			return &op{typ: opShEncode}, s[3:], nil
+			return parseFormatBuiltin(s[3:], opShEncode)
 		}
 		if strings.HasPrefix(s, "@text") && (len(s) == 5 || !isIdentChar(s[5])) {
-			return &op{typ: opToString}, s[5:], nil // @text == tostring
+			return parseFormatBuiltin(s[5:], opToString) // @text == tostring
 		}
 		return nil, s, fmt.Errorf("unsupported format string %q", s[:min(len(s), 16)])
 	}
@@ -894,6 +1237,24 @@ func parseAtom(s string) (*op, string, error) {
 	}
 	if strings.HasPrefix(s, "join(") {
 		return parseStringArgBuiltin(s[5:], opJoin)
+	}
+	if strings.HasPrefix(s, "strftime(") {
+		return parseUnaryExprBuiltin(s[9:], opStrftime)
+	}
+	if strings.HasPrefix(s, "strflocaltime(") {
+		return parseUnaryExprBuiltin(s[14:], opStrfLocaltime)
+	}
+	if strings.HasPrefix(s, "strptime(") {
+		return parseUnaryExprBuiltin(s[9:], opStrptime)
+	}
+	if strings.HasPrefix(s, "mktime") && (len(s) == 6 || !isIdentChar(s[6])) {
+		return &op{typ: opMktime}, s[6:], nil
+	}
+	if strings.HasPrefix(s, "gmtime") && (len(s) == 6 || !isIdentChar(s[6])) {
+		return &op{typ: opGmtime}, s[6:], nil
+	}
+	if strings.HasPrefix(s, "fromdate") && (len(s) == 8 || !isIdentChar(s[8])) {
+		return &op{typ: opFromdate}, s[8:], nil
 	}
 
 	// ascii_downcase / ascii_upcase
@@ -911,8 +1272,20 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "implode") && (len(s) == 7 || !isIdentChar(s[7])) {
 		return &op{typ: opImplode}, s[7:], nil
 	}
+	if strings.HasPrefix(s, "utf8bytelength") && (len(s) == 14 || !isIdentChar(s[14])) {
+		return &op{typ: opUTF8ByteLength}, s[14:], nil
+	}
+	if strings.HasPrefix(s, "reverse") && (len(s) == 7 || !isIdentChar(s[7])) {
+		return &op{typ: opReverse}, s[7:], nil
+	}
+	if strings.HasPrefix(s, "combinations(") {
+		return parseUnaryExprBuiltin(s[13:], opCombinations)
+	}
+	if strings.HasPrefix(s, "combinations") && (len(s) == 12 || !isIdentChar(s[12])) {
+		return &op{typ: opCombinations}, s[12:], nil
+	}
 
-	// startswith(s) / endswith(s) / trim() / ltrim() / rtrim() / ltrimstr(s) / rtrimstr(s)
+	// startswith(s) / endswith(s) / trim() / ltrim() / rtrim() / trimstr(s) / ltrimstr(s) / rtrimstr(s)
 	if strings.HasPrefix(s, "startswith(") {
 		return parseStringArgBuiltin(s[11:], opStartsWith)
 	}
@@ -928,6 +1301,9 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "rtrim") && (len(s) == 5 || !isIdentChar(s[5])) {
 		return &op{typ: opRtrim}, s[5:], nil
 	}
+	if strings.HasPrefix(s, "trimstr(") {
+		return parseStringArgBuiltin(s[8:], opTrimStr)
+	}
 	if strings.HasPrefix(s, "ltrimstr(") {
 		return parseStringArgBuiltin(s[9:], opLtrimStr)
 	}
@@ -942,6 +1318,17 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "from_entries") && (len(s) == 12 || !isIdentChar(s[12])) {
 		return &op{typ: opFromEntries}, s[12:], nil
 	}
+	if strings.HasPrefix(s, "with_entries(") {
+		inner, rest, err := parseWithEntriesBody(s[13:])
+		if err != nil {
+			return nil, rest, fmt.Errorf("in with_entries(): %w", err)
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after with_entries() expression")
+		}
+		return applyPostfixPipe(withEntriesBuiltinNode(inner), rest[1:])
+	}
 
 	// map(expr) — desugars to [.[] | expr] at parse time
 	if strings.HasPrefix(s, "map(") {
@@ -953,28 +1340,35 @@ func parseAtom(s string) (*op, string, error) {
 		if len(rest) == 0 || rest[0] != ')' {
 			return nil, rest, fmt.Errorf("expected ')' after map() expression")
 		}
-		rest = rest[1:]
-		// Desugar: [.[] | inner]
-		iter := &op{typ: opIterator}
-		pipe := &op{typ: opPipe, left: iter, right: inner}
-		return &op{typ: opArrayConstruct, elems: []*op{pipe}}, rest, nil
+		return applyPostfixPipe(mapBuiltinNode(inner), rest[1:])
+	}
+	if strings.HasPrefix(s, "map_values(") {
+		inner, rest, err := parseGeneratorExpr(s[11:])
+		if err != nil {
+			return nil, rest, fmt.Errorf("in map_values(): %w", err)
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after map_values() expression")
+		}
+		return applyPostfixPipe(mapValuesBuiltinNode(inner), rest[1:])
 	}
 
 	// tojson / fromjson / tostring / tonumber / toboolean
 	if strings.HasPrefix(s, "tojson") && (len(s) == 6 || !isIdentChar(s[6])) {
-		return &op{typ: opToJSON}, s[6:], nil
+		return applyPostfixPipe(&op{typ: opToJSON}, s[6:])
 	}
 	if strings.HasPrefix(s, "fromjson") && (len(s) == 8 || !isIdentChar(s[8])) {
-		return &op{typ: opFromJSON}, s[8:], nil
+		return applyPostfixPipe(&op{typ: opFromJSON}, s[8:])
 	}
 	if strings.HasPrefix(s, "tostring") && (len(s) == 8 || !isIdentChar(s[8])) {
-		return &op{typ: opToString}, s[8:], nil
+		return applyPostfixPipe(&op{typ: opToString}, s[8:])
 	}
 	if strings.HasPrefix(s, "tonumber") && (len(s) == 8 || !isIdentChar(s[8])) {
-		return &op{typ: opToNumber}, s[8:], nil
+		return applyPostfixPipe(&op{typ: opToNumber}, s[8:])
 	}
 	if strings.HasPrefix(s, "toboolean") && (len(s) == 9 || !isIdentChar(s[9])) {
-		return &op{typ: opToBoolean}, s[9:], nil
+		return applyPostfixPipe(&op{typ: opToBoolean}, s[9:])
 	}
 
 	// not builtin (with boundary check)
@@ -1262,8 +1656,136 @@ func parseAtom(s string) (*op, string, error) {
 	if isDigit(s[0]) || (s[0] == '-' && len(s) > 1 && isDigit(s[1])) {
 		return parseNumberLiteral(s)
 	}
+	if isIdentStart(s[0]) {
+		node, rest, err := parseUserCall(s)
+		if err != nil {
+			return nil, rest, err
+		}
+		return applyPostfixPipe(node, rest)
+	}
 
 	return nil, s, fmt.Errorf("unexpected character %q", s[0:1])
+}
+
+func parseDefExpr(s string) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	name, rest := readIdentifier(s)
+	if name == "" {
+		return nil, rest, fmt.Errorf("expected function name after def")
+	}
+
+	var params []string
+	var valueParams []bool
+	rest = strings.TrimSpace(rest)
+	if len(rest) > 0 && rest[0] == '(' {
+		var err error
+		params, valueParams, rest, err = parseDefParams(rest[1:])
+		if err != nil {
+			return nil, rest, err
+		}
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ':' {
+		return nil, rest, fmt.Errorf("expected ':' after def %s", name)
+	}
+	body, rest, err := parseGeneratorExpr(rest[1:])
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ';' {
+		return nil, rest, fmt.Errorf("expected ';' after def %s body", name)
+	}
+	child, rest, err := parseGeneratorExpr(rest[1:])
+	if err != nil {
+		return nil, rest, err
+	}
+	return &op{
+		typ: opDefScope,
+		fn: &funcDef{
+			name:        name,
+			params:      params,
+			valueParams: valueParams,
+			body:        body,
+		},
+		child: child,
+	}, rest, nil
+}
+
+func parseDefParams(s string) ([]string, []bool, string, error) {
+	var params []string
+	var valueParams []bool
+	for {
+		s = strings.TrimSpace(s)
+		if len(s) == 0 {
+			return nil, nil, s, fmt.Errorf("unclosed function parameter list")
+		}
+		if s[0] == ')' {
+			return params, valueParams, s[1:], nil
+		}
+		isValue := false
+		if s[0] == '$' {
+			isValue = true
+			s = s[1:]
+		}
+		name, rest := readIdentifier(s)
+		if name == "" {
+			return nil, nil, rest, fmt.Errorf("expected parameter name in function definition")
+		}
+		params = append(params, name)
+		valueParams = append(valueParams, isValue)
+		s = strings.TrimSpace(rest)
+		if len(s) == 0 {
+			return nil, nil, s, fmt.Errorf("unclosed function parameter list")
+		}
+		if s[0] == ';' {
+			s = s[1:]
+			continue
+		}
+		if s[0] == ')' {
+			return params, valueParams, s[1:], nil
+		}
+		return nil, nil, s, fmt.Errorf("expected ';' or ')' in function parameter list")
+	}
+}
+
+func parseUserCall(s string) (*op, string, error) {
+	name, rest := readIdentifier(s)
+	if name == "" {
+		return nil, s, fmt.Errorf("expected identifier")
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != '(' {
+		return &op{typ: opCall, name: name}, rest, nil
+	}
+	rest = rest[1:]
+	var args []*op
+	for {
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 {
+			return nil, rest, fmt.Errorf("unclosed call to %s()", name)
+		}
+		if rest[0] == ')' {
+			return &op{typ: opCall, name: name, elems: args}, rest[1:], nil
+		}
+		arg, next, err := parseGeneratorExpr(rest)
+		if err != nil {
+			return nil, next, err
+		}
+		args = append(args, arg)
+		rest = strings.TrimSpace(next)
+		if len(rest) == 0 {
+			return nil, rest, fmt.Errorf("unclosed call to %s()", name)
+		}
+		if rest[0] == ';' {
+			rest = rest[1:]
+			continue
+		}
+		if rest[0] == ')' {
+			return &op{typ: opCall, name: name, elems: args}, rest[1:], nil
+		}
+		return nil, rest, fmt.Errorf("expected ';' or ')' after %s() argument", name)
+	}
 }
 
 func parseVarRef(s string) (*op, string, error) {
@@ -1280,7 +1802,7 @@ func parseVarRef(s string) (*op, string, error) {
 		node.child = child
 		rest = remaining
 	} else if len(rest) > 0 && rest[0] == '.' {
-		if len(rest) > 1 && isIdentStart(rest[1]) {
+		if len(rest) > 1 && (isIdentStart(rest[1]) || rest[1] == '"') {
 			child, remaining, err := parseFieldChain(rest[1:])
 			if err != nil {
 				return nil, rest, err
@@ -1294,6 +1816,9 @@ func parseVarRef(s string) (*op, string, error) {
 			}
 			node.child = child
 			rest = remaining
+		} else if len(rest) > 1 && rest[1] == '?' {
+			node.child = &op{typ: opIdentity}
+			rest = rest[2:]
 		}
 	} else if len(rest) > 0 && rest[0] == '?' {
 		node.optional = true
@@ -1317,7 +1842,10 @@ func validateVars(node *op, scope map[string]bool) error {
 			return err
 		}
 		next := cloneVarScope(scope)
-		next[node.name] = true
+		addBindingPatternVars(next, node.name, node.pattern)
+		for _, alt := range node.altPatterns {
+			addBindingPatternVars(next, "", alt)
+		}
 		return validateVars(node.right, next)
 	case opReduce:
 		if err := validateVars(node.left, scope); err != nil {
@@ -1327,7 +1855,7 @@ func validateVars(node *op, scope map[string]bool) error {
 			return err
 		}
 		next := cloneVarScope(scope)
-		next[node.name] = true
+		addBindingPatternVars(next, node.name, node.pattern)
 		return validateVars(node.child, next)
 	case opForeach:
 		if err := validateVars(node.left, scope); err != nil {
@@ -1337,11 +1865,22 @@ func validateVars(node *op, scope map[string]bool) error {
 			return err
 		}
 		next := cloneVarScope(scope)
-		next[node.name] = true
+		addBindingPatternVars(next, node.name, node.pattern)
 		if err := validateVars(node.child, next); err != nil {
 			return err
 		}
 		return validateVars(node.extra, next)
+	case opDefScope:
+		next := cloneVarScope(scope)
+		for i, name := range node.fn.params {
+			if node.fn.valueParams[i] {
+				next[name] = true
+			}
+		}
+		if err := validateVars(node.fn.body, next); err != nil {
+			return err
+		}
+		return validateVars(node.child, scope)
 	case opPipe, opCompare, opAlternative, opAnd, opOr, opPlus, opMinus, opMul, opDiv, opMod, opPow:
 		if err := validateVars(node.left, scope); err != nil {
 			return err
@@ -1356,7 +1895,7 @@ func validateVars(node *op, scope map[string]bool) error {
 			}
 		}
 		return nil
-	case opArrayConstruct, opGenerator, opStringInterp:
+	case opArrayConstruct, opGenerator, opStringInterp, opFormatTemplate, opCall, opPick:
 		for _, elem := range node.elems {
 			if err := validateVars(elem, scope); err != nil {
 				return err
@@ -1395,6 +1934,153 @@ func validateVars(node *op, scope map[string]bool) error {
 	}
 }
 
+func validateLabels(node *op, scope map[string]bool) error {
+	if node == nil {
+		return nil
+	}
+	switch node.typ {
+	case opLabel:
+		next := cloneVarScope(scope)
+		if next == nil {
+			next = make(map[string]bool)
+		}
+		next[node.name] = true
+		return validateLabels(node.child, next)
+	case opBreakOp:
+		if scope == nil || !scope[node.name] {
+			return fmt.Errorf("$*label-%s is not defined", node.name)
+		}
+		return nil
+	case opBind, opReduce:
+		if err := validateLabels(node.left, scope); err != nil {
+			return err
+		}
+		if err := validateLabels(node.right, scope); err != nil {
+			return err
+		}
+		return validateLabels(node.child, scope)
+	case opForeach:
+		if err := validateLabels(node.left, scope); err != nil {
+			return err
+		}
+		if err := validateLabels(node.right, scope); err != nil {
+			return err
+		}
+		if err := validateLabels(node.child, scope); err != nil {
+			return err
+		}
+		return validateLabels(node.extra, scope)
+	case opDefScope:
+		if err := validateLabels(node.fn.body, scope); err != nil {
+			return err
+		}
+		return validateLabels(node.child, scope)
+	case opConstruct:
+		for _, p := range node.pairs {
+			if err := validateLabels(p.expr, scope); err != nil {
+				return err
+			}
+		}
+		return nil
+	case opArrayConstruct, opGenerator, opStringInterp, opFormatTemplate, opCall, opPick:
+		for _, elem := range node.elems {
+			if err := validateLabels(elem, scope); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		if err := validateLabels(node.left, scope); err != nil {
+			return err
+		}
+		if err := validateLabels(node.right, scope); err != nil {
+			return err
+		}
+		return validateLabels(node.child, scope)
+	}
+}
+
+func validateFuncs(node *op, scope map[string]bool, vars map[string]bool) error {
+	if node == nil {
+		return nil
+	}
+	switch node.typ {
+	case opCall:
+		key := funcKey(node.name, len(node.elems))
+		if scope == nil || !scope[key] {
+			return fmt.Errorf("%s is not defined", key)
+		}
+		for _, arg := range node.elems {
+			if err := validateFuncs(arg, scope, vars); err != nil {
+				return err
+			}
+		}
+		return nil
+	case opDefScope:
+		nextScope := cloneVarScope(scope)
+		key := funcKey(node.fn.name, len(node.fn.params))
+		nextScope[key] = true
+		nextVars := cloneVarScope(vars)
+		for i, name := range node.fn.params {
+			if !node.fn.valueParams[i] {
+				nextScope[funcKey(name, 0)] = true
+				continue
+			}
+			nextVars[name] = true
+		}
+		if err := validateFuncs(node.fn.body, nextScope, nextVars); err != nil {
+			return err
+		}
+		return validateFuncs(node.child, nextScope, vars)
+	case opBind:
+		if err := validateFuncs(node.left, scope, vars); err != nil {
+			return err
+		}
+		return validateFuncs(node.right, scope, vars)
+	case opReduce:
+		if err := validateFuncs(node.left, scope, vars); err != nil {
+			return err
+		}
+		if err := validateFuncs(node.right, scope, vars); err != nil {
+			return err
+		}
+		return validateFuncs(node.child, scope, vars)
+	case opForeach:
+		if err := validateFuncs(node.left, scope, vars); err != nil {
+			return err
+		}
+		if err := validateFuncs(node.right, scope, vars); err != nil {
+			return err
+		}
+		if err := validateFuncs(node.child, scope, vars); err != nil {
+			return err
+		}
+		return validateFuncs(node.extra, scope, vars)
+	case opConstruct:
+		for _, p := range node.pairs {
+			if err := validateFuncs(p.expr, scope, vars); err != nil {
+				return err
+			}
+		}
+		return nil
+	case opArrayConstruct, opGenerator, opStringInterp, opFormatTemplate, opPick:
+		for _, elem := range node.elems {
+			if err := validateFuncs(elem, scope, vars); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		if err := validateFuncs(node.left, scope, vars); err != nil {
+			return err
+		}
+		if err := validateFuncs(node.right, scope, vars); err != nil {
+			return err
+		}
+		return validateFuncs(node.child, scope, vars)
+	}
+}
+
 func cloneVarScope(scope map[string]bool) map[string]bool {
 	if scope == nil {
 		return make(map[string]bool)
@@ -1404,6 +2090,302 @@ func cloneVarScope(scope map[string]bool) map[string]bool {
 		out[k] = v
 	}
 	return out
+}
+
+func addBindingPatternVars(scope map[string]bool, name string, pattern *bindPattern) {
+	if pattern != nil {
+		addPatternVars(scope, pattern)
+		return
+	}
+	if name != "" {
+		scope[name] = true
+	}
+}
+
+func addPatternVars(scope map[string]bool, pattern *bindPattern) {
+	if pattern == nil {
+		return
+	}
+	switch pattern.kind {
+	case bindPatternVar:
+		scope[pattern.name] = true
+	case bindPatternArray:
+		for _, elem := range pattern.elems {
+			addPatternVars(scope, elem)
+		}
+	case bindPatternObject:
+		for _, field := range pattern.fields {
+			if field.bindName != "" {
+				scope[field.bindName] = true
+			}
+			addPatternVars(scope, field.pattern)
+		}
+	}
+}
+
+func parseBindingTarget(s string) (string, *bindPattern, string, bool, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", nil, s, false, nil
+	}
+	switch s[0] {
+	case '$':
+		name, rest := readIdentifier(s[1:])
+		if name == "" {
+			return "", nil, rest, false, nil
+		}
+		return name, nil, rest, true, nil
+	case '[':
+		pat, rest, err := parseArrayBindingPattern(s)
+		return "", pat, rest, true, err
+	case '{':
+		pat, rest, err := parseObjectBindingPattern(s)
+		return "", pat, rest, true, err
+	default:
+		return "", nil, s, false, nil
+	}
+}
+
+func parseArrayBindingPattern(s string) (*bindPattern, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 || s[0] != '[' {
+		return nil, s, fmt.Errorf("expected '['")
+	}
+	s = s[1:]
+	var elems []*bindPattern
+	for {
+		s = strings.TrimSpace(s)
+		if len(s) == 0 {
+			return nil, s, fmt.Errorf("unclosed array binding pattern")
+		}
+		if s[0] == ']' {
+			if len(elems) == 0 {
+				return nil, s, fmt.Errorf("expected binding pattern inside []")
+			}
+			return &bindPattern{kind: bindPatternArray, elems: elems}, s[1:], nil
+		}
+		elem, rest, err := parseNestedBindingPattern(s)
+		if err != nil {
+			return nil, rest, err
+		}
+		elems = append(elems, elem)
+		s = strings.TrimSpace(rest)
+		if len(s) == 0 {
+			return nil, s, fmt.Errorf("unclosed array binding pattern")
+		}
+		if s[0] == ',' {
+			s = s[1:]
+			continue
+		}
+		if s[0] == ']' {
+			continue
+		}
+		return nil, s, fmt.Errorf("expected ',' in array binding pattern")
+	}
+}
+
+func parseObjectBindingPattern(s string) (*bindPattern, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 || s[0] != '{' {
+		return nil, s, fmt.Errorf("expected '{'")
+	}
+	s = s[1:]
+	var fields []bindPatternField
+	for {
+		s = strings.TrimSpace(s)
+		if len(s) == 0 {
+			return nil, s, fmt.Errorf("unclosed object binding pattern")
+		}
+		if s[0] == '}' {
+			if len(fields) == 0 {
+				return nil, s, fmt.Errorf("expected binding pattern inside {}")
+			}
+			return &bindPattern{kind: bindPatternObject, fields: fields}, s[1:], nil
+		}
+		field, rest, err := parseObjectBindingField(s)
+		if err != nil {
+			return nil, rest, err
+		}
+		fields = append(fields, field)
+		s = strings.TrimSpace(rest)
+		if len(s) == 0 {
+			return nil, s, fmt.Errorf("unclosed object binding pattern")
+		}
+		if s[0] == ',' {
+			s = s[1:]
+			continue
+		}
+		if s[0] == '}' {
+			continue
+		}
+		return nil, s, fmt.Errorf("expected ',' in object binding pattern")
+	}
+}
+
+func parseNestedBindingPattern(s string) (*bindPattern, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 {
+		return nil, s, fmt.Errorf("expected binding pattern")
+	}
+	switch s[0] {
+	case '$':
+		name, rest := readIdentifier(s[1:])
+		if name == "" {
+			return nil, rest, fmt.Errorf("expected variable name after $")
+		}
+		return &bindPattern{kind: bindPatternVar, name: name}, rest, nil
+	case '[':
+		return parseArrayBindingPattern(s)
+	case '{':
+		return parseObjectBindingPattern(s)
+	default:
+		return nil, s, fmt.Errorf("expected binding pattern")
+	}
+}
+
+func parseObjectBindingField(s string) (bindPatternField, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 {
+		return bindPatternField{}, s, fmt.Errorf("expected object binding field")
+	}
+	if s[0] == '$' {
+		name, rest := readIdentifier(s[1:])
+		if name == "" {
+			return bindPatternField{}, rest, fmt.Errorf("expected variable name after $")
+		}
+		field := bindPatternField{key: name, bindName: name}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ':' {
+			return field, rest, nil
+		}
+		pat, rest, err := parseNestedBindingPattern(rest[1:])
+		if err != nil {
+			return bindPatternField{}, rest, err
+		}
+		field.pattern = pat
+		return field, rest, nil
+	}
+	if s[0] == '"' {
+		key, rest, err := parseStringKey(s)
+		if err != nil {
+			return bindPatternField{}, rest, err
+		}
+		return parseExplicitObjectBindingField(key, rest)
+	}
+	if s[0] == '(' {
+		expr, rest, err := parseGeneratorExpr(s[1:])
+		if err != nil {
+			return bindPatternField{}, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return bindPatternField{}, rest, fmt.Errorf("expected ')' in object binding field")
+		}
+		key, err := staticObjectBindingKey(expr)
+		if err != nil {
+			return bindPatternField{}, rest, err
+		}
+		return parseExplicitObjectBindingField(key, rest[1:])
+	}
+	key, rest := readIdentifier(s)
+	if key == "" {
+		return bindPatternField{}, rest, fmt.Errorf("expected field name in object binding pattern")
+	}
+	return parseExplicitObjectBindingField(key, rest)
+}
+
+func parseExplicitObjectBindingField(key, rest string) (bindPatternField, string, error) {
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ':' {
+		return bindPatternField{}, rest, fmt.Errorf("expected ':' in object binding field")
+	}
+	pat, next, err := parseNestedBindingPattern(rest[1:])
+	if err != nil {
+		return bindPatternField{}, next, err
+	}
+	return bindPatternField{key: key, pattern: pat}, next, nil
+}
+
+func parseStringKey(s string) (string, string, error) {
+	lit, rest, err := parseStringLiteral(s)
+	if err != nil {
+		return "", rest, err
+	}
+	key, ok, err := decodedStringLiteralKey(lit)
+	if err != nil {
+		return "", rest, err
+	}
+	if !ok {
+		return "", rest, fmt.Errorf("string interpolation in object key not supported")
+	}
+	return key, rest, nil
+}
+
+func decodedStringLiteralKey(node *op) (string, bool, error) {
+	if node == nil {
+		return "", false, fmt.Errorf("expected string literal")
+	}
+	if node.typ != opLiteral {
+		return "", false, nil
+	}
+	if len(node.literal) == 0 || node.literal[0] != '"' {
+		return "", false, fmt.Errorf("expected string literal")
+	}
+	var out []byte
+	ss := scanner{data: node.literal}
+	raw := ss.readString()
+	out = appendCanonicalRawJSONStringContent(out[:0], raw)
+	return string(out), true, nil
+}
+
+func shorthandConstructPairForStringKey(node *op) (*pair, error) {
+	key, ok, err := decodedStringLiteralKey(node)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		return &pair{key: key, expr: &op{typ: opField, field: key}}, nil
+	}
+	return &pair{
+		keyExpr: node,
+		expr:    &op{typ: opIndexExpr, left: node},
+	}, nil
+}
+
+func staticObjectBindingKey(node *op) (string, error) {
+	if node == nil {
+		return "", fmt.Errorf("expected object key expression")
+	}
+	switch node.typ {
+	case opLiteral:
+		if len(node.literal) == 0 {
+			return "", fmt.Errorf("expected object key expression")
+		}
+		switch node.literal[0] {
+		case '"':
+			var out []byte
+			ss := scanner{data: node.literal}
+			raw := ss.readString()
+			out = appendCanonicalRawJSONStringContent(out[:0], raw)
+			return string(out), nil
+		case 't', 'f', 'n':
+			return "", fmt.Errorf("Cannot use %s (%s) as object key", jsonTypeName(node.literal), string(node.literal))
+		default:
+			return "", fmt.Errorf("Cannot use %s (%s) as object key", jsonTypeName(node.literal), string(node.literal))
+		}
+	case opPlus:
+		left, err := staticObjectBindingKey(node.left)
+		if err != nil {
+			return "", err
+		}
+		right, err := staticObjectBindingKey(node.right)
+		if err != nil {
+			return "", err
+		}
+		return left + right, nil
+	default:
+		return "", fmt.Errorf("Cannot use non-constant expression as object key")
+	}
 }
 
 func parseReduce(s string) (*op, string, error) {
@@ -1417,12 +2399,12 @@ func parseReduce(s string) (*op, string, error) {
 		return nil, rest, fmt.Errorf("expected 'as $name' in reduce")
 	}
 	rest = strings.TrimSpace(rest[2:])
-	if len(rest) == 0 || rest[0] != '$' {
-		return nil, rest, fmt.Errorf("expected $name after as in reduce")
+	name, pattern, rest, ok, err := parseBindingTarget(rest)
+	if err != nil {
+		return nil, rest, err
 	}
-	name, rest := readIdentifier(rest[1:])
-	if name == "" {
-		return nil, rest, fmt.Errorf("expected variable name after as $ in reduce")
+	if !ok {
+		return nil, rest, fmt.Errorf("expected binding pattern after as in reduce")
 	}
 	rest = strings.TrimSpace(rest)
 	if len(rest) == 0 || rest[0] != '(' {
@@ -1444,7 +2426,7 @@ func parseReduce(s string) (*op, string, error) {
 	if len(rest) == 0 || rest[0] != ')' {
 		return nil, rest, fmt.Errorf("expected ')' after reduce")
 	}
-	return &op{typ: opReduce, name: name, left: gen, right: initExpr, child: updateExpr}, rest[1:], nil
+	return &op{typ: opReduce, name: name, pattern: pattern, left: gen, right: initExpr, child: updateExpr}, rest[1:], nil
 }
 
 func parseForeach(s string) (*op, string, error) {
@@ -1458,12 +2440,12 @@ func parseForeach(s string) (*op, string, error) {
 		return nil, rest, fmt.Errorf("expected 'as $name' in foreach")
 	}
 	rest = strings.TrimSpace(rest[2:])
-	if len(rest) == 0 || rest[0] != '$' {
-		return nil, rest, fmt.Errorf("expected $name after as in foreach")
+	name, pattern, rest, ok, err := parseBindingTarget(rest)
+	if err != nil {
+		return nil, rest, err
 	}
-	name, rest := readIdentifier(rest[1:])
-	if name == "" {
-		return nil, rest, fmt.Errorf("expected variable name after as $ in foreach")
+	if !ok {
+		return nil, rest, fmt.Errorf("expected binding pattern after as in foreach")
 	}
 	rest = strings.TrimSpace(rest)
 	if len(rest) == 0 || rest[0] != '(' {
@@ -1493,7 +2475,7 @@ func parseForeach(s string) (*op, string, error) {
 	if len(rest) == 0 || rest[0] != ')' {
 		return nil, rest, fmt.Errorf("expected ')' after foreach")
 	}
-	return &op{typ: opForeach, name: name, left: gen, right: initExpr, child: updateExpr, extra: extractExpr}, rest[1:], nil
+	return &op{typ: opForeach, name: name, pattern: pattern, left: gen, right: initExpr, child: updateExpr, extra: extractExpr}, rest[1:], nil
 }
 
 // parseDotExpr parses identity (.) or field access (.foo, .foo.bar),
@@ -1504,6 +2486,9 @@ func parseDotExpr(s string) (*op, string, error) {
 	// Check for .[...] — array index or iterator
 	if len(s) > 0 && s[0] == '[' {
 		return parseBracketExpr(s)
+	}
+	if len(s) > 0 && s[0] == '?' {
+		return &op{typ: opOptional, child: &op{typ: opIdentity}}, s[1:], nil
 	}
 
 	// Identity: just "." followed by end, whitespace, pipe, comma, paren, or @format
@@ -1516,9 +2501,22 @@ func parseDotExpr(s string) (*op, string, error) {
 
 // parseFieldChain parses "foo.bar.baz" or "foo[0]" into a chained opField.
 func parseFieldChain(s string) (*op, string, error) {
-	name, rest := readIdentifier(s)
-	if name == "" {
-		return nil, s, fmt.Errorf("expected field name after '.'")
+	var (
+		name string
+		rest string
+	)
+	if len(s) > 0 && s[0] == '"' {
+		raw, remaining, err := parseJSONStringLiteral(s)
+		if err != nil {
+			return nil, remaining, err
+		}
+		name = raw
+		rest = remaining
+	} else {
+		name, rest = readIdentifier(s)
+		if name == "" {
+			return nil, s, fmt.Errorf("expected field name after '.'")
+		}
 	}
 
 	node := &op{typ: opField, field: name}
@@ -1542,8 +2540,8 @@ func parseFieldChain(s string) (*op, string, error) {
 
 	// Check for chained field: .foo.bar
 	if len(rest) > 0 && rest[0] == '.' {
-		// Peek ahead — if next char after '.' is a letter, it's a chain
-		if len(rest) > 1 && isIdentStart(rest[1]) {
+		// Peek ahead — if next char after '.' is a letter or string quote, it's a chain
+		if len(rest) > 1 && (isIdentStart(rest[1]) || rest[1] == '"') {
 			child, remaining, err := parseFieldChain(rest[1:])
 			if err != nil {
 				return nil, rest, err
@@ -1564,7 +2562,7 @@ func parseAnyAll(s string, typ opType) (*op, string, error) {
 	if len(s) == 0 || s[0] != '(' {
 		return &op{typ: typ}, s, nil // no-arg form
 	}
-	inner, rest, err := parsePipeExpr(s[1:])
+	inner, rest, err := parseGeneratorExpr(s[1:])
 	if err != nil {
 		return nil, rest, err
 	}
@@ -1587,6 +2585,24 @@ func parseAnyAll(s string, typ opType) (*op, string, error) {
 		return nil, rest, fmt.Errorf("expected ')' after any/all argument")
 	}
 	return &op{typ: typ, child: inner}, rest[1:], nil
+}
+
+func parseJSONStringLiteral(s string) (string, string, error) {
+	if len(s) == 0 || s[0] != '"' {
+		return "", s, fmt.Errorf("expected string literal")
+	}
+	i := 1
+	for i < len(s) {
+		if s[i] == '\\' {
+			i += 2
+			continue
+		}
+		if s[i] == '"' {
+			return s[1:i], s[i+1:], nil
+		}
+		i++
+	}
+	return "", s, fmt.Errorf("unterminated string literal")
 }
 
 func generatorElems(node *op) []*op {
@@ -1678,6 +2694,36 @@ func parseStringArgBuiltin(s string, typ opType) (*op, string, error) {
 			return nil, s, fmt.Errorf("expected ')' after string argument")
 		}
 		s = strings.TrimSpace(s[1:])
+	}
+}
+
+func parseCommaArgList(s string) ([]*op, string, error) {
+	var args []*op
+	for {
+		s = strings.TrimSpace(s)
+		if len(s) == 0 {
+			return nil, s, fmt.Errorf("unclosed argument list")
+		}
+		if s[0] == ')' {
+			return args, s[1:], nil
+		}
+		arg, rest, err := parsePipeExpr(s)
+		if err != nil {
+			return nil, rest, err
+		}
+		args = append(args, arg)
+		s = strings.TrimSpace(rest)
+		if len(s) == 0 {
+			return nil, s, fmt.Errorf("unclosed argument list")
+		}
+		if s[0] == ',' {
+			s = s[1:]
+			continue
+		}
+		if s[0] == ')' {
+			return args, s[1:], nil
+		}
+		return nil, s, fmt.Errorf("expected ',' or ')' in argument list")
 	}
 }
 
@@ -1919,6 +2965,11 @@ func finalizeBracketNode(node *op, rest string) (*op, string, error) {
 func applyPostfixPipe(node *op, rest string) (*op, string, error) {
 	for {
 		rest = strings.TrimSpace(rest)
+		if len(rest) > 0 && rest[0] == '?' {
+			node = &op{typ: opOptional, child: node}
+			rest = rest[1:]
+			continue
+		}
 		if len(rest) > 0 && rest[0] == '[' {
 			suffix, remaining, err := parseBracketExpr(rest)
 			if err != nil {
@@ -1999,14 +3050,7 @@ func parseBracketExpr(s string) (*op, string, error) {
 
 	// .[] — iterator
 	if len(s) > 0 && s[0] == ']' {
-		s = s[1:] // skip ']'
-		node := &op{typ: opIterator}
-		// Check for optional marker
-		if len(s) > 0 && s[0] == '?' {
-			node.optional = true
-			s = s[1:]
-		}
-		return node, s, nil
+		return finalizeBracketNode(&op{typ: opIterator}, s[1:])
 	}
 
 	// .[:M] — slice with no start
@@ -2087,7 +3131,7 @@ func hasMultiOutput(n *op) bool {
 		return false
 	}
 	switch n.typ {
-	case opIterator, opRange, opScan, opGenerator, opPaths, opReduce, opForeach, opPath:
+	case opIterator, opRange, opScan, opGenerator, opPaths, opReduce, opForeach, opWhile, opPath, opCall, opAssign, opUpdate, opUpdateMath, opBsearch:
 		return true
 
 	// Ops that cap or reduce to at most one output regardless of their children:
@@ -2098,7 +3142,7 @@ func hasMultiOutput(n *op) bool {
 	case opConstruct:
 		// Multi-output if any pair value is multi-output (Cartesian product).
 		for _, p := range n.pairs {
-			if hasMultiOutput(p.expr) {
+			if hasMultiOutput(p.keyExpr) || hasMultiOutput(p.expr) {
 				return true
 			}
 		}
@@ -2108,6 +3152,10 @@ func hasMultiOutput(n *op) bool {
 		// Condition (left) drives which branch runs, not the output count.
 		// Then (right) or else (child) produce the actual outputs.
 		return hasMultiOutput(n.right) || hasMultiOutput(n.child)
+	case opLabel:
+		return hasMultiOutput(n.child)
+	case opDefScope:
+		return hasMultiOutput(n.child)
 	}
 
 	// For all remaining ops: propagate through all children.
@@ -2140,53 +3188,92 @@ func parseConstruct(s string) (*op, string, error) {
 			s = strings.TrimSpace(s[1:])
 		}
 
-		// Read key name — either bare identifier (foo) or quoted string ("foo")
-		var key string
-		if len(s) > 0 && s[0] == '"' {
-			i := 1
-			for i < len(s) {
-				if s[i] == '\\' {
-					if i+1 < len(s) && s[i+1] == '(' {
-						// String interpolation in object key is not supported.
-						// Dynamic keys like {"key\(expr)": val} require runtime evaluation
-						// of the key name, which the current object constructor doesn't support.
-						return nil, s, fmt.Errorf("string interpolation in object key not supported")
-					}
-					i += 2
-					continue
-				}
-				if s[i] == '"' {
-					break
-				}
-				i++
+		var (
+			current pair
+			err     error
+		)
+		switch s[0] {
+		case '"':
+			var keyNode *op
+			keyNode, s, err = parseStringLiteral(s)
+			if err != nil {
+				return nil, s, err
 			}
-			if i >= len(s) {
-				return nil, s, fmt.Errorf("unterminated key string in object construction")
+			s = strings.TrimSpace(s)
+			if len(s) > 0 && s[0] == ':' {
+				var ok bool
+				if current.key, ok, err = decodedStringLiteralKey(keyNode); err != nil {
+					return nil, s, err
+				}
+				if !ok {
+					current.keyExpr = keyNode
+				}
+				s = strings.TrimSpace(s[1:])
+				current.expr, s, err = parsePipeExpr(s)
+				if err != nil {
+					return nil, s, fmt.Errorf("in object construction: %w", err)
+				}
+			} else {
+				p, err := shorthandConstructPairForStringKey(keyNode)
+				if err != nil {
+					return nil, s, err
+				}
+				current = *p
 			}
-			key = s[1:i]
-			s = strings.TrimSpace(s[i+1:])
-		} else {
-			var rest string
-			key, rest = readIdentifier(s)
+		case '$':
+			name, rest := readIdentifier(s[1:])
+			if name == "" {
+				return nil, s, fmt.Errorf("expected variable name after $")
+			}
+			s = strings.TrimSpace(rest)
+			if len(s) > 0 && s[0] == ':' {
+				current.keyExpr = &op{typ: opVar, name: name}
+				s = strings.TrimSpace(s[1:])
+				current.expr, s, err = parsePipeExpr(s)
+				if err != nil {
+					return nil, s, fmt.Errorf("in object construction: %w", err)
+				}
+			} else {
+				current.key = name
+				current.expr = &op{typ: opVar, name: name}
+			}
+		case '(':
+			current.keyExpr, s, err = parseGeneratorExpr(s[1:])
+			if err != nil {
+				return nil, s, err
+			}
+			s = strings.TrimSpace(s)
+			if len(s) == 0 || s[0] != ')' {
+				return nil, s, fmt.Errorf("expected ')' to close grouped expression")
+			}
+			s = strings.TrimSpace(s[1:])
+			if len(s) == 0 || s[0] != ':' {
+				return nil, s, fmt.Errorf("expected ':' in object construction")
+			}
+			s = strings.TrimSpace(s[1:])
+			current.expr, s, err = parsePipeExpr(s)
+			if err != nil {
+				return nil, s, fmt.Errorf("in object construction: %w", err)
+			}
+		default:
+			key, rest := readIdentifier(s)
 			if key == "" {
 				return nil, s, fmt.Errorf("expected field name in object construction")
 			}
 			s = strings.TrimSpace(rest)
-		}
-
-		// Check for `: expr` (rename) or shorthand
-		if len(s) > 0 && s[0] == ':' {
-			s = strings.TrimSpace(s[1:])
-			expr, remaining, err := parsePipeExpr(s)
-			if err != nil {
-				return nil, remaining, fmt.Errorf("in object construction: %w", err)
+			if len(s) > 0 && s[0] == ':' {
+				current.key = key
+				s = strings.TrimSpace(s[1:])
+				current.expr, s, err = parsePipeExpr(s)
+				if err != nil {
+					return nil, s, fmt.Errorf("in object construction: %w", err)
+				}
+			} else {
+				current.key = key
+				current.expr = &op{typ: opField, field: key}
 			}
-			pairs = append(pairs, pair{key: key, expr: expr})
-			s = strings.TrimSpace(remaining)
-		} else {
-			// Shorthand: {name} is equivalent to {name: .name}
-			pairs = append(pairs, pair{key: key, expr: &op{typ: opField, field: key}})
 		}
+		pairs = append(pairs, current)
 	}
 
 	// Detect at compile time whether any pair value may produce multiple outputs.
@@ -2194,7 +3281,7 @@ func parseConstruct(s string) (*op, string, error) {
 	// multi-output pairs use execConstructMulti (Cartesian product path).
 	multiVal := false
 	for _, p := range pairs {
-		if hasMultiOutput(p.expr) {
+		if hasMultiOutput(p.keyExpr) || hasMultiOutput(p.expr) {
 			multiVal = true
 			break
 		}
@@ -2309,6 +3396,126 @@ func parseStringLiteral(s string) (*op, string, error) {
 		i++
 	}
 	return nil, s, fmt.Errorf("unterminated string literal")
+}
+
+func parseFormatBuiltin(rest string, format opType) (*op, string, error) {
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != '"' {
+		return &op{typ: format}, rest, nil
+	}
+	node, tail, err := parseStringLiteral(rest)
+	if err != nil {
+		return nil, tail, err
+	}
+	if node.typ != opStringInterp {
+		return node, tail, nil
+	}
+	node.typ = opFormatTemplate
+	node.format = format
+	return node, tail, nil
+}
+
+func mapBuiltinNode(inner *op) *op {
+	iter := &op{typ: opIterator}
+	pipe := &op{typ: opPipe, left: iter, right: inner}
+	return &op{typ: opArrayConstruct, elems: []*op{pipe}}
+}
+
+func withEntriesBuiltinNode(inner *op) *op {
+	return &op{
+		typ:  opPipe,
+		left: &op{typ: opToEntries},
+		right: &op{
+			typ:   opPipe,
+			left:  mapBuiltinNode(inner),
+			right: &op{typ: opFromEntries},
+		},
+	}
+}
+
+func parseWithEntriesBody(s string) (*op, string, error) {
+	if field, rhs, rest, ok, err := parseSimpleFieldUpdate(s); ok || err != nil {
+		if err != nil {
+			return nil, rest, err
+		}
+		if field != "key" && field != "value" {
+			return nil, rest, fmt.Errorf("with_entries() only supports .key or .value updates")
+		}
+		return withEntriesFieldUpdateInnerNode(field, rhs), rest, nil
+	}
+	return parseGeneratorExpr(s)
+}
+
+func parseSimpleFieldUpdate(s string) (field string, rhs *op, rest string, ok bool, err error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 || s[0] != '.' {
+		return "", nil, s, false, nil
+	}
+	field, rest = readIdentifier(s[1:])
+	if field == "" {
+		return "", nil, rest, false, nil
+	}
+	rest = strings.TrimSpace(rest)
+	if !strings.HasPrefix(rest, "|=") {
+		return "", nil, rest, false, nil
+	}
+	rhs, rest, err = parseGeneratorExpr(strings.TrimSpace(rest[2:]))
+	if err != nil {
+		return "", nil, rest, false, err
+	}
+	return field, rhs, rest, true, nil
+}
+
+func withEntriesFieldUpdateInnerNode(field string, rhs *op) *op {
+	entryKey := &op{typ: opField, field: "key"}
+	entryValue := &op{typ: opField, field: "value"}
+	keyExpr := entryKey
+	valueExpr := entryValue
+	switch field {
+	case "key":
+		keyExpr = &op{typ: opPipe, left: &op{typ: opField, field: "key"}, right: rhs}
+	case "value":
+		valueExpr = &op{typ: opPipe, left: &op{typ: opField, field: "value"}, right: rhs}
+	}
+	return &op{
+		typ: opConstruct,
+		pairs: []pair{
+			{key: "key", expr: keyExpr},
+			{key: "value", expr: valueExpr},
+		},
+	}
+}
+
+func mapValuesBuiltinNode(inner *op) *op {
+	const entryVar = "_fastjq_map_values_entry"
+
+	entryKey := &op{typ: opVar, name: entryVar, child: &op{typ: opField, field: "key"}}
+	entryValue := &op{typ: opVar, name: entryVar, child: &op{typ: opField, field: "value"}}
+	valueResult := &op{typ: opPipe, left: entryValue, right: inner}
+	entryObject := &op{
+		typ: opConstruct,
+		pairs: []pair{
+			{key: "key", expr: entryKey},
+			{key: "value", expr: &op{typ: opIdentity}},
+		},
+	}
+	objectMapInner := &op{
+		typ:   opBind,
+		name:  entryVar,
+		left:  &op{typ: opIdentity},
+		right: &op{typ: opPipe, left: valueResult, right: entryObject},
+	}
+	objectBranch := withEntriesBuiltinNode(objectMapInner)
+	cond := &op{
+		typ:  opCompare,
+		left: &op{typ: opTypeBuiltin},
+		right: &op{
+			typ:     opLiteral,
+			literal: []byte(`"object"`),
+		},
+		cmpOp: cmpEq,
+	}
+	return &op{typ: opIf, left: cond, right: objectBranch, child: mapBuiltinNode(inner)}
 }
 
 // parseNumberLiteral parses a JSON number literal.
