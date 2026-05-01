@@ -52,7 +52,7 @@ func normalizeNaNInf(v []byte) []byte {
 func (p *Program) Run(input []byte) ([]byte, error) {
 	input = stripBOM(input)
 	buf := make([]byte, 0, len(input))
-	result, err := exec(p.root, input, buf)
+	result, err := exec(execState{}, p.root, input, buf)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ func (p *Program) Run(input []byte) ([]byte, error) {
 // For multi-output queries, only the first result is returned.
 func (p *Program) RunWithBuffer(input []byte, buf []byte) ([]byte, error) {
 	buf = buf[:0]
-	result, err := exec(p.root, stripBOM(input), buf)
+	result, err := exec(execState{}, p.root, stripBOM(input), buf)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +78,7 @@ func (p *Program) RunWithBuffer(input []byte, buf []byte) ([]byte, error) {
 func (p *Program) RunAll(input []byte) ([][]byte, error) {
 	input = stripBOM(input)
 	var results [][]byte
-	err := execMulti(p.root, input, nil, func(result []byte) error {
+	err := execMulti(execState{}, p.root, input, nil, func(result []byte) error {
 		result = normalizeNaNInf(result)
 		// Copy result since buf may be reused
 		cp := make([]byte, len(result))
@@ -97,7 +97,7 @@ func (p *Program) RunAll(input []byte) ([][]byte, error) {
 // result slices. The result bytes passed to fn are only valid for the
 // duration of the callback.
 func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error {
-	return execMulti(p.root, stripBOM(input), nil, func(result []byte) error {
+	return execMulti(execState{}, p.root, stripBOM(input), nil, func(result []byte) error {
 		return fn(normalizeNaNInf(result))
 	})
 }
