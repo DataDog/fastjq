@@ -3506,6 +3506,8 @@ func jqTimeLayout(format string) (string, error) {
 			b.WriteString("01")
 		case 'd':
 			b.WriteString("02")
+		case 'e':
+			b.WriteString("_2")
 		case 'H':
 			b.WriteString("15")
 		case 'M':
@@ -4019,14 +4021,21 @@ func appendJSONByte(buf []byte, b byte) []byte {
 }
 
 // execBase64Decode decodes a base64 JSON string back to a JSON string.
-// Handles both standard (+/) and URL-safe (-_) base64. Strips whitespace.
+// Handles both standard (+/) and URL-safe (-_) base64, plus unpadded final groups.
 func execBase64Decode(input []byte, buf []byte) ([]byte, error) {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
 		return nil, fmt.Errorf("@base64d input must be a string")
 	}
-	content := s.readString() // raw base64 bytes between quotes
+	content := decodeJSONStringContent(nil, s.readString())
+	inputText := string(trimWhitespace(input))
+	invalidBase64 := func() error {
+		return fmt.Errorf("string (%s) is not valid base64 data", inputText)
+	}
+	trailingByte := func() error {
+		return fmt.Errorf("string (%s) trailing base64 byte found", inputText)
+	}
 
 	buf = append(buf, '"')
 
@@ -4036,21 +4045,21 @@ func execBase64Decode(input []byte, buf []byte) ([]byte, error) {
 	var pads [4]bool // true if the char was '=' padding
 	n := 0
 	for _, ch := range content {
-		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
-			continue
-		}
 		if ch == '=' {
 			pads[n] = true
 			vals[n] = 0
 		} else {
 			v, ok := base64DecodeChar(ch)
 			if !ok {
-				return nil, fmt.Errorf("@base64d: invalid character %q", ch)
+				return nil, invalidBase64()
 			}
 			vals[n] = v
 		}
 		n++
 		if n == 4 {
+			if pads[0] || pads[1] || (pads[2] && !pads[3]) {
+				return nil, invalidBase64()
+			}
 			buf = appendJSONByte(buf, (vals[0]<<2)|(vals[1]>>4))
 			if !pads[2] {
 				buf = appendJSONByte(buf, ((vals[1]&0x0F)<<4)|(vals[2]>>2))
@@ -4063,10 +4072,20 @@ func execBase64Decode(input []byte, buf []byte) ([]byte, error) {
 		}
 	}
 	// Remaining chars (unpadded input: 2 or 3 chars in last group)
-	if n == 3 {
+	if n == 1 {
+		if !pads[0] {
+			return nil, trailingByte()
+		}
+	} else if n == 3 {
+		if pads[0] || pads[1] || pads[2] {
+			return nil, invalidBase64()
+		}
 		buf = appendJSONByte(buf, (vals[0]<<2)|(vals[1]>>4))
 		buf = appendJSONByte(buf, ((vals[1]&0x0F)<<4)|(vals[2]>>2))
 	} else if n == 2 {
+		if pads[0] || pads[1] {
+			return nil, invalidBase64()
+		}
 		buf = appendJSONByte(buf, (vals[0]<<2)|(vals[1]>>4))
 	}
 
@@ -8541,6 +8560,19 @@ func hexNibble(b byte) rune {
 	return 0
 }
 
+func parseHexNibbleByte(b byte) (byte, bool) {
+	switch {
+	case b >= '0' && b <= '9':
+		return b - '0', true
+	case b >= 'a' && b <= 'f':
+		return b - 'a' + 10, true
+	case b >= 'A' && b <= 'F':
+		return b - 'A' + 10, true
+	default:
+		return 0, false
+	}
+}
+
 // appendRuneUTF8 appends the UTF-8 encoding of r to dst.
 func appendRuneUTF8(dst []byte, r rune) []byte {
 	switch {
@@ -9493,19 +9525,32 @@ func execURIDecode(input, buf []byte) ([]byte, error) {
 	if s.pos >= len(s.data) || s.data[s.pos] != '"' {
 		return nil, fmt.Errorf("@urid input must be a string")
 	}
-	raw := s.readString() // raw JSON string content, e.g. %CE%BC
+	raw := decodeJSONStringContent(nil, s.readString())
+	inputText := string(trimWhitespace(input))
+	invalidURI := func() error {
+		return fmt.Errorf("string (%s) is not a valid uri encoding", inputText)
+	}
 
 	// Percent-decode to raw bytes
 	decoded := make([]byte, 0, len(raw))
 	for i := 0; i < len(raw); i++ {
-		if raw[i] == '%' && i+2 < len(raw) {
-			hi := hexNibble(raw[i+1])
-			lo := hexNibble(raw[i+2])
-			decoded = append(decoded, byte(hi<<4)|byte(lo))
-			i += 2
-		} else {
+		if raw[i] != '%' {
 			decoded = append(decoded, raw[i])
+			continue
 		}
+		if i+2 >= len(raw) {
+			return nil, invalidURI()
+		}
+		hi, okHi := parseHexNibbleByte(raw[i+1])
+		lo, okLo := parseHexNibbleByte(raw[i+2])
+		if !okHi || !okLo {
+			return nil, invalidURI()
+		}
+		decoded = append(decoded, (hi<<4)|lo)
+		i += 2
+	}
+	if !utf8.Valid(decoded) {
+		return nil, invalidURI()
 	}
 
 	buf = append(buf, '"')

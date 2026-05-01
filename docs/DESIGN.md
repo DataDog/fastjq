@@ -34,6 +34,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `..` (recursive descent — depth-first, root-first structural traversal)
 - `recurse`, `recurse(f)`, `recurse(f; cond)` (recursive generator traversal)
 - `walk(f)` (bottom-up recursive transform)
+- `tostream`, `truncate_stream(stream)`, `fromstream(stream)` (stream-shape reconstruction helpers over in-memory values)
 - `.items[]`, `.items[0]`, `.data[0].name` (chained access)
 - `.[n:m]`, `.[:m]`, `.[n:]` (array/string slicing, negative indices from end)
 - `{name, age}` (object construction, shorthand)
@@ -71,6 +72,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 
 **Array/collection operations**
 - `map(expr)` (apply expr to every array element; desugars to `[.[] | expr]` at parse time)
+- `repeat(expr)` / `range(...)` (value-synthesizing stream helpers)
 - `add` (sum numbers, concat strings/arrays, merge objects)
 - `flatten`, `flatten(n)` (flatten nested arrays)
 - `split("s")`, `join("s")` (split/join by separator)
@@ -103,7 +105,9 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `type` (type name string)
 - `tojson` / `@json`, `fromjson` (JSON string serialize/parse)
 - `tostring` / `@text`, `tonumber`, `toboolean` (string/number/boolean coercion)
+- `builtins`, `$__loc__` (introspection helpers used by upstream jq tests)
 - `abs` (jq-style absolute value; numbers become positive, strings pass through)
+- `nan`, `infinite`, `-nan`, `-infinite`, `isnan`, `isinfinite`, `isfinite`, `isnormal`, `pow(x; y)` (special numeric values/helpers; non-finite values serialize as `null`)
 - `floor`, `ceil`, `round` (numeric rounding)
 - `ascii_downcase`, `ascii_upcase` (case conversion)
 - `startswith("s")`, `endswith("s")`, `trim`, `ltrim`, `rtrim`, `ltrimstr("s")`, `rtrimstr("s")` (string prefix/suffix/whitespace trim)
@@ -294,7 +298,7 @@ correctness_test.go — Edge case, no-panic, and Unicode tests
 complex_test.go     — Complex multi-step query tests
 fuzz_test.go        — Fuzz tests (FuzzCompile, FuzzRunFixed, FuzzBoth)
 bench_test.go       — Benchmarks: fastjq vs gojq (255 benchmark cases)
-jqtest/run_test.go  — Official jq test harness (jq.test + man.test, 751 total)
+jqtest/run_test.go  — Official jq test harness (jq.test, man.test, optional.test, base64.test, uri.test; 783 total)
 cmd/fastjq/main.go  — JSONL processor CLI
 bench_vs_jq.sh      — CLI throughput benchmark script
 scripts/update_benchmarks.go — Regenerates BENCHMARKS.md

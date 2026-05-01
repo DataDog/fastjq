@@ -2525,6 +2525,10 @@ func TestBase64NoPadding(t *testing.T) {
 	// base64 without padding — many real-world APIs omit =
 	assertQuery(t, `@base64d`, `"aGVsbG8"`, `"hello"`)
 }
+func TestBase64DecodeInvalid(t *testing.T) {
+	assertQuery(t, `try @base64d catch .`, `"Not base64 data"`, `"string (\"Not base64 data\") is not valid base64 data"`)
+	assertQuery(t, `try @base64d catch .`, `"QUJDa"`, `"string (\"QUJDa\") trailing base64 byte found"`)
+}
 
 // --- index / rindex / indices ---
 
@@ -3255,6 +3259,10 @@ func TestStrfLocaltimeGeneratorArgs(t *testing.T) {
 			t.Fatalf("result %d: got %s, want %s", i, got[i], want[i])
 		}
 	}
+}
+
+func TestStrftimeSpacePaddedDay(t *testing.T) {
+	assertQuery(t, `strftime("%A, %B %e, %Y")`, `1435677542.822351`, `"Tuesday, June 30, 2015"`)
 }
 
 func TestFloatGroupedIndices(t *testing.T) {
@@ -4578,6 +4586,15 @@ func TestSHTemplate(t *testing.T) {
 func TestURIDecode(t *testing.T) {
 	assertQuery(t, `@urid`, `"%CE%BC"`, `"\u03bc"`)
 	assertQuery(t, `@uri|@urid`, `"hello world"`, `"hello world"`)
+}
+func TestURIDecodeValidation(t *testing.T) {
+	assertQuery(t, `@urid`, `"a\\u0000b\\u0000c"`, `"a\\u0000b\\u0000c"`)
+	assertQuery(t, `try @urid catch .`, `"abc%"`, `"string (\"abc%\") is not a valid uri encoding"`)
+	assertQuery(t, `try @urid catch .`, `"abc%f"`, `"string (\"abc%f\") is not a valid uri encoding"`)
+	assertQuery(t, `try @urid catch .`, `"abc%g"`, `"string (\"abc%g\") is not a valid uri encoding"`)
+	assertQuery(t, `try @urid catch .`, `"%FX%9F%98%8E"`, `"string (\"%FX%9F%98%8E\") is not a valid uri encoding"`)
+	assertQuery(t, `try @urid catch .`, `"%F0%93%81"`, `"string (\"%F0%93%81\") is not a valid uri encoding"`)
+	assertQuery(t, `try @urid catch .`, `"%F0%C0%81%8E"`, `"string (\"%F0%C0%81%8E\") is not a valid uri encoding"`)
 }
 
 // --- @text ---

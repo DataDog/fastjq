@@ -265,7 +265,7 @@ When `error` is thrown, the `catch` handler receives the **actual JSON value** (
 | ``@html "<b>\(.)</b>"`` | ~1 | Apply formatter to each interpolation, leave literal template bytes untouched | `"<tag>&"` | `"<b>&lt;tag&gt;&amp;</b>"` |
 | ``@sh "echo \(.)"`` | ~1 | Format only interpolated payloads inside a template string | `"O'Hara"` | `"echo 'O'\\''Hara'"` |
 
-`@base64`, `@uri`, `@html`, `@csv`, `@tsv`, `@sh`, and their `@format "...\(...)"` template forms allocate because they decode JSON string escape sequences before encoding — `\n` becomes byte `0x0a`, `\uXXXX` decoded to UTF-8. These are Tier 1 (output-encoding) allocations: proportional to the string being encoded, not the document being scanned. `@base64d`, `@json`, `@text` write directly into the output buffer and are 0-alloc.
+`@base64`, `@uri`, `@html`, `@csv`, `@tsv`, `@sh`, and their `@format "...\(...)"` template forms allocate because they decode JSON string escape sequences before encoding — `\n` becomes byte `0x0a`, `\uXXXX` decoded to UTF-8. These are Tier 1 (output-encoding) allocations: proportional to the string being encoded, not the document being scanned. `@base64d`, `@json`, and `@text` write directly into the output buffer and are 0-alloc. `@base64d` now matches jq's stricter invalid-input behavior for malformed trailing bytes, and `@urid` rejects incomplete or invalid percent escapes instead of passing them through.
 
 ### Numeric Rounding and Math
 
@@ -302,13 +302,19 @@ All math functions are zero-alloc. NaN/Infinity results are output as `null` to 
 | `lgamma` | ln\|Γ(x)\| | `1 \| lgamma` | `0` |
 | `j0`, `j1` | Bessel functions of first kind, orders 0 and 1 | `0 \| j0` | `1` |
 
-**Not supported (rejected)**
+**Supported special values and remaining numeric gaps**
+
+| Syntax | Notes |
+|--------|-------|
+| `nan`, `infinite`, `-nan`, `-infinite` | Supported as jq-style numeric values. At the API boundary they serialize back out as JSON `null` to preserve valid JSON output. |
+| `isnan`, `isinfinite`, `isfinite`, `isnormal` | Supported predicates over the special-value runtime representation. |
+| `pow(x; y)` | Supported 2-arg numeric builtin. |
+
+**Still not supported**
 
 | Syntax | Reason |
 |--------|--------|
-| `nan`, `infinite` | Produce non-JSON output, violating the "output is always compact JSON" constraint |
-| `isnan`, `isinfinite`, `isfinite`, `isnormal` | Depend on nan/infinite representation; meaningless without it |
-| `pow(x; y)`, `hypot(x; y)`, `atan(y; x)`, `fma(x;y;z)` | 2/3-arg forms. Every test for these is blocked by `as $` binding (0 exclusive tests). Parser would need 2-arg semicolon-separated forms. |
+| `hypot(x; y)`, `atan(y; x)`, `fma(x;y;z)` | Remaining 2/3-arg numeric builtins. They are low-yield for the upstream library-focused suite and still deferred behind broader parity work. |
 | `frexp`, `modf` | Return array pairs `[mantissa, exponent]`; 0 exclusive tests |
 | `ldexp`, `scalb`, `scalbln` | Take a float + integer exponent; 0 exclusive tests |
 | `significand` | Complex semantics (mantissa in [1,2)); 0 exclusive tests |
@@ -552,13 +558,6 @@ So `a or b and c` parses as `a or (b and c)` — `and` binds tighter than `or`.
 
 ## Not Yet Supported
 
-### Feasible but require careful handling
-
-These operations are implementable at zero allocation but involve more complexity or edge cases.
-
-| Syntax | Description | Challenge |
-|--------|-------------|-----------|
-
 ### Implemented — bounded O(n) allocation (Tier 2)
 
 These operations allocate an auxiliary index structure, but the allocation is **bounded by the collection the user explicitly provided** — not by the document being scanned.
@@ -574,30 +573,37 @@ These operations allocate an auxiliary index structure, but the allocation is **
 | `range(n)`, `range(from;to;step)` | 1 per value | Each integer output is a fresh byte slice (synthesised, not in input). |
 | `{a: .x[]}` multi-output construction | ~n per level | Cartesian product via `execConstructMulti`; single-output pairs use zero-alloc fast path. |
 
-### Feasible — bounded O(n) allocation (Tier 2, planned)
+### Deferred because they cross the library boundary
 
-| Syntax | Alloc model | Notes |
-|--------|-------------|-------|
-| `implode` | O(n) | Array of codepoints → UTF-8 string. |
-| `explode` | O(n) | String → array of Unicode codepoints. |
+These features are intentionally outside the current pure `Compile` + `Run` API shape. They need module loading, stdin, environment variables, or CLI process state rather than only the provided JSON bytes.
 
-### Rejected — allocations proportional to INPUT structure
+| Syntax | Why deferred |
+|--------|--------------|
+| `import`, `include`, `modulemeta` | Need filesystem-backed module resolution, dependency loading, and module scoping rules. |
+| `input`, `inputs` | Need stream/stateful stdin access instead of pure input-byte transforms. |
+| `env`, `$ENV` | Need process-environment access, which breaks the current deterministic library boundary. |
+| `stderr` | Needs host stderr output plumbing as a value-producing builtin instead of the existing `debug` side effect. |
+| CLI flags such as `-r`, `-s`, `--arg`, `--argjson` | CLI concerns, not library query semantics. |
 
-The governing principle rejects operations where allocation scales with the *shape of the data being processed*, not with the result being produced. The caller cannot control these allocations by choosing what to ask for.
+### Deferred because they need broader runtime work
 
-| Syntax | Why rejected |
-|--------|-------------|
-| *(range is now implemented as Tier 2)* | `range(n)`, `range(from;to)`, `range(from;to;step)` are supported. See Stream Control section above. |
+| Syntax | Why deferred |
+|--------|--------------|
+| Full `have_decnum` semantics | Requires an exact decimal numeric runtime instead of the current float-based executor. `have_decnum` currently reports capability only. |
 
-### Not applicable (streaming/CLI concerns)
+### Low-yield builtin tail still missing
 
-| Syntax | Description |
-|--------|-------------|
-| `input`, `inputs` | Read from stdin |
-| `env` | Access environment |
-| `--raw-output`, `-r` | CLI output formatting |
-| `--slurp`, `-s` | CLI input mode |
-| `--arg`, `--argjson` | CLI variable injection |
+| Syntax | Why deferred |
+|--------|--------------|
+| `leaf_paths` | Low coverage impact; `paths`, `path`, `getpath`, `setpath`, and `delpaths` were the high-yield path-family work. |
+| `hypot(x; y)`, `fma(x; y; z)` | Remaining numeric tail after `pow(x; y)`; low suite impact and no host-library priority. |
+| `date`, `now`, `todate` | Small remaining date/time surface after the implemented `strftime` / `strptime` / `mktime` / `gmtime` / `fromdate` subset. |
+
+### Known semantic gaps on the supported surface
+
+| Syntax | Current behavior |
+|--------|------------------|
+| `select(cond)` where `cond` is a generator | `cond` still runs through the single-result fast path, so only its first output is tested. Full jq semantics would consider the generator stream. |
 
 ---
 
@@ -608,4 +614,4 @@ The governing principle rejects operations where allocation scales with the *sha
 - **Tier 0 (zero-alloc):** field access, filtering, comparison, arithmetic, construction, `map(.field)`, math, `test(re)` — the full hot path for log processing.
 - **Tier 1 (alloc ∝ output):** `@base64`, `@uri`, `match`, `capture`, `scan`, `gsub`, `map(f)` with construction — allocate proportional to the data they produce, never to the input size.
 - **Tier 2 (alloc ∝ collection, implemented):** `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `range(n)`, multi-output object construction — O(n) bounded by the array/output the user explicitly requested.
-- **Still intentionally deferred:** full decimal-mode semantics behind `have_decnum`, module/import loading, and CLI/environment helpers such as `input`, `inputs`, `env`, and `$ENV`.
+- **Still intentionally deferred:** full decimal-mode semantics behind `have_decnum`, module/import loading, host-boundary helpers such as `input`, `inputs`, `env`, `$ENV`, and `stderr`, plus a small low-yield builtin tail (`leaf_paths`, `hypot`, `fma`, `date`, `now`, `todate`).

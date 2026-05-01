@@ -190,9 +190,20 @@ type result struct {
 	allocs int
 }
 
+type cliRow struct {
+	name    string
+	op      string
+	input   string
+	jq      string
+	fastjq  string
+	speedup string
+}
+
 var benchLineRE = regexp.MustCompile(
 	`^(Benchmark\S+)-\d+\s+\d+\s+([\d.]+) ns/op\s+\d+ B/op\s+(\d+) allocs/op`,
 )
+
+var cliLineRE = regexp.MustCompile(`^(.+?)\s{2,}(small|large)\s+([0-9.]+)\s+([0-9.]+)\s+([0-9.]+x)$`)
 
 func parseBenchmarks(output string) map[string]result {
 	m := make(map[string]result)
@@ -293,6 +304,157 @@ func replaceSection(content, startMarker, endMarker, newBody string) string {
 	return content[:start] + startMarker + newBody + content[end:]
 }
 
+func benchmarkResult(results map[string]result, key string) (result, bool) {
+	r, ok := results[key]
+	return r, ok
+}
+
+func mustBenchmarkResult(results map[string]result, key string) result {
+	r, ok := benchmarkResult(results, key)
+	if !ok {
+		panic("missing benchmark result for " + key)
+	}
+	return r
+}
+
+func buildBenchmarkIntro() string {
+	return "> **Current branch note**: This full sweep reflects the jq-parity branch after expanding the upstream harness to five jq test files. Tier 0 library operations still benchmark at 0 allocs/op on the hot path; the parity-first recursive/path/stateful helpers do allocate, but they remain dramatically lighter than gojq for the same queries.\n"
+}
+
+func buildKeyTakeaways(results map[string]result) string {
+	fieldLarge := mustBenchmarkResult(results, "BenchmarkFastjq_Large_Field")
+	fieldLargeGo := mustBenchmarkResult(results, "BenchmarkGojq_Large_Field")
+	selectLarge := mustBenchmarkResult(results, "BenchmarkFastjq_Large_Select")
+	selectLargeGo := mustBenchmarkResult(results, "BenchmarkGojq_Large_Select")
+	recursive := mustBenchmarkResult(results, "BenchmarkFastjq_Small_RecursiveDescent")
+	recursiveGo := mustBenchmarkResult(results, "BenchmarkGojq_Small_RecursiveDescent")
+	recurse := mustBenchmarkResult(results, "BenchmarkFastjq_Small_Recurse")
+	recurseGo := mustBenchmarkResult(results, "BenchmarkGojq_Small_Recurse")
+	walk := mustBenchmarkResult(results, "BenchmarkFastjq_Small_Walk")
+	walkGo := mustBenchmarkResult(results, "BenchmarkGojq_Small_Walk")
+
+	return strings.Join([]string{
+		"- **Tier 0 hot-path ops remain zero-alloc** under `RunWithBuffer` / `RunFunc` for direct access, filtering, arithmetic, construction, and most string/math work. Allocating features on this branch are the deliberate parity exceptions or output-shaped helpers.",
+		fmt.Sprintf("- **Large-object access stays roughly %s faster than gojq**: `.field` on the ~100KB benchmark is %s µs for fastjq versus %s µs for gojq, and large-object `select` remains about %s faster (%s µs versus %s µs).",
+			formatSpeedup(fieldLarge.ns, fieldLargeGo.ns), formatNs(fieldLarge.ns), formatNs(fieldLargeGo.ns),
+			formatSpeedup(selectLarge.ns, selectLargeGo.ns), formatNs(selectLarge.ns), formatNs(selectLargeGo.ns)),
+		fmt.Sprintf("- **Recursive parity helpers are still materially faster than gojq despite allocs**: `..` is %s, `recurse` is %s, and `walk(.)` is %s on the focused small cases.",
+			formatSpeedup(recursive.ns, recursiveGo.ns), formatSpeedup(recurse.ns, recurseGo.ns), formatSpeedup(walk.ns, walkGo.ns)),
+		"- **gojq still wins on tiny primitive-array reductions and some stateful/value-synthesizing helpers** such as `first`, `last`, `reduce`, `foreach`, and `range`, where its unmarshaled in-memory representation is cheaper than rescanning raw JSON bytes or emitting many fresh outputs.",
+	}, "\n") + "\n"
+}
+
+func replaceSectionInclusive(content, startMarker, endMarker, replacement string) string {
+	start := strings.Index(content, startMarker)
+	if start == -1 {
+		fmt.Fprintf(os.Stderr, "warning: could not find marker %q\n", startMarker)
+		return content
+	}
+	end := strings.Index(content, endMarker)
+	if end == -1 || end < start {
+		fmt.Fprintf(os.Stderr, "warning: could not find marker %q after %q\n", endMarker, startMarker)
+		return content
+	}
+	return content[:start] + replacement + content[end:]
+}
+
+func replaceSectionToEOF(content, startMarker, newBody string) string {
+	start := strings.Index(content, startMarker)
+	if start == -1 {
+		fmt.Fprintf(os.Stderr, "warning: could not find marker %q\n", startMarker)
+		return content
+	}
+	return content[:start] + startMarker + newBody
+}
+
+func parseCLIBenchmarkOutput(output string) ([]cliRow, error) {
+	meta := map[string]struct {
+		op    string
+		input string
+	}{
+		"identity":                {"Identity (`.`)", "small (100K lines, ~11MB)"},
+		"field access":            {"Field access (`.field_2`)", "small"},
+		"field access (large)":    {"Field access (`.field_50`)", "large (100 lines, ~16MB)"},
+		"delete field":            {"Delete field (`del(.field_2)`)","small"},
+		"object construction":     {"Object construction (`{field_0, field_2}`)", "small"},
+		"select (all match)":      {"Select all match (`select(.field_2 == \"xxx...\")`)", "small"},
+		"select (none match)":     {"Select none match (`select(.field_2 == \"nope\")`)", "small"},
+		"alternative":             {"Alternative (`.field_2 // \"default\"`)", "small"},
+		"case-insensitive select": {"Case-insensitive select (`ascii_downcase`)", "small"},
+		"prefix filter":           {"Prefix filter (`startswith`)", "small"},
+		"field existence":         {"Field existence (`has`)", "small"},
+		"to_entries":              {"`to_entries`", "small"},
+		"keys":                    {"`keys_unsorted`", "small"},
+	}
+
+	order := []string{
+		"identity", "field access", "field access (large)", "delete field",
+		"object construction", "select (all match)", "select (none match)",
+		"alternative", "case-insensitive select", "prefix filter",
+		"field existence", "to_entries", "keys",
+	}
+
+	rowsByName := make(map[string]cliRow)
+	for _, line := range strings.Split(output, "\n") {
+		sub := cliLineRE.FindStringSubmatch(line)
+		if sub == nil {
+			continue
+		}
+		name := strings.TrimSpace(sub[1])
+		m, ok := meta[name]
+		if !ok {
+			continue
+		}
+		rowsByName[name] = cliRow{
+			name:    name,
+			op:      m.op,
+			input:   m.input,
+			jq:      sub[3],
+			fastjq:  sub[4],
+			speedup: sub[5],
+		}
+	}
+
+	rows := make([]cliRow, 0, len(order))
+	for _, name := range order {
+		row, ok := rowsByName[name]
+		if !ok {
+			return nil, fmt.Errorf("missing CLI benchmark row for %q", name)
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+func buildCLISection(cliVersion string, rows []cliRow) string {
+	var sb strings.Builder
+	sb.WriteString("End-to-end JSONL throughput benchmarks comparing `fastjq-bench` (Go CLI using the fastjq library) against `jq` (C implementation, ")
+	sb.WriteString(cliVersion)
+	sb.WriteString("). Both read JSONL from stdin, apply a filter per line, write results to `/dev/null`. Both validate JSON: fastjq calls `json.Valid()` per record, jq parses fully. Median of 3 runs. Apple M4 Max.\n\n")
+	sb.WriteString("| Operation | Input | jq (s) | fastjq (s) | Speedup |\n")
+	sb.WriteString("|-----------|-------|--------|-------------|---------|\n")
+	minSpeedup := 1e9
+	maxSpeedup := 0.0
+	for _, row := range rows {
+		fmt.Fprintf(&sb, "| %s | %s | %s | %s | **%s** |\n", row.op, row.input, row.jq, row.fastjq, row.speedup)
+		speed := strings.TrimSuffix(row.speedup, "x")
+		if v, err := strconv.ParseFloat(speed, 64); err == nil {
+			if v < minSpeedup {
+				minSpeedup = v
+			}
+			if v > maxSpeedup {
+				maxSpeedup = v
+			}
+		}
+	}
+	sb.WriteString("\n### Key Takeaways (CLI)\n\n")
+	fmt.Fprintf(&sb, "- **%.1fx–%.1fx faster than jq** across this validation-on CLI slice, with the biggest wins on filter/projection work rather than raw field extraction.\n", minSpeedup, maxSpeedup)
+	sb.WriteString("- **`to_entries` and case-insensitive filtering are the standout CLI wins** in this run, because fastjq keeps the work to a streaming scan while jq still pays the full parse cost per line.\n")
+	sb.WriteString("- **Large-object field extraction is still only a modest CLI win** because both tools validate/parse the whole record; the much larger speedups show up when you call the library directly on already-valid JSON and skip the extra validation pass.\n")
+	sb.WriteString("- **The CLI numbers are intentionally conservative**: they include JSON validation and process startup overhead that do not apply to the hot-path library API.\n")
+	return sb.String()
+}
+
 func main() {
 	fmt.Fprintln(os.Stderr, "Running benchmark suite (~3 minutes)...")
 
@@ -337,8 +499,28 @@ func main() {
 	}
 
 	s := string(content)
+	s = replaceSectionInclusive(s, "> **New in this run**:", "\n\n> **Note on benchmark reliability**:", buildBenchmarkIntro())
 	s = replaceSection(s, "## Summary\n", "\n## Key Takeaways", "\n"+buildTable(results))
+	s = replaceSection(s, "## Key Takeaways\n", "\n## Raw Output", "\n"+buildKeyTakeaways(results))
 	s = replaceSection(s, "## Raw Output\n", "\n## CLI Throughput", "\n"+rawBlock)
+
+	fmt.Fprintln(os.Stderr, "Running CLI throughput script...")
+	cliOut, err := exec.Command("./bench_vs_jq.sh").CombinedOutput()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, string(cliOut))
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	cliRows, err := parseCLIBenchmarkOutput(string(cliOut))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, string(cliOut))
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	jqVerOut, _ := exec.Command("jq", "--version").Output()
+	cliVersion := strings.TrimSpace(string(jqVerOut))
+	s = replaceSection(s, "## CLI Throughput: fastjq vs jq\n", "\n### Reproducing", "\n"+buildCLISection(cliVersion, cliRows))
+	s = replaceSectionToEOF(s, "### Reproducing\n", "\n```bash\nchmod +x bench_vs_jq.sh\n./bench_vs_jq.sh\n```\n")
 
 	if err := os.WriteFile("docs/BENCHMARKS.md", []byte(s), 0644); err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -8,6 +8,7 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ### Added
 
+- Expanded the official upstream jq harness from two files to five by adding `tests/optional.test`, `tests/base64.test`, and `tests/uri.test` to `jqtest`.
 - Added lexical variable binding for simple jq forms: `expr as $x | body` and `$x` references across later pipeline stages.
 - Added jq-compatible destructuring binds for `as`, `reduce`, and `foreach`, including array patterns, object patterns, nested patterns, shorthand object-field binds, and constant-string computed keys.
 - Added jq-compatible `reduce gen as $x (init; update)` for simple accumulator folds over generator outputs.
@@ -33,7 +34,10 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ### Fixed
 
-- Moved the official jq-suite branch coverage from `356/751` passing to `719/751` passing while keeping `0` active jq-suite failures.
+- Moved the official jq-suite branch coverage from `356/751` passing to `751/783` passing while keeping `0` active jq-suite failures.
+- Fixed `strftime("%e")` day-of-month formatting to match jq's upstream optional suite coverage.
+- Fixed `@base64d` invalid-input handling so whitespace and trailing-base64-byte cases now raise jq-compatible catchable errors instead of partially decoding garbage.
+- Fixed `@urid` decoding to honor JSON string escapes before percent-decoding and to reject incomplete, non-hex, and invalid UTF-8 percent sequences with jq-compatible errors.
 - Removed the blanket jq-suite skip for variable binding syntax so implemented `as $x` cases now run instead of being hidden behind harness filters.
 - Fixed variable-binding parsing inside array-construction generator contexts such as `1 as $x | [$x,$x,$x as $x | $x]`.
 - Fixed jq-suite structural comparison for JSON outputs that differ only by numerically equivalent number spellings inside arrays or objects (for example `0.1` vs `1e-1`).
@@ -72,7 +76,9 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ### Benchmark results
 
-- Benchmark source files were updated for user-defined functions, but the full benchmark suite and `docs/BENCHMARKS.md` regeneration were intentionally deferred until the PR is closer to review-ready.
+- Regenerated the full benchmark suite and refreshed `docs/BENCHMARKS.md`, including the CLI throughput section from `bench_vs_jq.sh`.
+- Large-object `.field` now benchmarks at `7.50 µs` for fastjq versus `587 µs` for gojq (`78x`), and large-object `select(.f == "x")` at `32.9 µs` versus `786 µs` (`24x`).
+- Validation-on CLI throughput now lands in the `2.1x–11.4x` faster range versus jq 1.8.1 across the tracked JSONL slice.
 
 ## [Unreleased] — codex/jq-parity suite tracking
 

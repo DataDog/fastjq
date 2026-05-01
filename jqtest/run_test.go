@@ -1,9 +1,12 @@
 // Package jqtest runs the official jq test suites against fastjq and reports
 // coverage + any bugs found.
 //
-// Two test files are loaded:
-//   - tests/jq.test  — the main regression suite
-//   - tests/man.test — tests extracted from the jq manual
+// Official jq library-focused test files are loaded:
+//   - tests/jq.test       — the main regression suite
+//   - tests/man.test      — tests extracted from the jq manual
+//   - tests/optional.test — small optional upstream additions
+//   - tests/base64.test   — base64 codec coverage
+//   - tests/uri.test      — URI codec coverage
 //
 // Usage:
 //
@@ -37,14 +40,28 @@ const jqTestURL = "https://raw.githubusercontent.com/jqlang/jq/master/tests/jq.t
 const jqTestLocalCache = "testdata/jq.test"
 const manTestURL = "https://raw.githubusercontent.com/jqlang/jq/master/tests/man.test"
 const manTestLocalCache = "testdata/man.test"
+const optionalTestURL = "https://raw.githubusercontent.com/jqlang/jq/master/tests/optional.test"
+const optionalTestLocalCache = "testdata/optional.test"
+const base64TestURL = "https://raw.githubusercontent.com/jqlang/jq/master/tests/base64.test"
+const base64TestLocalCache = "testdata/base64.test"
+const uriTestURL = "https://raw.githubusercontent.com/jqlang/jq/master/tests/uri.test"
+const uriTestLocalCache = "testdata/uri.test"
+
+var suiteFiles = []struct{ url, cache, name string }{
+	{jqTestURL, jqTestLocalCache, "jq.test"},
+	{manTestURL, manTestLocalCache, "man.test"},
+	{optionalTestURL, optionalTestLocalCache, "optional.test"},
+	{base64TestURL, base64TestLocalCache, "base64.test"},
+	{uriTestURL, uriTestLocalCache, "uri.test"},
+}
 
 // codex/jq-parity tracking snapshot (baseline on 2026-04-30)
 //
 // Official-suite snapshot for this branch:
-//   - Total: 751
+//   - Total: 783
 //   - Skipped: 32
-//   - Attempted: 719
-//   - Passed: 719
+//   - Attempted: 751
+//   - Passed: 751
 //   - Failed: 0
 //
 // Skip families currently driving the branch:
@@ -90,15 +107,12 @@ type test struct {
 	source     string   // filename, e.g. "jq.test" or "man.test"
 }
 
-// loadTests fetches (or reads from cache) both official jq test files and
+// loadTests fetches (or reads from cache) the official jq test files and
 // returns all tests combined with source attribution.
 func loadTests(t *testing.T) []test {
 	t.Helper()
 	var all []test
-	for _, spec := range []struct{ url, cache, name string }{
-		{jqTestURL, jqTestLocalCache, "jq.test"},
-		{manTestURL, manTestLocalCache, "man.test"},
-	} {
+	for _, spec := range suiteFiles {
 		data := fetchOrCache(t, spec.url, spec.cache)
 		all = append(all, parseTests(data, spec.name)...)
 	}
@@ -267,7 +281,7 @@ type suiteStats struct {
 	total, skipped, passed, failed, errorOnly int
 }
 
-// TestJQOfficialSuite runs both official jq test suites and reports coverage.
+// TestJQOfficialSuite runs the selected official jq test suites and reports coverage.
 func TestJQOfficialSuite(t *testing.T) {
 	tests := loadTests(t)
 
@@ -379,7 +393,8 @@ func TestJQOfficialSuite(t *testing.T) {
 	t.Logf("\n=== Official jq Test Suite Results ===")
 
 	// Per-file breakdown
-	for _, name := range []string{"jq.test", "man.test"} {
+	for _, spec := range suiteFiles {
+		name := spec.name
 		s := bySource[name]
 		if s == nil {
 			continue
@@ -397,7 +412,7 @@ func TestJQOfficialSuite(t *testing.T) {
 
 	// Combined totals
 	combinedAttempted := combined.total - combined.skipped
-	t.Logf("\n  Combined (both files)")
+	t.Logf("\n  Combined (all files)")
 	t.Logf("    Total tests:     %d", combined.total)
 	t.Logf("    Skipped:         %d (unsupported operations — not failures)", combined.skipped)
 	t.Logf("    Attempted:       %d", combinedAttempted)
