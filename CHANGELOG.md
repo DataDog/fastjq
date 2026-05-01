@@ -4,6 +4,20 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — split benchmark comparison deps from the core module
+
+### Added
+
+- A separate `compare/` Go module for `gojq` comparison benchmarks so the root `fastjq` module has zero external dependencies.
+
+### Fixed
+
+- `scripts/update_benchmarks.go` now collects benchmark output from both the root module and the `compare/` module before regenerating `docs/BENCHMARKS.md`.
+
+### Tradeoffs
+
+- The comparison benchmark suite now lives in a nested module, which keeps the library dependency-free while preserving the existing fastjq-vs-gojq tables and benchmark names.
+
 ## [Unreleased] — parser breadth, path updates, jq parity majority, and builtin sweep
 
 ### Added

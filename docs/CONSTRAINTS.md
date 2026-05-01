@@ -115,6 +115,7 @@ These operations are not rejected on principle — they're deferred because impl
 
 - All operations must be covered by unit tests
 - Benchmarks must compare against gojq on small (~100B), medium (~2KB), and large (~100KB+) JSON
+- The root `fastjq` module stays dependency-free; gojq comparison benchmarks live in the separate `compare/` module
 - Benchmarks report ns/op, B/op, and allocs/op — **any unexpected non-zero allocs/op on a Tier 0 operation is a bug**
 - Tier 1+ operations must document their alloc profile in the benchmark comment
 - CLI throughput benchmarks compare against jq CLI on JSONL streams via `bench_vs_jq.sh`
