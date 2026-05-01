@@ -92,6 +92,7 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `values` (filter nulls from stream)
 - `numbers`, `strings`, `arrays`, `objects`, `booleans`, `nulls`, `iterables`, `scalars` (type filters)
 - `index(s)`, `rindex(s)`, `indices(s)` (first/last/all occurrences; overlapping; Unicode codepoint positions; array subsequence search)
+- `paths`, `leaf_paths` *(compat alias)*, `path(expr)`, `getpath`, `setpath`, `delpaths`
 - `has("key")`, `has(n)` (field/index existence)
 - `in(obj)` (reverse membership)
 - `contains(val)`, `inside(val)` (recursive containment)
@@ -105,9 +106,11 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `type` (type name string)
 - `tojson` / `@json`, `fromjson` (JSON string serialize/parse)
 - `tostring` / `@text`, `tonumber`, `toboolean` (string/number/boolean coercion)
+- `todate`, `now`, `date` *(compat alias of `todate`)*
 - `builtins`, `$__loc__` (introspection helpers used by upstream jq tests)
 - `abs` (jq-style absolute value; numbers become positive, strings pass through)
 - `nan`, `infinite`, `-nan`, `-infinite`, `isnan`, `isinfinite`, `isfinite`, `isnormal`, `pow(x; y)` (special numeric values/helpers; non-finite values serialize as `null`)
+- `hypot(x; y)`, `fma(x; y; z)` (remaining small numeric builtins that fit the current executor)
 - `floor`, `ceil`, `round` (numeric rounding)
 - `ascii_downcase`, `ascii_upcase` (case conversion)
 - `startswith("s")`, `endswith("s")`, `trim`, `ltrim`, `rtrim`, `ltrimstr("s")`, `rtrimstr("s")` (string prefix/suffix/whitespace trim)
@@ -179,9 +182,9 @@ compile time. At runtime: `append(buf, literal...)` — zero-alloc on hot path.
 
 ### 9. Select Zero-Output Pattern
 
-`select(cond)` evaluates the condition; if falsy (null or false), it simply
-doesn't call the callback function — producing zero outputs that propagate
-naturally through pipes.
+`select(cond)` evaluates the condition as a generator. Each truthy condition
+output emits the original input once; falsy outputs emit nothing. In single-result
+contexts, `execSingle` short-circuits on the first truthy condition output.
 
 ### 10. execSingle Fast Path
 

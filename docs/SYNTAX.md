@@ -73,7 +73,7 @@ Use `RunAll` or `RunFunc` to consume multiple outputs. `Run`/`RunWithBuffer` ret
 | `recurse(. * .; . < 20)` | Recurse while new outputs satisfy a condition | `2` | `2`, `4`, `16` |
 | `walk(f)` | Rebuild arrays/objects bottom-up, then apply `f` at each node | `[[4,1,7],[8,5,2],[3,6,9]]` with `walk(if type == "array" then sort else . end)` | `[[1,4,7],[2,5,8],[3,6,9]]` |
 
-`recurse` and `walk` are implemented on this branch for jq-suite parity. They are not part of the zero-allocation hot path.
+`recurse` and `walk` are implemented for jq-suite parity. They are not part of the zero-allocation hot path.
 
 ### Object Construction
 
@@ -302,19 +302,23 @@ All math functions are zero-alloc. NaN/Infinity results are output as `null` to 
 | `lgamma` | ln\|Γ(x)\| | `1 \| lgamma` | `0` |
 | `j0`, `j1` | Bessel functions of first kind, orders 0 and 1 | `0 \| j0` | `1` |
 
-**Supported special values and remaining numeric gaps**
+**Supported special values, small numeric builtins, and date/time tail**
 
 | Syntax | Notes |
 |--------|-------|
 | `nan`, `infinite`, `-nan`, `-infinite` | Supported as jq-style numeric values. At the API boundary they serialize back out as JSON `null` to preserve valid JSON output. |
 | `isnan`, `isinfinite`, `isfinite`, `isnormal` | Supported predicates over the special-value runtime representation. |
 | `pow(x; y)` | Supported 2-arg numeric builtin. |
+| `hypot(x; y)` | Supported 2-arg numeric builtin. |
+| `fma(x; y; z)` | Supported 3-arg numeric builtin via `math.FMA`. |
+| `todate`, `now` | Supported date/time helpers. `todate` formats numeric epoch seconds as RFC3339 UTC; `now` emits the current epoch seconds as a float. |
+| `date` | Compatibility alias for `todate`. Current jq 1.8.1 does not expose bare `date`, but fastjq accepts it for parity convenience. |
 
 **Still not supported**
 
 | Syntax | Reason |
 |--------|--------|
-| `hypot(x; y)`, `atan(y; x)`, `fma(x;y;z)` | Remaining 2/3-arg numeric builtins. They are low-yield for the upstream library-focused suite and still deferred behind broader parity work. |
+| `atan(y; x)` | Remaining higher-arity numeric builtin outside the current float-helper subset. |
 | `frexp`, `modf` | Return array pairs `[mantissa, exponent]`; 0 exclusive tests |
 | `ldexp`, `scalb`, `scalbln` | Take a float + integer exponent; 0 exclusive tests |
 | `significand` | Complex semantics (mantissa in [1,2)); 0 exclusive tests |
@@ -466,7 +470,7 @@ Numbers compared by value; strings lexicographically. Empty array → `null`. `s
 
 `limit` emits a stream, not an array. Wrap in `[...]` if you need an array: `[limit(3; .[])]`. The body can be a comma-separated generator: `limit(1; a, b)`.
 
-`reduce` evaluates `init` once, then runs `update` against the accumulator for every value produced by `gen` while binding `$x` to the current item. This branch supports the simple jq form `reduce gen as $x (init; update)`.
+`reduce` evaluates `init` once, then runs `update` against the accumulator for every value produced by `gen` while binding `$x` to the current item. fastjq supports the jq form `reduce gen as $x (init; update)`.
 
 `foreach` shares the same accumulator model as `reduce`, but emits after each update. When the extract clause is omitted, it defaults to identity on the updated accumulator. If `update` produces multiple outputs, `foreach` emits extract results for each one but only carries the last update result forward to the next iteration, matching jq.
 
@@ -591,19 +595,12 @@ These features are intentionally outside the current pure `Compile` + `Run` API 
 |--------|--------------|
 | Full `have_decnum` semantics | Requires an exact decimal numeric runtime instead of the current float-based executor. `have_decnum` currently reports capability only. |
 
-### Low-yield builtin tail still missing
+### Compatibility aliases and small remaining tail
 
-| Syntax | Why deferred |
+| Syntax | Notes |
 |--------|--------------|
-| `leaf_paths` | Low coverage impact; `paths`, `path`, `getpath`, `setpath`, and `delpaths` were the high-yield path-family work. |
-| `hypot(x; y)`, `fma(x; y; z)` | Remaining numeric tail after `pow(x; y)`; low suite impact and no host-library priority. |
-| `date`, `now`, `todate` | Small remaining date/time surface after the implemented `strftime` / `strptime` / `mktime` / `gmtime` / `fromdate` subset. |
-
-### Known semantic gaps on the supported surface
-
-| Syntax | Current behavior |
-|--------|------------------|
-| `select(cond)` where `cond` is a generator | `cond` still runs through the single-result fast path, so only its first output is tested. Full jq semantics would consider the generator stream. |
+| `leaf_paths` | Implemented as the historical jq compatibility alias for `paths(scalars)`. Current jq 1.8.1 does not expose this name directly. |
+| `date` | Implemented as a compatibility alias for `todate`; current jq 1.8.1 does not expose bare `date`. |
 
 ---
 
@@ -614,4 +611,4 @@ These features are intentionally outside the current pure `Compile` + `Run` API 
 - **Tier 0 (zero-alloc):** field access, filtering, comparison, arithmetic, construction, `map(.field)`, math, `test(re)` — the full hot path for log processing.
 - **Tier 1 (alloc ∝ output):** `@base64`, `@uri`, `match`, `capture`, `scan`, `gsub`, `map(f)` with construction — allocate proportional to the data they produce, never to the input size.
 - **Tier 2 (alloc ∝ collection, implemented):** `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `range(n)`, multi-output object construction — O(n) bounded by the array/output the user explicitly requested.
-- **Still intentionally deferred:** full decimal-mode semantics behind `have_decnum`, module/import loading, host-boundary helpers such as `input`, `inputs`, `env`, `$ENV`, and `stderr`, plus a small low-yield builtin tail (`leaf_paths`, `hypot`, `fma`, `date`, `now`, `todate`).
+- **Still intentionally deferred:** full decimal-mode semantics behind `have_decnum`, module/import loading, and host-boundary helpers such as `input`, `inputs`, `env`, `$ENV`, and `stderr`.

@@ -66,29 +66,21 @@ var suiteFiles = []struct{ url, cache, name string }{
 //
 // Skip families currently driving the branch:
 //   - have_decnum / full decimal semantics
-//   - leaf_paths
 //   - stream, module, env, and reflection helpers
-//   - smaller parser tail and low-yield builtin stragglers
+//   - module/import helpers and host-boundary helpers
 //
 // unsupportedOps lists functions/syntax that fastjq does not implement.
 // A test whose program contains any of these tokens is skipped — NOT counted
 // as a failure. Keep this list tight: only skip what we genuinely don't support.
 var unsupportedOps = []string{
-	// Path operations
-	"leaf_paths",
 	// Decimal-mode capability flag — fastjq intentionally does not claim jq's full decnum semantics.
 	"have_decnum",
-	// nan/infinite/predicates: now implemented
-	// 2/3-arg math: hypot/fma REJECTED — 0 exclusive tests (all also blocked by as-$)
-	// pow(x;y) is now implemented
-	"hypot", "fma",
 	// frexp/modf/ldexp/scalb/scalbln/significand: REJECTED — 0 exclusive tests
 	"frexp", "modf", "ldexp", "scalb", "scalbln", "significand",
 	// splits( — streaming split variant, 0 exclusive tests
 	"splits(",
 	// Date/time operations
-	"dateadd", "todate",
-	"date", "now",
+	"dateadd",
 	// Streaming / IO
 	"input", "inputs", "stderr",
 	// env

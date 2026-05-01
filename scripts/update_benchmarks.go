@@ -95,6 +95,7 @@ var tableRows = []row{
 	{"`while(.<100; .*2)`", "integer 1", "Small_While", "Small_While"},
 	{"``[.,1]|until(...)|.[1]``", "integer 5", "Small_Until", "Small_Until"},
 	{"`paths`", "Small (~100B)", "Small_Paths", "Small_Paths"},
+	{"`leaf_paths`³", "Small (~100B)", "Small_LeafPaths", "Small_LeafPaths"},
 	{"`..`", "Small (~100B)", "Small_RecursiveDescent", "Small_RecursiveDescent"},
 	{"`recurse`", "Small (~20B object)", "Small_Recurse", "Small_Recurse"},
 	{"`walk(.)`", "Small (~10B object)", "Small_Walk", "Small_Walk"},
@@ -116,6 +117,9 @@ var tableRows = []row{
 	// Type conversion
 	{"`tojson`", "Small (~100B)", "Small_ToJSON", "Small_ToJSON"},
 	{"`fromjson`", "JSON string", "Small_FromJSON", "Small_FromJSON"},
+	{"`todate`", "epoch float", "Small_Todate", "Small_Todate"},
+	{"`date`³", "epoch float", "Small_Date", "Small_Date"},
+	{"`now`", "null", "Small_Now", "Small_Now"},
 	{"`tonumber`", "`\"42\"` string", "Small_ToNumber", "Small_ToNumber"},
 	{"`toboolean`", "`\"true\"` string", "Small_ToBoolean", "Small_ToBoolean"},
 	{"`utf8bytelength`", "`\"asdf\\u03bc\"`", "Small_UTF8ByteLength", "Small_UTF8ByteLength"},
@@ -159,6 +163,8 @@ var tableRows = []row{
 	{"`atan`", "integer 1", "Small_Atan", "Small_Atan"},
 	{"`exp`", "integer 1", "Small_Exp", "Small_Exp"},
 	{"`tgamma`", "integer 5", "Small_Tgamma", "Small_Tgamma"},
+	{"`hypot(3;4)`", "null", "Small_Hypot", "Small_Hypot"},
+	{"`fma(2;3;4)`", "null", "Small_FMA", "Small_FMA"},
 	{"`fabs`", "float -3.14", "Small_Fabs", "Small_Fabs"},
 	{"`abs`", "float -3.14", "Small_Abs", "Small_Abs"},
 	// Bindings
@@ -259,7 +265,7 @@ func formatSpeedup(fqNs, gqNs float64) string {
 
 func buildTable(results map[string]result) string {
 	var sb strings.Builder
-	sb.WriteString("All times in µs. ¹Large Select uses the last field — fastjq scans the full document. ²gojq wins: after unmarshal, integer arrays are native Go slices.\n\n")
+	sb.WriteString("All times in µs. ¹Large Select uses the last field — fastjq scans the full document. ²gojq wins: after unmarshal, integer arrays are native Go slices. ³Compatibility alias in fastjq (`leaf_paths` / `date`); gojq is benchmarked with the equivalent upstream form.\n\n")
 	sb.WriteString("| Operation | Input | fastjq (µs) | gojq (µs) | Speedup | fastjq allocs | gojq allocs |\n")
 	sb.WriteString("|-----------|-------|------------|----------|---------|---------------|-------------|\n")
 
@@ -318,7 +324,7 @@ func mustBenchmarkResult(results map[string]result, key string) result {
 }
 
 func buildBenchmarkIntro() string {
-	return "> **Current branch note**: This full sweep reflects the jq-parity branch after expanding the upstream harness to five jq test files. Tier 0 library operations still benchmark at 0 allocs/op on the hot path; the parity-first recursive/path/stateful helpers do allocate, but they remain dramatically lighter than gojq for the same queries.\n"
+	return "> **Current note**: This full sweep includes the expanded five-file upstream jq harness. Tier 0 library operations still benchmark at 0 allocs/op on the hot path; the parity-first recursive/path/stateful helpers do allocate, but they remain dramatically lighter than gojq for the same queries.\n"
 }
 
 func buildKeyTakeaways(results map[string]result) string {
@@ -334,7 +340,7 @@ func buildKeyTakeaways(results map[string]result) string {
 	walkGo := mustBenchmarkResult(results, "BenchmarkGojq_Small_Walk")
 
 	return strings.Join([]string{
-		"- **Tier 0 hot-path ops remain zero-alloc** under `RunWithBuffer` / `RunFunc` for direct access, filtering, arithmetic, construction, and most string/math work. Allocating features on this branch are the deliberate parity exceptions or output-shaped helpers.",
+		"- **Tier 0 hot-path ops remain zero-alloc** under `RunWithBuffer` / `RunFunc` for direct access, filtering, arithmetic, construction, and most string/math work. Allocating features here are the deliberate parity exceptions or output-shaped helpers.",
 		fmt.Sprintf("- **Large-object access stays roughly %s faster than gojq**: `.field` on the ~100KB benchmark is %s µs for fastjq versus %s µs for gojq, and large-object `select` remains about %s faster (%s µs versus %s µs).",
 			formatSpeedup(fieldLarge.ns, fieldLargeGo.ns), formatNs(fieldLarge.ns), formatNs(fieldLargeGo.ns),
 			formatSpeedup(selectLarge.ns, selectLargeGo.ns), formatNs(selectLarge.ns), formatNs(selectLargeGo.ns)),
@@ -375,7 +381,7 @@ func parseCLIBenchmarkOutput(output string) ([]cliRow, error) {
 		"identity":                {"Identity (`.`)", "small (100K lines, ~11MB)"},
 		"field access":            {"Field access (`.field_2`)", "small"},
 		"field access (large)":    {"Field access (`.field_50`)", "large (100 lines, ~16MB)"},
-		"delete field":            {"Delete field (`del(.field_2)`)","small"},
+		"delete field":            {"Delete field (`del(.field_2)`)", "small"},
 		"object construction":     {"Object construction (`{field_0, field_2}`)", "small"},
 		"select (all match)":      {"Select all match (`select(.field_2 == \"xxx...\")`)", "small"},
 		"select (none match)":     {"Select none match (`select(.field_2 == \"nope\")`)", "small"},
@@ -499,7 +505,11 @@ func main() {
 	}
 
 	s := string(content)
-	s = replaceSectionInclusive(s, "> **New in this run**:", "\n\n> **Note on benchmark reliability**:", buildBenchmarkIntro())
+	if strings.Contains(s, "> **Current note**:") {
+		s = replaceSectionInclusive(s, "> **Current note**:", "\n\n> **Note on benchmark reliability**:", buildBenchmarkIntro())
+	} else {
+		s = replaceSectionInclusive(s, "> **Current branch note**:", "\n\n> **Note on benchmark reliability**:", buildBenchmarkIntro())
+	}
 	s = replaceSection(s, "## Summary\n", "\n## Key Takeaways", "\n"+buildTable(results))
 	s = replaceSection(s, "## Key Takeaways\n", "\n## Raw Output", "\n"+buildKeyTakeaways(results))
 	s = replaceSection(s, "## Raw Output\n", "\n## CLI Throughput", "\n"+rawBlock)

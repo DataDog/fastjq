@@ -356,6 +356,14 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return err
 		}
 		return fn(result)
+	case opTodate:
+		result, err := execTodate(input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opNow:
+		return fn(execNow(buf))
 	case opToStream:
 		return execToStream(input, buf, fn)
 	case opTruncateStream:
@@ -512,6 +520,18 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(execIsNormal(input, buf))
 	case opPow:
 		result, err := execPow(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opHypot:
+		result, err := execHypot(node, input, buf)
+		if err != nil {
+			return err
+		}
+		return fn(result)
+	case opFMA:
+		result, err := execFMA(node, input, buf)
 		if err != nil {
 			return err
 		}
@@ -1078,6 +1098,10 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execGmtime(input, buf)
 	case opFromdate:
 		return execFromdate(input, buf)
+	case opTodate:
+		return execTodate(input, buf)
+	case opNow:
+		return execNow(buf), nil
 	case opToStream:
 		return execFirstResult(node, input, buf)
 	case opTruncateStream:
@@ -1191,6 +1215,10 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execIsNormal(input, buf), nil
 	case opPow:
 		return execPow(node, input, buf)
+	case opHypot:
+		return execHypot(node, input, buf)
+	case opFMA:
+		return execFMA(node, input, buf)
 	case opMinus, opMul, opDiv, opMod:
 		return execArith(node, input, buf)
 	case opMin, opMinBy:
@@ -1258,15 +1286,32 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execFirstResult(node, input, buf)
 
 	case opSelect:
-		// Pass buf as scratch so condition expressions (e.g. ascii_downcase, construct)
-		// don't need to allocate their own buffer. condVal may be written into buf,
-		// but we only test truthiness and then reset buf for the actual output.
-		condVal, err := execSingle(node.child, input, buf)
-		if err != nil {
-			return nil, err
-		}
-		if isFalsy(condVal) {
-			return nil, nil // condition false — no output
+		if isSingleOutputOp(node.child) {
+			// Pass buf as scratch so condition expressions (e.g. ascii_downcase, construct)
+			// don't need to allocate their own buffer. condVal may be written into buf,
+			// but we only test truthiness and then reset buf for the actual output.
+			condVal, err := execSingle(node.child, input, buf)
+			if err != nil {
+				return nil, err
+			}
+			if isFalsy(condVal) {
+				return nil, nil // condition false — no output
+			}
+		} else {
+			foundTruthy := false
+			err := execMulti(node.child, input, nil, func(condVal []byte) error {
+				if isFalsy(condVal) {
+					return nil
+				}
+				foundTruthy = true
+				return errBreak
+			})
+			if err != nil && err != errBreak {
+				return nil, err
+			}
+			if !foundTruthy {
+				return nil, nil
+			}
 		}
 		if buf == nil {
 			return input[:len(input):len(input)], nil
@@ -2705,14 +2750,22 @@ func execOr(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 
 // execSelect evaluates a condition and emits the input if truthy, nothing if falsy.
 func execSelect(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	condVal, err := execSingle(node.child, input, buf)
-	if err != nil {
-		return err
+	if isSingleOutputOp(node.child) {
+		condVal, err := execSingle(node.child, input, nil)
+		if err != nil {
+			return err
+		}
+		if isFalsy(condVal) {
+			return nil
+		}
+		return fn(input)
 	}
-	if isFalsy(condVal) {
-		return nil // zero outputs
-	}
-	return fn(input)
+	return execMulti(node.child, input, nil, func(condVal []byte) error {
+		if isFalsy(condVal) {
+			return nil
+		}
+		return fn(input)
+	})
 }
 
 // execLength returns the length of a JSON value:
@@ -3396,6 +3449,21 @@ func execFromdate(input []byte, buf []byte) ([]byte, error) {
 		return nil, err
 	}
 	return appendJSONFloat(buf, float64(tm.Unix())), nil
+}
+
+func execTodate(input []byte, buf []byte) ([]byte, error) {
+	tm, err := decodeTimeNumber(input, time.UTC)
+	if err != nil {
+		return nil, &transparentError{err: fmt.Errorf("todate requires numeric inputs")}
+	}
+	buf = append(buf, '"')
+	buf = tm.UTC().AppendFormat(buf, time.RFC3339)
+	buf = append(buf, '"')
+	return buf, nil
+}
+
+func execNow(buf []byte) []byte {
+	return appendJSONFloat(buf, float64(time.Now().UnixNano())/1e9)
 }
 
 func decodeTimeValue(input []byte, loc *time.Location, allowNumber bool) (time.Time, error) {
@@ -4590,14 +4658,14 @@ func execKeys(input []byte, buf []byte) ([]byte, error) {
 var supportedBuiltinNames = []string{
 	"IN/1", "INDEX/2", "JOIN/2", "abs/0", "add/0", "all/0", "all/1", "any/0", "any/1",
 	"ascii_downcase/0", "ascii_upcase/0", "bsearch/1", "builtins/0", "capture/1", "ceil/0",
-	"combinations/0", "combinations/1", "contains/1", "debug/0", "delpaths/1", "endswith/1",
-	"error/0", "explode/0", "first/0", "flatten/0", "flatten/1", "floor/0", "foreach/3",
+	"combinations/0", "combinations/1", "contains/1", "date/0", "debug/0", "delpaths/1", "endswith/1",
+	"error/0", "explode/0", "first/0", "flatten/0", "flatten/1", "floor/0", "fma/3", "foreach/3",
 	"from_entries/0", "fromdate/0", "fromjson/0", "getpath/1", "gmtime/0", "group_by/1",
-	"gsub/2", "has/1", "have_decnum/0", "implode/0", "in/1", "index/1", "indices/1",
+	"gsub/2", "has/1", "have_decnum/0", "hypot/2", "implode/0", "in/1", "index/1", "indices/1",
 	"isempty/1", "join/1", "keys/0", "keys_unsorted/0", "last/0", "length/0", "limit/2",
-	"ltrim/0", "ltrimstr/1", "map/1", "map_values/1", "match/1", "max/0", "max_by/1",
+	"leaf_paths/0", "ltrim/0", "ltrimstr/1", "map/1", "map_values/1", "match/1", "max/0", "max_by/1",
 	"mktime/0", "min/0", "min_by/1", "nearbyint/0", "nth/2", "path/1", "paths/0", "paths/1",
-	"pick/1", "pow/2", "range/1", "range/2", "range/3", "reduce/3", "repeat/1", "reverse/0",
+	"now/0", "pick/1", "pow/2", "range/1", "range/2", "range/3", "reduce/3", "repeat/1", "reverse/0",
 	"recurse/0", "recurse/1", "recurse/2", "rindex/1", "round/0", "rtrim/0", "rtrimstr/1", "scan/1", "select/1", "setpath/2",
 	"skip/2", "sort/0", "sort_by/1", "split/1", "sqrt/0", "startswith/1", "strflocaltime/1",
 	"strftime/1", "strptime/1", "sub/2", "test/1", "to_entries/0", "toboolean/0", "todate/0",
@@ -7090,6 +7158,45 @@ func execPow(node *op, input []byte, buf []byte) ([]byte, error) {
 	return appendNumber(buf[:0], math.Pow(xf, yf)), nil
 }
 
+func execHypot(node *op, input []byte, buf []byte) ([]byte, error) {
+	xVal, err := execSingle(node.left, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	yVal, err := execSingle(node.right, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	xf, xok := parseJSONFloat(xVal)
+	yf, yok := parseJSONFloat(yVal)
+	if !xok || !yok {
+		return nil, fmt.Errorf("hypot inputs must be numbers")
+	}
+	return appendNumber(buf[:0], math.Hypot(xf, yf)), nil
+}
+
+func execFMA(node *op, input []byte, buf []byte) ([]byte, error) {
+	xVal, err := execSingle(node.left, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	yVal, err := execSingle(node.right, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	zVal, err := execSingle(node.child, input, nil)
+	if err != nil {
+		return nil, err
+	}
+	xf, xok := parseJSONFloat(xVal)
+	yf, yok := parseJSONFloat(yVal)
+	zf, zok := parseJSONFloat(zVal)
+	if !xok || !yok || !zok {
+		return nil, fmt.Errorf("fma inputs must be numbers")
+	}
+	return appendNumber(buf[:0], math.FMA(xf, yf, zf)), nil
+}
+
 // execStringPredicate implements startswith and endswith.
 // Returns bTrue/bFalse when buf is nil (zero-alloc in condition context).
 func execStringPredicate(input []byte, buf []byte, s string, start, end bool) []byte {
@@ -7294,7 +7401,8 @@ func isSingleOutputOp(o *op) bool {
 		opBase64, opBase64D, opAsciiDowncase, opAsciiUpcase,
 		opStartsWith, opEndsWith, opSplit, opJoin, opTrim, opLtrim, opRtrim,
 		opTrimStr, opLtrimStr, opRtrimStr, opHaveDecnum, opUTF8ByteLength,
-		opReverse, opPick, opINDEXBuiltin, opUntil, opURIEncode,
+		opReverse, opPick, opINDEXBuiltin, opUntil, opURIEncode, opTodate, opNow,
+		opHypot, opFMA,
 		opDebug:
 		return true
 	case opPipe:

@@ -125,23 +125,7 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 
 ## Supported Operations
 
-fastjq supports a large targeted subset of jq. The complete reference with examples is in [SYNTAX.md](docs/SYNTAX.md).
-
-**Quick summary by category:**
-
-- **Access:** `.`, `.foo`, `.[0]`, `.[i,j]`, `.[]`, `..`, `recurse`, `.[n:m]`, `.foo?`, `paths`, `path(expr)`, chained access
-- **Modification:** `del(.foo)`, `del(.[i,j])`, `del(.[n:m])`, `setpath(path; value)`, `delpaths(paths)`, `{name, a: .b}`, `[.a, .b]`
-- **Control flow:** `\|`, `select`, `if-elif-else`, `try-catch`, `//`, `empty`, `expr as $x | body`, destructuring `as` binds, `?//` binding alternation, `def f: body; expr`, parameterized defs, `reduce`, `foreach`, `while`, `until`, `recurse`, `walk(f)`, `label` / `break`, `"\(expr)"`
-- **Arithmetic:** `+`, `-`, `*`, `/`, `%`, `add`, `floor`, `ceil`, `round`, `nearbyint`
-- **Math:** `abs`, `sqrt`, `log`, `exp`, `sin`, `cos`, `atan`, `tgamma`, `j0`, `pow(x;y)`, and 15 more — all zero-alloc
-- **Special values:** `nan`, `infinite`, `-nan`, `-infinite`; `isnan`, `isinfinite`, `isfinite`, `isnormal`; `nan`/`infinite` output as `null` (JSON-safe)
-- **Arrays:** `map`, `map_values`, `flatten`, `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `reverse`, `combinations`, `min/max`, `min_by/max_by`, `any/all`, `first/last`, `limit`, `skip`, `repeat`, `range`, `nth`, `isempty`, `values`, `pick`, `bsearch`, `IN`, `INDEX`, `JOIN`, type filters, `index/indices`, `paths`, `path(expr)`, `getpath`, `setpath`, `delpaths`, `tostream`, `truncate_stream`, `fromstream`
-- **Strings:** `split/join`, `ascii_downcase/upcase`, `startswith/endswith`, `trim/ltrim/rtrim`, `trimstr/ltrimstr/rtrimstr`, `utf8bytelength`, `"\(expr)"` interpolation, `explode`, `implode`
-- **Format strings:** `@base64/d`, `@uri/d`, `@html`, `@csv`, `@tsv`, `@sh`, `@text`, `@json`, and `@format "...\(...)"` template forms
-- **Regex (Go RE2):** `test(re)` *(0 allocs)*, `match(re)`, `capture(re)`, `scan(re)`, `sub(re; s)`, `gsub(re; s)`
-- **Objects:** `to_entries`, `from_entries`, `with_entries`, `keys`, `keys_unsorted`, `paths`, `path(expr)`, `getpath`, `setpath`, `delpaths`, `length`, `has`, `in`, `contains`, `inside`, `map_values`
-- **Date/time:** `strftime`, `strflocaltime`, `strptime`, `mktime`, `gmtime`, `fromdate`
-- **Type:** `type`, `tojson/fromjson`, `tostring/tonumber/toboolean`, `have_decnum`, `debug`, `error`, `builtins`, `$__loc__`
+fastjq supports most of jq's library-oriented surface and passes all attempted tests in the upstream five-file library harness below. See [SYNTAX.md](docs/SYNTAX.md) for the complete operation list, examples, allocation notes, and the remaining deferred features.
 
 ## Official jq test suite coverage
 
@@ -156,7 +140,7 @@ fastjq is validated against five upstream jq library-focused test files (`go tes
 | [`tests/uri.test`](https://github.com/jqlang/jq/blob/master/tests/uri.test) | 20 | 0 | 20 | **20 (100.0%)** | 0 |
 | **Combined** | **783** | **32** | **751** | **751 (100.0%)** | **0** |
 
-All currently attempted official jq tests pass on this branch across the expanded five-file harness. Recent parity work removed compile skips around destructuring `as` binds, `?//` binding alternation, user-defined functions (`def`), `@format "template"` strings, `map_values`, `with_entries`, `label` / `break`, unary minus, postfix optional `expr?`, quoted field access (`."foo"`), `while` / `until`, `recurse`, `walk(f)`, dynamic slice bounds, grouped/dynamic `del(...)` paths, `paths`, `path(...)`, `getpath(...)`, `setpath(...)`, `delpaths(...)`, `reduce`, `foreach`, dedicated recursive descent (`..`), richer object construction, date/time builtins (`strftime`, `strflocaltime`, `strptime`, `mktime`, `gmtime`, `fromdate`), stricter `@base64d` / `@urid` decoding parity, `pick`, `bsearch`, `IN`, `INDEX`, `JOIN`, `combinations`, jq-style multi-index array access/deletion (`.[4,2]`, `del(.[1,2])`), `//=` updates, grouped assignment, root slice assignment, `repeat`, stream reconstruction helpers (`tostream`, `truncate_stream`, `fromstream`), `builtins`, `$__loc__`, and identity-before-operator forms like `.-.`. The remaining skipped tests are now concentrated in full decimal semantics (`have_decnum`), module/import helpers, and host-boundary helpers we are still intentionally deferring.
+All 751 attempted cases pass. The remaining 32 skips are limited to full decimal semantics (`have_decnum`), module/import helpers, and host-boundary helpers like `input`, `env`, and `stderr`.
 
 ## Limitations
 
@@ -165,9 +149,9 @@ Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are 
 
 **`nan`/`infinite` are supported but serialize to `null` at output.** `nan | type` = `"number"`, `nan | isnan` = `true`, `infinite * -1 < 0` = `true`. `nan` and `infinite` values convert to JSON `null` at the API boundary. Values inside arrays/objects are also normalized to `null`.
 
-**Still intentionally deferred:** module/import syntax and `modulemeta` (they need filesystem-backed resolution and module-loading semantics that break the current pure library boundary); host-boundary helpers such as `input`, `inputs`, `env`, `$ENV`, and `stderr` (they depend on process state or stdin rather than pure input bytes); full decimal-mode semantics behind `have_decnum` (they need a different numeric runtime than the current float-based executor); and a small builtin tail that has little impact on library-heavy jq coverage such as `leaf_paths`, `hypot(x;y)`, `fma(x;y;z)`, `date`, `now`, and `todate`.
+**Still intentionally deferred:** module/import syntax and `modulemeta` (they need filesystem-backed resolution and module-loading semantics that break the current pure library boundary); host-boundary helpers such as `input`, `inputs`, `env`, `$ENV`, and `stderr` (they depend on process state or stdin rather than pure input bytes); and full decimal-mode semantics behind `have_decnum` (they need a different numeric runtime than the current float-based executor).
 
-**Known behavior gap:** `select(cond)` still evaluates `cond` via the single-result fast path, so generator conditions use only their first output. The official jq files we run do not depend on multi-output `select` conditions, but this is still not full jq semantics.
+**Compatibility aliases:** fastjq accepts historical jq names `leaf_paths` and `date` for parity convenience. Current jq 1.8.1 does not expose those names directly; `leaf_paths` maps to `paths(scalars)` semantics and `date` maps to `todate`.
 
 See [SYNTAX.md](docs/SYNTAX.md) for the full allocation-tiered roadmap.
 

@@ -3,6 +3,7 @@ package fastjq
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // assertQuery compiles query, runs it against input, and checks the result equals want.
@@ -333,6 +334,12 @@ func TestReflectionBuiltins(t *testing.T) {
 	assertQuery(t, `"-1"|IN(builtins[] / "/"|.[1])`, `null`, `false`)
 	assertQuery(t, `all(builtins[] / "/"; .[1]|tonumber >= 0)`, `null`, `true`)
 	assertQuery(t, `builtins|any(.[:1] == "_")`, `null`, `false`)
+	assertQuery(t, `builtins | index("leaf_paths/0") != null`, `null`, `true`)
+	assertQuery(t, `builtins | index("hypot/2") != null`, `null`, `true`)
+	assertQuery(t, `builtins | index("fma/3") != null`, `null`, `true`)
+	assertQuery(t, `builtins | index("date/0") != null`, `null`, `true`)
+	assertQuery(t, `builtins | index("now/0") != null`, `null`, `true`)
+	assertQuery(t, `builtins | index("todate/0") != null`, `null`, `true`)
 	assertQuery(t, `try error("\($__loc__)") catch .`, `null`, `"{\"file\":\"<top-level>\",\"line\":1}"`)
 	assertQuery(t, `{ a, $__loc__, c }`, `{"a":[1,2,3],"b":"foo","c":{"hi":"hey"}}`,
 		`{"a":[1,2,3],"__loc__":{"file":"<top-level>","line":1},"c":{"hi":"hey"}}`)
@@ -416,6 +423,10 @@ func TestPathsBuiltinFilter(t *testing.T) {
 			t.Fatalf("result %d: got %s, want %s", i, got[i], want[i])
 		}
 	}
+}
+
+func TestLeafPathsCompatAlias(t *testing.T) {
+	assertQuery(t, `[leaf_paths]`, `{"a":[1,{"b":2}],"c":null}`, `[["a",0],["a",1,"b"]]`)
 }
 
 func TestPathBuiltin(t *testing.T) {
@@ -1500,6 +1511,17 @@ func TestSelectIteratorFilter(t *testing.T) {
 	if string(results[1]) != `{"name":"carol","active":true}` {
 		t.Errorf("result[1] = %s", results[1])
 	}
+}
+
+func TestSelectGeneratorConditionUsesAllOutputs(t *testing.T) {
+	assertQueryAll(t, `select((1,0))`, `42`, `42`, `42`)
+	assertQueryAll(t, `select((1,2,3))`, `42`, `42`, `42`, `42`)
+}
+
+func TestSelectGeneratorConditionSkipsFalsyOutputs(t *testing.T) {
+	assertQueryAll(t, `select((false,true))`, `42`, `42`)
+	assertQueryAll(t, `select((empty,true))`, `42`, `42`)
+	assertNoOutput(t, `select((false,null))`, `42`)
 }
 
 func TestSelectIteratorConstruct(t *testing.T) {
@@ -3265,6 +3287,33 @@ func TestStrftimeSpacePaddedDay(t *testing.T) {
 	assertQuery(t, `strftime("%A, %B %e, %Y")`, `1435677542.822351`, `"Tuesday, June 30, 2015"`)
 }
 
+func TestTodateAndDateAlias(t *testing.T) {
+	assertQuery(t, `todate`, `0`, `"1970-01-01T00:00:00Z"`)
+	assertQuery(t, `date`, `1435677542.822351`, `"2015-06-30T15:19:02Z"`)
+	assertQuery(t, `fromdate | todate`, `"2015-06-30T15:19:02Z"`, `"2015-06-30T15:19:02Z"`)
+}
+
+func TestNowBuiltin(t *testing.T) {
+	p, err := Compile(`now`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().Unix()
+	got, err := p.Run([]byte(`null`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().Unix()
+	f, ok := parseJSONFloat(got)
+	if !ok {
+		t.Fatalf("now output is not numeric: %s", got)
+	}
+	sec := int64(f)
+	if sec < before-1 || sec > after+1 {
+		t.Fatalf("now=%s outside expected range [%d,%d]", got, before-1, after+1)
+	}
+}
+
 func TestFloatGroupedIndices(t *testing.T) {
 	assertQuery(t, `[[range(10)] | .[1.1,1.5,1.7]]`, `null`, `[1,1,1]`)
 }
@@ -4658,6 +4707,16 @@ func TestMathExp2(t *testing.T) {
 func TestMathExp10(t *testing.T) {
 	assertQuery(t, `exp10`, `0`, `1`)
 	assertQuery(t, `exp10`, `3`, `1000`)
+}
+
+func TestMathHypot(t *testing.T) {
+	assertQuery(t, `hypot(3; 4)`, `null`, `5`)
+	assertQuery(t, `hypot(5; 12)`, `null`, `13`)
+}
+
+func TestMathFMA(t *testing.T) {
+	assertQuery(t, `fma(2; 3; 4)`, `null`, `10`)
+	assertQuery(t, `fma(1.5; 2; -1)`, `null`, `2`)
 }
 
 func TestMathCbrt(t *testing.T) {

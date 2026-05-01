@@ -76,6 +76,8 @@ const (
 	opMktime                         // mktime
 	opGmtime                         // gmtime
 	opFromdate                       // fromdate
+	opTodate                         // todate / date (compat alias)
+	opNow                            // now
 	opToStream                       // tostream
 	opTruncateStream                 // truncate_stream(stream)
 	opFromStream                     // fromstream(stream)
@@ -139,8 +141,8 @@ const (
 	opShEncode                       // @sh
 	opURIDecode                      // @urid
 	// 1-arg floating-point math builtins — all zero-alloc, all take number input.
-	// 2-arg forms (pow, hypot, atan2, fma) and nan/infinite constants are rejected;
-	// see docs/SYNTAX.md "Rejected" section for rationale.
+	// Remaining deferred higher-arity numeric builtins such as atan(y; x) are still
+	// documented in docs/SYNTAX.md. pow/hypot/fma are now implemented.
 	opMathSqrt       // sqrt
 	opMathFabs       // fabs  (absolute value of number; distinct from length)
 	opMathAtan       // atan  (1-arg: atan(x); 2-arg atan(y;x) not supported)
@@ -191,6 +193,8 @@ const (
 	opIsFinite   // isfinite — true if finite and not NaN
 	opIsNormal   // isnormal — true if non-zero, finite, not subnormal
 	opPow        // pow(x; y) — left=x, right=y
+	opHypot      // hypot(x; y) — left=x, right=y
+	opFMA        // fma(x; y; z) — left=x, right=y, child=z
 )
 
 // cmpOperator is the comparison operator used in opCompare nodes.
@@ -959,6 +963,21 @@ func parseAtom(s string) (*op, string, error) {
 		}
 		return applyPostfixPipe(node, rest)
 	}
+	if strings.HasPrefix(s, "leaf_paths") && (len(s) == 10 || !isIdentChar(s[10])) {
+		mkTypeNeq := func(t string) *op {
+			return &op{
+				typ:  opCompare,
+				left: &op{typ: opTypeBuiltin},
+				right: &op{
+					typ:     opLiteral,
+					literal: []byte(`"` + t + `"`),
+				},
+				cmpOp: cmpNeq,
+			}
+		}
+		cond := &op{typ: opAnd, left: mkTypeNeq("array"), right: mkTypeNeq("object")}
+		return &op{typ: opPaths, child: &op{typ: opSelect, child: cond}}, s[10:], nil
+	}
 	if strings.HasPrefix(s, "paths") && (len(s) == 5 || !isIdentChar(s[5])) {
 		rest := strings.TrimSpace(s[5:])
 		if len(rest) == 0 || rest[0] != '(' {
@@ -1327,6 +1346,15 @@ func parseAtom(s string) (*op, string, error) {
 	if strings.HasPrefix(s, "fromdate") && (len(s) == 8 || !isIdentChar(s[8])) {
 		return &op{typ: opFromdate}, s[8:], nil
 	}
+	if strings.HasPrefix(s, "todate") && (len(s) == 6 || !isIdentChar(s[6])) {
+		return &op{typ: opTodate}, s[6:], nil
+	}
+	if strings.HasPrefix(s, "date") && (len(s) == 4 || !isIdentChar(s[4])) {
+		return &op{typ: opTodate}, s[4:], nil
+	}
+	if strings.HasPrefix(s, "now") && (len(s) == 3 || !isIdentChar(s[3])) {
+		return &op{typ: opNow}, s[3:], nil
+	}
 
 	// ascii_downcase / ascii_upcase
 	if strings.HasPrefix(s, "ascii_downcase") && (len(s) == 14 || !isIdentChar(s[14])) {
@@ -1596,9 +1624,55 @@ func parseAtom(s string) (*op, string, error) {
 		return collapseGeneratorNodes(nths), rest[1:], nil
 	}
 
+	if strings.HasPrefix(s, "hypot(") {
+		xExpr, rest, err := parsePipeExpr(s[6:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected ';' in hypot(x; y)")
+		}
+		yExpr, rest, err := parsePipeExpr(strings.TrimSpace(rest[1:]))
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after hypot(x; y)")
+		}
+		return &op{typ: opHypot, left: xExpr, right: yExpr}, rest[1:], nil
+	}
+	if strings.HasPrefix(s, "fma(") {
+		xExpr, rest, err := parsePipeExpr(s[4:])
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected ';' in fma(x; y; z)")
+		}
+		yExpr, rest, err := parsePipeExpr(strings.TrimSpace(rest[1:]))
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ';' {
+			return nil, rest, fmt.Errorf("expected second ';' in fma(x; y; z)")
+		}
+		zExpr, rest, err := parsePipeExpr(strings.TrimSpace(rest[1:]))
+		if err != nil {
+			return nil, rest, err
+		}
+		rest = strings.TrimSpace(rest)
+		if len(rest) == 0 || rest[0] != ')' {
+			return nil, rest, fmt.Errorf("expected ')' after fma(x; y; z)")
+		}
+		return &op{typ: opFMA, left: xExpr, right: yExpr, child: zExpr}, rest[1:], nil
+	}
+
 	// 1-arg floating-point math builtins (all take the input number, return a number).
-	// 2-arg forms (pow, hypot, atan2, fma) and nan/infinite constants are NOT supported;
-	// see docs/SYNTAX.md for the full rejection rationale.
+	// Unsupported higher-arity forms remain limited to the still-deferred tail such as atan(y; x).
 	if strings.HasPrefix(s, "sqrt") && (len(s) == 4 || !isIdentChar(s[4])) {
 		return &op{typ: opMathSqrt}, s[4:], nil
 	}

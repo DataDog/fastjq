@@ -282,6 +282,9 @@ func BenchmarkFastjq_Small_Keys(b *testing.B) {
 func BenchmarkFastjq_Small_Paths(b *testing.B) {
 	benchFastjqFunc(b, `paths`, smallJSON)
 }
+func BenchmarkFastjq_Small_LeafPaths(b *testing.B) {
+	benchFastjqFunc(b, `leaf_paths`, smallJSON)
+}
 func BenchmarkFastjq_Small_RecursiveDescent(b *testing.B) {
 	benchFastjqFunc(b, `..`, smallJSON)
 }
@@ -302,6 +305,15 @@ func BenchmarkFastjq_Small_SetPath(b *testing.B) {
 }
 func BenchmarkFastjq_Small_DelPaths(b *testing.B) {
 	benchFastjqObj(b, `delpaths([["field_0"]])`, smallJSON)
+}
+func BenchmarkFastjq_Small_Todate(b *testing.B) {
+	benchFastjqObj(b, `todate`, []byte(`1435677542.822351`))
+}
+func BenchmarkFastjq_Small_Date(b *testing.B) {
+	benchFastjqObj(b, `date`, []byte(`1435677542.822351`))
+}
+func BenchmarkFastjq_Small_Now(b *testing.B) {
+	benchFastjqObj(b, `now`, []byte(`null`))
 }
 func BenchmarkFastjq_Large_KeysUnsorted(b *testing.B) {
 	benchFastjqObj(b, `keys_unsorted`, largeJSON)
@@ -546,6 +558,9 @@ func BenchmarkGojq_Small_Keys(b *testing.B) {
 func BenchmarkGojq_Small_Paths(b *testing.B) {
 	benchGojqIter(b, `paths`, smallJSON)
 }
+func BenchmarkGojq_Small_LeafPaths(b *testing.B) {
+	benchGojqIter(b, `paths(scalars)`, smallJSON)
+}
 func BenchmarkGojq_Small_RecursiveDescent(b *testing.B) {
 	benchGojqIter(b, `..`, smallJSON)
 }
@@ -566,6 +581,15 @@ func BenchmarkGojq_Small_SetPath(b *testing.B) {
 }
 func BenchmarkGojq_Small_DelPaths(b *testing.B) {
 	benchGojqObj(b, `delpaths([["field_0"]])`, smallJSON)
+}
+func BenchmarkGojq_Small_Todate(b *testing.B) {
+	benchGojqObj(b, `todate`, []byte(`1435677542.822351`))
+}
+func BenchmarkGojq_Small_Date(b *testing.B) {
+	benchGojqObj(b, `todate`, []byte(`1435677542.822351`))
+}
+func BenchmarkGojq_Small_Now(b *testing.B) {
+	benchGojqObj(b, `now`, []byte(`null`))
 }
 func BenchmarkGojq_Large_KeysUnsorted(b *testing.B) {
 	benchGojqLargeRot(b, `keys`) // gojq: keys_unsorted not supported
@@ -966,6 +990,10 @@ func BenchmarkGojq_Small_Exp(b *testing.B)   { benchGojqObj(b, `exp`, []byte(`1`
 
 func BenchmarkFastjq_Small_Tgamma(b *testing.B) { benchFastjqObj(b, `tgamma`, []byte(`5`)) }
 func BenchmarkGojq_Small_Tgamma(b *testing.B)   { benchGojqObj(b, `tgamma`, []byte(`5`)) }
+func BenchmarkFastjq_Small_Hypot(b *testing.B)  { benchFastjqObj(b, `hypot(3;4)`, []byte(`null`)) }
+func BenchmarkGojq_Small_Hypot(b *testing.B)    { benchGojqObj(b, `hypot(3;4)`, []byte(`null`)) }
+func BenchmarkFastjq_Small_FMA(b *testing.B)    { benchFastjqObj(b, `fma(2;3;4)`, []byte(`null`)) }
+func BenchmarkGojq_Small_FMA(b *testing.B)      { benchGojqObj(b, `fma(2;3;4)`, []byte(`null`)) }
 
 func BenchmarkFastjq_Small_Fabs(b *testing.B) { benchFastjqObj(b, `fabs`, []byte(`-3.14`)) }
 func BenchmarkGojq_Small_Fabs(b *testing.B)   { benchGojqObj(b, `fabs`, []byte(`-3.14`)) }

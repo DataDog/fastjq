@@ -24,17 +24,20 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 - Added jq-compatible `path(expr)` for symbolic path extraction across direct field, index, dynamic-index, iterator, `select`, and pipe compositions.
 - Added jq-compatible `getpath(path)` with variadic path-output support and `$var` path arguments.
 - Added jq-compatible `setpath(path; value)` and `delpaths(paths)` for direct path-array updates.
+- Added generator-correct `select(cond)` semantics so every truthy output of `cond` emits the original input, matching jq for filters like `select((1,0))` and `select((false,true))`.
+- Added jq-compatible `hypot(x; y)`, `fma(x; y; z)`, `todate`, and `now`.
+- Added compatibility aliases `leaf_paths` → `paths(scalars)` and `date` → `todate`, and exposed them through `builtins`.
 - Added jq-compatible `@format "...\(...)"` template support for the existing string-producing formatters, including the official `@html "<b>\(.)</b>"` and `@sh "echo \(.)"` forms.
 - Added jq-compatible user-defined functions with lexical scoping: `def f: body; expr`, parameterized defs, filter params, value params (`$x`), nested defs, and self-recursion.
 - Added benchmark coverage for the new public surface: variable binding, `abs`, `toboolean`, `trim`, `ltrim`, `rtrim`, `keys`, `skip`, `reduce`, `foreach`, `paths`, `path`, `getpath`, `setpath`, and `delpaths`.
-- Added benchmark entries for user-defined function dispatch (`def inc: . + 1; inc`) without regenerating the full benchmark report yet on this branch.
+- Added benchmark entries for user-defined function dispatch (`def inc: . + 1; inc`) before the next full benchmark regeneration.
 - Added jq-style unary negation (`-expr`) for non-literal expressions such as `-$x`.
 - Added numeric-expression slice bounds and chained slice parsing, including forms like `.[1.2:3.5]`, `.[:rindex("x")]`, and `.[3:3][1:]`.
 - Added benchmark coverage for `@format "...\(...)"` template execution.
 
 ### Fixed
 
-- Moved the official jq-suite branch coverage from `356/751` passing to `751/783` passing while keeping `0` active jq-suite failures.
+- Moved official jq-suite coverage from `356/751` passing to `751/783` passing while keeping `0` active jq-suite failures.
 - Fixed `strftime("%e")` day-of-month formatting to match jq's upstream optional suite coverage.
 - Fixed `@base64d` invalid-input handling so whitespace and trailing-base64-byte cases now raise jq-compatible catchable errors instead of partially decoding garbage.
 - Fixed `@urid` decoding to honor JSON string escapes before percent-decoding and to reject incomplete, non-hex, and invalid UTF-8 percent sequences with jq-compatible errors.
@@ -57,6 +60,8 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 - Fixed jq-style subtraction diagnostics for non-numeric values, including typed/truncated messages like `string ("very-long-...) and string ("very-long-...) cannot be subtracted`.
 - Fixed parser breadth for template-format strings so previously skipped official-suite cases now run and pass.
 - Fixed parser breadth for `map_values(...)` and `with_entries(...)`, removing another small batch of compile skips without introducing general update-syntax support yet.
+- Fixed the remaining `select(cond)` semantic gap in both streaming and first-result execution paths by evaluating generator conditions through the multi-output executor instead of the single-result fast path.
+- Fixed `todate` / `date` formatting to stay 0-alloc by appending RFC3339 output directly into the caller buffer instead of allocating an intermediate Go string.
 - Fixed the remaining non-module parser-tail assignment cases, including `//=` updates and grouped/bound lhs assignment such as `(.a as $x | .b) = "b"`.
 - Fixed labeled control-flow unwinding so `break $label` now exits the correct surrounding `label` through iterators, `foreach`, array construction, and `try` boundaries.
 - Fixed user-call continuation scoping so downstream pipeline stages resume in the caller's lexical function environment instead of leaking the callee's captured scope.
@@ -66,51 +71,20 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 - Bound values are copied into runtime environment frames so later pipeline stages can safely reference constructed values as well as input sub-slices.
 - `reduce` currently targets the high-yield jq form `reduce gen as $x (init; update)` and reuses the existing lexical binding frames rather than introducing a broader mutable-control runtime yet.
-- `paths` prioritizes jq-suite parity over the usual hot-path allocation target on this branch. The current structural walker allocates on its call path (`17 allocs/op` on the small benchmark) but still stays far below gojq for the same query.
-- `..` is implemented as a parity-first structural generator on this branch rather than waiting for a full generic-recursion executor redesign. The focused benchmark currently lands at `224.5 ns/op`, `7 allocs/op` in fastjq versus `2995 ns/op`, `90 allocs/op` in gojq on the same small traversal.
+- `paths` prioritizes jq-suite parity over the usual hot-path allocation target. The current structural walker allocates on its call path (`17 allocs/op` on the small benchmark) but still stays far below gojq for the same query.
+- `..` is implemented as a parity-first structural generator rather than waiting for a full generic-recursion executor redesign. The focused benchmark currently lands at `224.5 ns/op`, `7 allocs/op` in fastjq versus `2995 ns/op`, `90 allocs/op` in gojq on the same small traversal.
 - `recurse` and `walk` follow the same parity-first posture as `..`: the focused benchmarks currently land at `100.7 ns/op`, `5 allocs/op` for `recurse` and `217.6 ns/op`, `12 allocs/op` for `walk(.)`, still far below gojq on the same queries.
-- `path(expr)` follows the same parity-first posture as the other path-family work on this branch: correctness against the official suite takes precedence over the usual hot-path allocation target.
+- `path(expr)` follows the same parity-first posture as the other path-family work: correctness against the official suite takes precedence over the usual hot-path allocation target.
+- `leaf_paths` inherits the same parity-first allocation profile as `paths` because it is implemented as a compatibility alias over the same structural path walker.
 - `@format "...\(...)"` template execution inherits the allocation profile of the underlying formatter (`@html`, `@uri`, `@sh`, etc.) because each interpolation is decoded and re-encoded independently.
-- `with_entries(f)` is implemented as parity-first parser sugar over `to_entries | map(f) | from_entries` on this branch, even though the project previously rejected it as a first-class primitive under the stricter allocation posture.
-- User-defined functions on this branch are implemented with lexical runtime function scopes and copied result emission rather than macro expansion. That keeps jq scoping semantics correct, especially for filter params and nested defs, at the cost of parity-first runtime allocations on the call path.
+- `with_entries(f)` is implemented as parity-first parser sugar over `to_entries | map(f) | from_entries`, even though the project previously rejected it as a first-class primitive under the stricter allocation posture.
+- User-defined functions are implemented with lexical runtime function scopes and copied result emission rather than macro expansion. That keeps jq scoping semantics correct, especially for filter params and nested defs, at the cost of parity-first runtime allocations on the call path.
 
 ### Benchmark results
 
 - Regenerated the full benchmark suite and refreshed `docs/BENCHMARKS.md`, including the CLI throughput section from `bench_vs_jq.sh`.
 - Large-object `.field` now benchmarks at `7.50 µs` for fastjq versus `587 µs` for gojq (`78x`), and large-object `select(.f == "x")` at `32.9 µs` versus `786 µs` (`24x`).
 - Validation-on CLI throughput now lands in the `2.1x–11.4x` faster range versus jq 1.8.1 across the tracked JSONL slice.
-
-## [Unreleased] — codex/jq-parity suite tracking
-
-### Added
-
-- Added a branch-level jq parity tracking note for `codex/jq-parity`.
-- Recorded the branch baseline before Wave 1: `751` total tests, `395` skipped, `356` attempted, `348` passed, `8` failed.
-- Recorded the intended rollout waves for this branch:
-  - Wave 0: suite tracking and regression coverage
-  - Wave 1: active parity failures and parser/runtime fixes
-  - Wave 2: shared execution context, variables, defs, path ops, and control flow
-  - Wave 3: update/index semantics and high-yield builtin coverage
-  - Wave 4: remaining low-yield parity tail needed to stay above the majority target
-
-### Fixed
-
-- Added regression coverage for the current jq-suite-only mismatches so later runtime/parser work can close them without losing visibility.
-- Fixed all `8` active official jq-suite failures from the branch baseline.
-- Fixed jq-style array/generator precedence for array construction contexts such as `[a, b | f]`.
-- Fixed jq-compatible string canonicalization for emitted string values in the parity cases covered by the official suite.
-- Fixed jq-style field/index error messages for the current attempted suite.
-- Fixed `try ... catch ...` scoping so downstream pipeline errors are no longer caught by an inner `try`.
-
-### Tradeoffs
-
-- This entry is intentionally a coordination checkpoint for a shared topic branch, not a feature release note.
-- Wave 1 brings the official jq suite to `356/356` passing for attempted tests, but it does not reduce the `395` skipped tests yet.
-- The dominant skip families still driving the branch are variables/bindings, stateful control (`reduce`/`foreach`/`label`/`break`), path operations, user-defined functions, and a larger compile-skip tail from parser breadth gaps.
-
-### Benchmark results
-
-- Benchmarks were regenerated after the Wave 1 runtime/parser changes; see `docs/BENCHMARKS.md` for the current numbers.
 
 ## [Unreleased] — Restore 0 allocs/op for all Tier 0 operations
 
