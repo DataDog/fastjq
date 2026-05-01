@@ -1,6 +1,8 @@
 # fastjq
 
-A fast jq engine for Go with a principled allocation model, designed for high-throughput structured log processing.
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
+A fast jq engine for Go with a principled allocation model, designed for high-throughput structured log processing. Maintained by Datadog.
 
 fastjq operates directly on raw `[]byte` — no `json.Unmarshal`, no `map[string]interface{}`, no marshal/unmarshal cycle. It compiles a query once and executes it against JSON bytes by scanning byte positions, copying only what it needs into an output buffer.
 
@@ -88,7 +90,7 @@ cat app.log | ./fastjq 'del(.password, .token)'
 ## Install
 
 ```bash
-go get github.com/brianfloersch/fastjq
+go get github.com/DataDog/fastjq
 ```
 
 ## Usage
@@ -163,3 +165,14 @@ See [SYNTAX.md](docs/SYNTAX.md) for the full allocation-tiered roadmap.
 - [DESIGN.md](docs/DESIGN.md) — Architecture details and key design decisions
 - [CONSTRAINTS.md](docs/CONSTRAINTS.md) — Performance and scope constraints
 - [CHANGELOG.md](CHANGELOG.md) — Change history with tradeoffs and benchmark notes
+
+## License
+
+fastjq is licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE)
+for attribution and [LICENSE-3rdparty.csv](LICENSE-3rdparty.csv) for the
+inventory of third-party components used by the benchmark comparison module.
+
+## Contributing
+
+Contributions are welcome — please read [CONTRIBUTING.md](CONTRIBUTING.md) and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before opening a pull request.
