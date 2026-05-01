@@ -192,13 +192,16 @@ contexts, `execSingle` short-circuits on the first truthy condition output.
 index, compare, type) without creating closures, avoiding heap allocations in
 hot paths like `select(.field == "value")`.
 
-### 11. Runtime Context for Variable Binding
+### 11. Runtime Execution State
 
-Variable bindings use an internal `execContext` stack keyed by goroutine. Each
+Query execution carries an explicit `execState` through the evaluator. That
+state holds the current lexical `execContext`, `try` and optional depth, and
+the chained index scope used by dynamic index and slice expressions. Each
 `expr as $x | body` evaluation copies the bound JSON bytes into a linked-list
 environment frame, then runs `body` against the original input with `$x`
-available to nested pipeline stages. This keeps lexical scoping simple without
-changing the public API.
+available to nested pipeline stages. This keeps lexical scoping and control-flow
+state local to a single run while preserving safe concurrent reuse of a compiled
+`Program`.
 
 ### 12. Multi-Output Arithmetic Operands
 

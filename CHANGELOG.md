@@ -4,6 +4,24 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — explicit per-run execution state
+
+### Fixed
+
+- Replaced the executor's goroutine-keyed runtime maps with an explicit `execState` that is passed through nested evaluation helpers, including lexical binding, `try`/optional handling, path traversal, dynamic indices, and update operations.
+
+### Benchmark results
+
+- `try .field` (no error) drops from `5.04 µs` and `1 alloc/op` to `0.106 µs` and `0 allocs/op`.
+- `.[1:4]` drops from `4.80 µs` and `1 alloc/op` to `0.083 µs` and `0 allocs/op`.
+- `reduce .[] as $x (0; . + $x)` drops from `105 µs` to `0.911 µs`.
+- `foreach .[] as $x (0; . + $x)` drops from `87.7 µs` to `1.13 µs`.
+- No benchmark regression stands out beyond normal run-to-run noise in the regenerated tables.
+
+### Tradeoffs
+
+- The public API and jq-compat behavior stay the same, but more executor helpers now accept runtime state directly instead of reaching into package-global storage. This makes concurrent execution easier to reason about and removes the internal mutex-protected "magic global" execution context.
+
 ## [Unreleased] — split benchmark comparison deps from the core module
 
 ### Added

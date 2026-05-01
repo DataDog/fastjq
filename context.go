@@ -2,7 +2,6 @@ package fastjq
 
 import (
 	"strconv"
-	"sync"
 )
 
 // execContext threads runtime state (variables, function table, label
@@ -112,37 +111,64 @@ func (e *errBreakLabel) Error() string {
 	return "break $" + e.label
 }
 
-var (
-	execCtxMu    sync.Mutex
-	execCtxByGID = make(map[uint64][]*execContext)
-)
-
-func currentExecContext() *execContext {
-	gid := currentGID()
-	execCtxMu.Lock()
-	stack := execCtxByGID[gid]
-	var ctx *execContext
-	if len(stack) > 0 {
-		ctx = stack[len(stack)-1]
-	}
-	execCtxMu.Unlock()
-	return ctx
+type indexScopeFrame struct {
+	value  []byte
+	parent *indexScopeFrame
 }
 
-func withExecContext(ctx *execContext, fn func() error) error {
-	gid := currentGID()
-	execCtxMu.Lock()
-	execCtxByGID[gid] = append(execCtxByGID[gid], ctx)
-	execCtxMu.Unlock()
-	defer func() {
-		execCtxMu.Lock()
-		stack := execCtxByGID[gid]
-		if len(stack) <= 1 {
-			delete(execCtxByGID, gid)
-		} else {
-			execCtxByGID[gid] = stack[:len(stack)-1]
-		}
-		execCtxMu.Unlock()
-	}()
-	return fn()
+// execState holds per-execution dynamic state that used to live in package
+// globals keyed by goroutine id. It is threaded explicitly through the
+// executor so concurrent Program.Run calls stay isolated without mutexes.
+type execState struct {
+	ctx           *execContext
+	tryDepth      int
+	optionalDepth int
+	indexScope    *indexScopeFrame
+}
+
+func (st execState) currentExecContext() *execContext {
+	return st.ctx
+}
+
+func (st execState) withExecContext(ctx *execContext, fn func(execState) error) error {
+	st.ctx = ctx
+	return fn(st)
+}
+
+func (st execState) tryScopeActive() bool {
+	return st.tryDepth > 0
+}
+
+func (st execState) withTryScope(fn func(execState) error) error {
+	st.tryDepth++
+	return fn(st)
+}
+
+func (st execState) optionalScopeActive() bool {
+	return st.optionalDepth > 0
+}
+
+func (st execState) withOptionalScope(fn func(execState) error) error {
+	st.optionalDepth++
+	return fn(st)
+}
+
+func (st execState) currentIndexScope() []byte {
+	if st.indexScope == nil {
+		return nil
+	}
+	return st.indexScope.value
+}
+
+func (st execState) chainedIndexScope(input []byte) []byte {
+	if scope := st.currentIndexScope(); scope != nil {
+		return scope
+	}
+	return input
+}
+
+func (st execState) withIndexScope(scope []byte, fn func(execState) error) error {
+	frame := indexScopeFrame{value: scope, parent: st.indexScope}
+	st.indexScope = &frame
+	return fn(st)
 }

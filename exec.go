@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -68,15 +66,6 @@ var bTrue = []byte("true")
 var bFalse = []byte("false")
 var bNull = []byte("null")
 
-var (
-	tryScopeMu         sync.Mutex
-	tryScopeByGID      = make(map[uint64]int)
-	optionalScopeMu    sync.Mutex
-	optionalScopeByGID = make(map[uint64]int)
-	indexScopeMu       sync.Mutex
-	indexScopeByGID    = make(map[uint64][][]byte)
-)
-
 func isControlFlowError(err error) bool {
 	if err == errBreak {
 		return true
@@ -88,7 +77,7 @@ func isControlFlowError(err error) bool {
 // execMulti executes an op against input, calling fn for each result.
 // Single-output ops call fn once. Iterators call fn per element.
 // buf is used as scratch space and may be reused across fn calls.
-func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execMulti(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	switch node.typ {
 	case opIdentity:
 		result, err := execIdentity(input, buf)
@@ -97,33 +86,33 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(result)
 	case opField:
-		return execFieldMulti(node, input, buf, fn)
+		return execFieldMulti(state, node, input, buf, fn)
 	case opDelete:
-		result, err := execDelete(node, input, buf)
+		result, err := execDelete(state, node, input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opPipe:
-		return execPipeMulti(node, input, buf, fn)
+		return execPipeMulti(state, node, input, buf, fn)
 	case opApply:
-		return execApplyMulti(node, input, buf, fn)
+		return execApplyMulti(state, node, input, buf, fn)
 	case opBind:
-		baseCtx := currentExecContext()
-		return execMulti(node.left, input, nil, func(bound []byte) error {
+		baseCtx := state.currentExecContext()
+		return execMulti(state, node.left, input, nil, func(bound []byte) error {
 			if node.pattern != nil && len(node.altPatterns) > 0 {
-				return execBindAlternatives(baseCtx, node, input, bound, fn)
+				return execBindAlternatives(state, baseCtx, node, input, bound, fn)
 			}
 			nextCtx, err := bindOpValue(baseCtx, node, bound)
 			if err != nil {
 				return err
 			}
-			return withExecContext(nextCtx, func() error {
-				return execMulti(node.right, input, buf, fn)
+			return state.withExecContext(nextCtx, func(state execState) error {
+				return execMulti(state, node.right, input, buf, fn)
 			})
 		})
 	case opLabel:
-		err := execMulti(node.child, input, buf, fn)
+		err := execMulti(state, node.child, input, buf, fn)
 		var bs *breakSignal
 		if errors.As(err, &bs) && bs.label == node.name {
 			return nil
@@ -135,48 +124,48 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		if node.name == "__loc__" {
 			value := []byte(`{"file":"<top-level>","line":1}`)
 			if node.child != nil {
-				return execMulti(node.child, value, buf, fn)
+				return execMulti(state, node.child, value, buf, fn)
 			}
 			if buf == nil {
 				return fn(value[:len(value):len(value)])
 			}
 			return fn(append(buf, value...))
 		}
-		ctx := currentExecContext()
+		ctx := state.currentExecContext()
 		value, ok := ctx.lookupVar(node.name)
 		if !ok {
 			return fmt.Errorf("$%s is not defined", node.name)
 		}
 		if node.child != nil {
-			return execMulti(node.child, value, buf, fn)
+			return execMulti(state, node.child, value, buf, fn)
 		}
 		if buf == nil {
 			return fn(value[:len(value):len(value)])
 		}
 		return fn(append(buf, value...))
 	case opIndex:
-		return execIndexMulti(node, input, buf, fn)
+		return execIndexMulti(state, node, input, buf, fn)
 	case opIndexExpr:
-		return execIndexExprMulti(node, input, buf, fn)
+		return execIndexExprMulti(state, node, input, buf, fn)
 	case opIterator:
-		return execIterator(node, input, buf, fn)
+		return execIterator(state, node, input, buf, fn)
 	case opRecursiveDescent:
 		return execRecursiveDescent(input, buf, fn)
 	case opRecurse:
-		return execRecurse(node, input, buf, fn)
+		return execRecurse(state, node, input, buf, fn)
 	case opWalk:
-		return execWalk(node, input, buf, fn)
+		return execWalk(state, node, input, buf, fn)
 	case opConstruct:
 		if node.multiValuePairs {
-			return execConstructMulti(node, input, buf, fn)
+			return execConstructMulti(state, node, input, buf, fn)
 		}
-		result, err := execConstruct(node, input, buf)
+		result, err := execConstruct(state, node, input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opArrayConstruct:
-		result, err := execArrayConstruct(node, input, buf)
+		result, err := execArrayConstruct(state, node, input, buf)
 		if err != nil {
 			return err
 		}
@@ -186,11 +175,11 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opTypeBuiltin:
 		return execType(input, buf, fn)
 	case opCompare:
-		return execCompare(node, input, buf, fn)
+		return execCompare(state, node, input, buf, fn)
 	case opAnd:
-		return execAnd(node, input, buf, fn)
+		return execAnd(state, node, input, buf, fn)
 	case opOr:
-		return execOr(node, input, buf, fn)
+		return execOr(state, node, input, buf, fn)
 	case opNot:
 		if isFalsy(input) {
 			return fn(append(buf, "true"...))
@@ -198,8 +187,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(append(buf, "false"...))
 	case opOptional:
 		if node.child != nil && node.child.typ == opRepeat {
-			err := withOptionalScope(func() error {
-				return execMulti(node.child, input, buf, fn)
+			err := state.withOptionalScope(func(state execState) error {
+				return execMulti(state, node.child, input, buf, fn)
 			})
 			if err != nil {
 				var bs *breakSignal
@@ -211,8 +200,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return nil
 		}
 		var outputs [][]byte
-		err := withOptionalScope(func() error {
-			return execMulti(node.child, input, nil, func(result []byte) error {
+		err := state.withOptionalScope(func(state execState) error {
+			return execMulti(state, node.child, input, nil, func(result []byte) error {
 				outputs = append(outputs, cloneExecBytes(result))
 				return nil
 			})
@@ -231,7 +220,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return nil
 	case opNeg:
-		return execNeg(node, input, buf, fn)
+		return execNeg(state, node, input, buf, fn)
 	case opLength:
 		return execLength(input, buf, fn)
 	case opAbs:
@@ -253,7 +242,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(result)
 	case opFirst:
-		err := execMulti(node.child, input, buf, func(result []byte) error {
+		err := execMulti(state, node.child, input, buf, func(result []byte) error {
 			if err := fn(result); err != nil {
 				return err
 			}
@@ -264,41 +253,41 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return err
 	case opLast:
-		return execLast(node, input, buf, fn)
+		return execLast(state, node, input, buf, fn)
 	case opLimit:
-		return execLimit(node, input, buf, fn)
+		return execLimit(state, node, input, buf, fn)
 	case opSkip:
-		return execSkip(node, input, buf, fn)
+		return execSkip(state, node, input, buf, fn)
 	case opReduce:
-		return execReduce(node, input, buf, fn)
+		return execReduce(state, node, input, buf, fn)
 	case opForeach:
-		return execForeach(node, input, buf, fn)
+		return execForeach(state, node, input, buf, fn)
 	case opWhile:
-		return execWhile(node, input, buf, fn)
+		return execWhile(state, node, input, buf, fn)
 	case opRepeat:
-		return execRepeat(node, input, buf, fn)
+		return execRepeat(state, node, input, buf, fn)
 	case opUntil:
-		result, err := execUntil(node, input, buf)
+		result, err := execUntil(state, node, input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opDefScope:
-		return execDefScope(node, input, buf, fn)
+		return execDefScope(state, node, input, buf, fn)
 	case opCall:
-		return execCall(node, input, buf, fn)
+		return execCall(state, node, input, buf, fn)
 	case opAssign:
-		return execAssign(node, input, buf, fn)
+		return execAssign(state, node, input, buf, fn)
 	case opUpdate:
-		return execUpdate(node, input, buf, fn)
+		return execUpdate(state, node, input, buf, fn)
 	case opUpdateAlt:
-		return execUpdateAlt(node, input, buf, fn)
+		return execUpdateAlt(state, node, input, buf, fn)
 	case opUpdateMath:
-		return execUpdateMath(node, input, buf, fn)
+		return execUpdateMath(state, node, input, buf, fn)
 	case opPath:
-		return execPath(node, input, buf, fn)
+		return execPath(state, node, input, buf, fn)
 	case opPick:
-		result, err := execPick(node, input, buf)
+		result, err := execPick(state, node, input, buf)
 		if err != nil {
 			return err
 		}
@@ -310,17 +299,17 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(result)
 	case opPaths:
-		return execPaths(node, input, buf, fn)
+		return execPaths(state, node, input, buf, fn)
 	case opGetPath:
-		return execGetPath(node, input, buf, fn)
+		return execGetPath(state, node, input, buf, fn)
 	case opSetPath:
-		result, err := execSetPath(node, input, buf)
+		result, err := execSetPath(state, node, input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opDelPaths:
-		result, err := execDelPaths(node, input, buf)
+		result, err := execDelPaths(state, node, input, buf)
 		if err != nil {
 			return err
 		}
@@ -337,11 +326,11 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opHaveDecnum:
 		return fn(append(buf, "false"...))
 	case opStrftime:
-		return execStrftimeBuiltin(node, input, buf, false, fn)
+		return execStrftimeBuiltin(state, node, input, buf, false, fn)
 	case opStrfLocaltime:
-		return execStrftimeBuiltin(node, input, buf, true, fn)
+		return execStrftimeBuiltin(state, node, input, buf, true, fn)
 	case opStrptime:
-		return execStrptimeBuiltin(node, input, buf, fn)
+		return execStrptimeBuiltin(state, node, input, buf, fn)
 	case opMktime:
 		result, err := execMktime(input, buf)
 		if err != nil {
@@ -371,27 +360,27 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opToStream:
 		return execToStream(input, buf, fn)
 	case opTruncateStream:
-		return execTruncateStream(node, input, buf, fn)
+		return execTruncateStream(state, node, input, buf, fn)
 	case opFromStream:
-		result, err := execFromStream(node, input, buf)
+		result, err := execFromStream(state, node, input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opCombinations:
-		return execCombinations(node, input, buf, fn)
+		return execCombinations(state, node, input, buf, fn)
 	case opAny:
-		return execAnyAll(node, input, buf, fn, false)
+		return execAnyAll(state, node, input, buf, fn, false)
 	case opAll:
-		return execAnyAll(node, input, buf, fn, true)
+		return execAnyAll(state, node, input, buf, fn, true)
 	case opAdd:
 		return execAdd(input, buf, fn)
 	case opIndex1:
-		return execFindIndexMulti(node, input, buf, fn, false, false)
+		return execFindIndexMulti(state, node, input, buf, fn, false, false)
 	case opRIndex1:
-		return execFindIndexMulti(node, input, buf, fn, true, false)
+		return execFindIndexMulti(state, node, input, buf, fn, true, false)
 	case opIndicesN:
-		return execFindIndexMulti(node, input, buf, fn, false, true)
+		return execFindIndexMulti(state, node, input, buf, fn, false, true)
 	case opDebug:
 		execDebug(input)
 		return fn(input)
@@ -410,27 +399,27 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opValues:
 		return execValues(input, buf, fn)
 	case opIn:
-		return fn(execIn(node, input, buf))
+		return fn(execIn(state, node, input, buf))
 	case opINBuiltin:
-		result, err := execINBuiltin(node, input, buf)
+		result, err := execINBuiltin(state, node, input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opINDEXBuiltin:
-		result, err := execINDEXBuiltin(node, input, buf)
+		result, err := execINDEXBuiltin(state, node, input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opJOINBuiltin:
-		result, err := execJOINBuiltin(node, input, buf)
+		result, err := execJOINBuiltin(state, node, input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opSlice:
-		result, err := execSlice(node, input, buf)
+		result, err := execSlice(state, node, input, buf)
 		if err != nil {
 			return err
 		}
@@ -438,15 +427,15 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return nil
 		}
 		if node.child != nil {
-			return withIndexScope(chainedIndexScope(input), func() error {
-				return execMulti(node.child, result, buf, fn)
+			return state.withIndexScope(state.chainedIndexScope(input), func(state execState) error {
+				return execMulti(state, node.child, result, buf, fn)
 			})
 		}
 		return fn(result)
 	case opPlus:
 		// Use execMulti for left side to support generators as operands (.[] + x etc.)
-		return execMulti(node.left, input, nil, func(leftVal []byte) error {
-			rightVal, err := execSingle(node.right, input, nil)
+		return execMulti(state, node.left, input, nil, func(leftVal []byte) error {
+			rightVal, err := execSingle(state, node.right, input, nil)
 			if err != nil {
 				return err
 			}
@@ -457,7 +446,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return fn(result)
 		})
 	case opFlatten:
-		result, err := execFlattenInto(input, buf, node)
+		result, err := execFlattenInto(state, input, buf, node)
 		if err != nil {
 			return err
 		}
@@ -471,13 +460,13 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(result)
 	case opTrimStr:
-		result, err := execTrimStrBoth(node, input, buf)
+		result, err := execTrimStrBoth(state, node, input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opBsearch:
-		return execBsearch(node, input, buf, fn)
+		return execBsearch(state, node, input, buf, fn)
 	case opAsciiDowncase:
 		result, err := execAsciiCase(input, buf, false)
 		if err != nil {
@@ -523,19 +512,19 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opIsNormal:
 		return fn(execIsNormal(input, buf))
 	case opPow:
-		result, err := execPow(node, input, buf)
+		result, err := execPow(state, node, input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opHypot:
-		result, err := execHypot(node, input, buf)
+		result, err := execHypot(state, node, input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opFMA:
-		result, err := execFMA(node, input, buf)
+		result, err := execFMA(state, node, input, buf)
 		if err != nil {
 			return err
 		}
@@ -563,13 +552,13 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(result)
 	case opLtrimStr:
-		result, err := execTrimStr(node, input, buf, true)
+		result, err := execTrimStr(state, node, input, buf, true)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opRtrimStr:
-		result, err := execTrimStr(node, input, buf, false)
+		result, err := execTrimStr(state, node, input, buf, false)
 		if err != nil {
 			return err
 		}
@@ -579,19 +568,19 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opHas:
 		return execHas(node, input, buf, fn)
 	case opIf:
-		return execIf(node, input, buf, fn)
+		return execIf(state, node, input, buf, fn)
 	case opSelect:
-		return execSelect(node, input, buf, fn)
+		return execSelect(state, node, input, buf, fn)
 	case opAlternative:
-		return execAlternative(node, input, buf, fn)
+		return execAlternative(state, node, input, buf, fn)
 	case opMinus, opMul, opDiv, opMod:
 		// Supports generators as either operand (e.g. range(3) * 2 or 1 * range(3)).
 		// Single-output right side: use execSingle to avoid fn being captured in a
 		// nested execMulti call (which would create an escape analysis cycle).
 		// Multi-output right side: collect values first without fn, then compute.
 		if !hasMultiOutput(node.right) {
-			return execMulti(node.left, input, nil, func(leftVal []byte) error {
-				rightVal, err := execSingle(node.right, input, nil)
+			return execMulti(state, node.left, input, nil, func(leftVal []byte) error {
+				rightVal, err := execSingle(state, node.right, input, nil)
 				if err != nil {
 					return err
 				}
@@ -603,13 +592,13 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			})
 		}
 		var leftVals [][]byte
-		if err := execMulti(node.left, input, nil, func(leftVal []byte) error {
+		if err := execMulti(state, node.left, input, nil, func(leftVal []byte) error {
 			leftVals = append(leftVals, leftVal)
 			return nil
 		}); err != nil {
 			return err
 		}
-		return execMulti(node.right, input, nil, func(rightVal []byte) error {
+		return execMulti(state, node.right, input, nil, func(rightVal []byte) error {
 			for _, lv := range leftVals {
 				result, err := execArithValues(node.typ, lv, rightVal, buf)
 				if err != nil {
@@ -622,25 +611,25 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			return nil
 		})
 	case opMin:
-		result, err := execMinMax(input, buf, node, false)
+		result, err := execMinMax(state, input, buf, node, false)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opMax:
-		result, err := execMinMax(input, buf, node, true)
+		result, err := execMinMax(state, input, buf, node, true)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opMinBy:
-		result, err := execMinMax(input, buf, node, false)
+		result, err := execMinMax(state, input, buf, node, false)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opMaxBy:
-		result, err := execMinMax(input, buf, node, true)
+		result, err := execMinMax(state, input, buf, node, true)
 		if err != nil {
 			return err
 		}
@@ -648,13 +637,13 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opSort:
 		return execSort(input, buf, fn)
 	case opSortBy:
-		return execSortBy(node, input, buf, fn)
+		return execSortBy(state, node, input, buf, fn)
 	case opUnique:
 		return execUnique(input, buf, fn)
 	case opUniqueBy:
-		return execUniqueBy(node, input, buf, fn)
+		return execUniqueBy(state, node, input, buf, fn)
 	case opGroupBy:
-		return execGroupBy(node, input, buf, fn)
+		return execGroupBy(state, node, input, buf, fn)
 	case opTranspose:
 		return execTranspose(input, buf, fn)
 	case opURIEncode:
@@ -670,8 +659,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 			}
 			return nil
 		}
-		err := withTryScope(func() error {
-			return execMulti(node.left, input, buf, wrappedFn)
+		err := state.withTryScope(func(state execState) error {
+			return execMulti(state, node.left, input, buf, wrappedFn)
 		})
 		if err == nil {
 			return nil
@@ -686,7 +675,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		if node.right == nil {
 			return nil
 		}
-		err = execMulti(node.right, catchInputFromError(err), buf, wrappedFn)
+		err = execMulti(state, node.right, catchInputFromError(err), buf, wrappedFn)
 		if de, ok := err.(*downstreamError); ok {
 			return de.err
 		}
@@ -714,7 +703,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(result)
 	case opContains:
-		argVal, err := execSingle(node.child, input, nil)
+		argVal, err := execSingle(state, node.child, input, nil)
 		if err != nil {
 			return fn(append(buf, "false"...))
 		}
@@ -757,7 +746,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return fn(result)
 	case opRange:
-		return execRange(node, input, fn)
+		return execRange(state, node, input, fn)
 	case opFloor:
 		return fn(execRoundMode(input, buf, roundFloor))
 	case opCeil:
@@ -811,7 +800,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		// 0-arg: throw input. 1-arg error(expr): throw the evaluated expression.
 		var payload []byte
 		if node.child != nil {
-			val, err := execSingle(node.child, input, nil)
+			val, err := execSingle(state, node.child, input, nil)
 			if err != nil {
 				return err
 			}
@@ -821,13 +810,13 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		return &jsonError{payload: payload}
 	case opStringInterp:
-		result, err := execStringTemplate(node, input, buf)
+		result, err := execStringTemplate(state, node, input, buf)
 		if err != nil {
 			return err
 		}
 		return fn(result)
 	case opFormatTemplate:
-		result, err := execFormatTemplate(node, input, buf)
+		result, err := execFormatTemplate(state, node, input, buf)
 		if err != nil {
 			return err
 		}
@@ -835,7 +824,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opIsEmpty:
 		// isempty(expr): true if expr produces no outputs, false otherwise.
 		produced := false
-		err := execMulti(node.child, input, buf, func(_ []byte) error {
+		err := execMulti(state, node.child, input, buf, func(_ []byte) error {
 			produced = true
 			return errBreak
 		})
@@ -849,7 +838,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	case opNth:
 		// nth(n; gen): emit the nth output of gen (0-indexed). No output if not enough.
 		nf, ok := parseJSONFloat(trimWhitespace(func() []byte {
-			v, _ := execSingle(node.left, input, nil)
+			v, _ := execSingle(state, node.left, input, nil)
 			return v
 		}()))
 		if !ok {
@@ -861,7 +850,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		}
 		count := 0
 		var found []byte
-		err := execMulti(node.child, input, nil, func(val []byte) error {
+		err := execMulti(state, node.child, input, nil, func(val []byte) error {
 			if count == nInt {
 				found = val
 				return errBreak
@@ -878,7 +867,7 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return fn(append(buf, found...))
 	case opGenerator:
 		for _, elem := range node.elems {
-			if err := execMulti(elem, input, buf, fn); err != nil {
+			if err := execMulti(state, elem, input, buf, fn); err != nil {
 				return err
 			}
 		}
@@ -921,36 +910,36 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 // execSingle evaluates a node that is expected to produce a single result,
 // without creating a closure. Handles common op types directly.
 // Falls back to exec for complex/multi-output types.
-func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
+func execSingle(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	switch node.typ {
 	case opLiteral:
 		return normalizeOutputValue(node.literal, buf), nil
 	case opIdentity:
 		return execIdentity(input, buf)
 	case opField:
-		return execField(node, input, buf)
+		return execField(state, node, input, buf)
 	case opIndex:
-		return execIndex(node, input, buf)
+		return execIndex(state, node, input, buf)
 	case opIndexExpr:
-		return execIndexExpr(node, input, buf)
+		return execIndexExpr(state, node, input, buf)
 	case opVar:
 		if node.name == "__loc__" {
 			value := []byte(`{"file":"<top-level>","line":1}`)
 			if node.child != nil {
-				return exec(node.child, value, buf)
+				return exec(state, node.child, value, buf)
 			}
 			if buf == nil {
 				return value[:len(value):len(value)], nil
 			}
 			return append(buf, value...), nil
 		}
-		ctx := currentExecContext()
+		ctx := state.currentExecContext()
 		value, ok := ctx.lookupVar(node.name)
 		if !ok {
 			return nil, fmt.Errorf("$%s is not defined", node.name)
 		}
 		if node.child != nil {
-			return execSingle(node.child, value, buf)
+			return execSingle(state, node.child, value, buf)
 		}
 		if buf == nil {
 			return value[:len(value):len(value)], nil
@@ -959,9 +948,9 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opTypeBuiltin:
 		return execTypeSingle(input, buf)
 	case opCompare:
-		return execCompareSingle(node, input, buf)
+		return execCompareSingle(state, node, input, buf)
 	case opAnd:
-		leftVal, err := execSingle(node.left, input, buf)
+		leftVal, err := execSingle(state, node.left, input, buf)
 		if err != nil {
 			return nil, err
 		}
@@ -971,7 +960,7 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			}
 			return append(buf[:0], "false"...), nil
 		}
-		rightVal, err := execSingle(node.right, input, buf)
+		rightVal, err := execSingle(state, node.right, input, buf)
 		if err != nil {
 			return nil, err
 		}
@@ -986,7 +975,7 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		}
 		return append(buf[:0], "true"...), nil
 	case opOr:
-		leftVal, err := execSingle(node.left, input, buf)
+		leftVal, err := execSingle(state, node.left, input, buf)
 		if err != nil {
 			return nil, err
 		}
@@ -996,7 +985,7 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			}
 			return append(buf[:0], "true"...), nil
 		}
-		rightVal, err := execSingle(node.right, input, buf)
+		rightVal, err := execSingle(state, node.right, input, buf)
 		if err != nil {
 			return nil, err
 		}
@@ -1022,7 +1011,7 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		}
 		return append(buf, "false"...), nil
 	case opOptional:
-		result, err := execSingle(node.child, input, buf)
+		result, err := execSingle(state, node.child, input, buf)
 		if err != nil {
 			if buf == nil {
 				return bNull, nil
@@ -1031,7 +1020,7 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		}
 		return result, nil
 	case opNeg:
-		return execNegSingle(node, input, buf)
+		return execNegSingle(state, node, input, buf)
 	case opLength:
 		return execLengthSingle(input, buf)
 	case opAbs:
@@ -1041,53 +1030,53 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opFromEntries:
 		return execFromEntries(input, buf)
 	case opFirst:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opLast:
-		return execLastSingle(node, input, buf)
+		return execLastSingle(state, node, input, buf)
 	case opSkip:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opReduce:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opForeach:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opWhile:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opRepeat:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opRecursiveDescent:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opRecurse:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opWalk:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opUntil:
-		return execUntil(node, input, buf)
+		return execUntil(state, node, input, buf)
 	case opDefScope:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opCall:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opAssign:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opUpdate:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opUpdateAlt:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opUpdateMath:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opPath:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opKeys:
 		return execKeys(input, buf)
 	case opPaths:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opPick:
-		return execPick(node, input, buf)
+		return execPick(state, node, input, buf)
 	case opGetPath:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opSetPath:
-		return execSetPath(node, input, buf)
+		return execSetPath(state, node, input, buf)
 	case opDelPaths:
-		return execDelPaths(node, input, buf)
+		return execDelPaths(state, node, input, buf)
 	case opKeysUnsorted:
 		return execKeysUnsorted(input, buf)
 	case opBuiltins:
@@ -1095,7 +1084,7 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opHaveDecnum:
 		return append(buf, "false"...), nil
 	case opStrftime, opStrfLocaltime, opStrptime:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opMktime:
 		return execMktime(input, buf)
 	case opGmtime:
@@ -1107,23 +1096,23 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opNow:
 		return execNow(buf), nil
 	case opToStream:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opTruncateStream:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opFromStream:
-		return execFromStream(node, input, buf)
+		return execFromStream(state, node, input, buf)
 	case opCombinations:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opAny:
-		return execAnyAllSingle(node, input, buf, false)
+		return execAnyAllSingle(state, node, input, buf, false)
 	case opAll:
-		return execAnyAllSingle(node, input, buf, true)
+		return execAnyAllSingle(state, node, input, buf, true)
 	case opIndex1:
-		return execFindIndex(node, input, buf, false, false), nil
+		return execFindIndex(state, node, input, buf, false, false), nil
 	case opRIndex1:
-		return execFindIndex(node, input, buf, true, false), nil
+		return execFindIndex(state, node, input, buf, true, false), nil
 	case opIndicesN:
-		return execFindIndex(node, input, buf, false, true), nil
+		return execFindIndex(state, node, input, buf, false, true), nil
 	case opDebug:
 		execDebug(input)
 		if buf == nil {
@@ -1143,15 +1132,15 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		}
 		return append(buf, input...), nil
 	case opIn:
-		return execIn(node, input, buf), nil
+		return execIn(state, node, input, buf), nil
 	case opINBuiltin:
-		return execINBuiltin(node, input, buf)
+		return execINBuiltin(state, node, input, buf)
 	case opINDEXBuiltin:
-		return execINDEXBuiltin(node, input, buf)
+		return execINDEXBuiltin(state, node, input, buf)
 	case opJOINBuiltin:
-		return execJOINBuiltin(node, input, buf)
+		return execJOINBuiltin(state, node, input, buf)
 	case opSlice:
-		result, err := execSlice(node, input, buf)
+		result, err := execSlice(state, node, input, buf)
 		if err != nil {
 			return nil, err
 		}
@@ -1163,24 +1152,24 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		}
 		if node.child != nil {
 			var out []byte
-			err := withIndexScope(chainedIndexScope(input), func() error {
+			err := state.withIndexScope(state.chainedIndexScope(input), func(state execState) error {
 				var execErr error
-				out, execErr = execSingle(node.child, result, buf)
+				out, execErr = execSingle(state, node.child, result, buf)
 				return execErr
 			})
 			return out, err
 		}
 		return result, nil
 	case opPlus:
-		return execPlusSingle(node, input, buf)
+		return execPlusSingle(state, node, input, buf)
 	case opFlatten:
-		return execFlattenInto(input, buf, node)
+		return execFlattenInto(state, input, buf, node)
 	case opSplit:
 		return execSplit(input, buf, node.field), nil
 	case opJoin:
 		return execJoin(input, buf, node.field)
 	case opBsearch:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opAsciiDowncase:
 		return execAsciiCase(input, buf, false)
 	case opAsciiUpcase:
@@ -1196,11 +1185,11 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opRtrim:
 		return execTrim(input, buf, trimRight)
 	case opTrimStr:
-		return execTrimStrBoth(node, input, buf)
+		return execTrimStrBoth(state, node, input, buf)
 	case opLtrimStr:
-		return execTrimStr(node, input, buf, true)
+		return execTrimStr(state, node, input, buf, true)
 	case opRtrimStr:
-		return execTrimStr(node, input, buf, false)
+		return execTrimStr(state, node, input, buf, false)
 	case opExplode:
 		return execExplode(input, buf)
 	case opImplode:
@@ -1218,17 +1207,17 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opIsNormal:
 		return execIsNormal(input, buf), nil
 	case opPow:
-		return execPow(node, input, buf)
+		return execPow(state, node, input, buf)
 	case opHypot:
-		return execHypot(node, input, buf)
+		return execHypot(state, node, input, buf)
 	case opFMA:
-		return execFMA(node, input, buf)
+		return execFMA(state, node, input, buf)
 	case opMinus, opMul, opDiv, opMod:
-		return execArith(node, input, buf)
+		return execArith(state, node, input, buf)
 	case opMin, opMinBy:
-		return execMinMax(input, buf, node, false)
+		return execMinMax(state, input, buf, node, false)
 	case opMax, opMaxBy:
-		return execMinMax(input, buf, node, true)
+		return execMinMax(state, input, buf, node, true)
 	case opURIEncode:
 		return execURIEncode(input, buf)
 	case opTest:
@@ -1252,13 +1241,13 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	// restores 0 allocs/op for all Tier 0 operations.
 
 	case opDelete:
-		return execDelete(node, input, buf)
+		return execDelete(state, node, input, buf)
 
 	case opConstruct:
 		if node.multiValuePairs {
-			return execFirstResult(node, input, buf) // Tier 2 — Cartesian product
+			return execFirstResult(state, node, input, buf) // Tier 2 — Cartesian product
 		}
-		return execConstruct(node, input, buf)
+		return execConstruct(state, node, input, buf)
 
 	case opPipe:
 		// Fast path when left is single-output: chain execSingle calls directly.
@@ -1266,35 +1255,35 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		// execFirstResult so the full pipeline is evaluated and only the first
 		// passing result is returned (correct for first(.[] | select(...)) etc.).
 		if isSingleOutputOp(node.left) {
-			intermediate, err := execSingle(node.left, input, nil)
+			intermediate, err := execSingle(state, node.left, input, nil)
 			if err != nil {
 				return nil, err
 			}
-			return execSingle(node.right, intermediate, buf)
+			return execSingle(state, node.right, intermediate, buf)
 		}
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	case opApply:
 		if isSingleOutputOp(node.left) {
-			intermediate, err := execSingle(node.left, input, nil)
+			intermediate, err := execSingle(state, node.left, input, nil)
 			if err != nil {
 				return nil, err
 			}
 			var result []byte
-			err = withIndexScope(chainedIndexScope(input), func() error {
+			err = state.withIndexScope(state.chainedIndexScope(input), func(state execState) error {
 				var execErr error
-				result, execErr = execSingle(node.right, intermediate, buf)
+				result, execErr = execSingle(state, node.right, intermediate, buf)
 				return execErr
 			})
 			return result, err
 		}
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 
 	case opSelect:
 		if isSingleOutputOp(node.child) {
 			// Pass buf as scratch so condition expressions (e.g. ascii_downcase, construct)
 			// don't need to allocate their own buffer. condVal may be written into buf,
 			// but we only test truthiness and then reset buf for the actual output.
-			condVal, err := execSingle(node.child, input, buf)
+			condVal, err := execSingle(state, node.child, input, buf)
 			if err != nil {
 				return nil, err
 			}
@@ -1303,7 +1292,7 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 			}
 		} else {
 			foundTruthy := false
-			err := execMulti(node.child, input, nil, func(condVal []byte) error {
+			err := execMulti(state, node.child, input, nil, func(condVal []byte) error {
 				if isFalsy(condVal) {
 					return nil
 				}
@@ -1343,15 +1332,15 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 
 	case opIf:
 		// Pass buf as scratch for condition evaluation; reset for branch output.
-		condVal, err := execSingle(node.left, input, buf)
+		condVal, err := execSingle(state, node.left, input, buf)
 		if err != nil {
 			return nil, err
 		}
 		if !isFalsy(condVal) {
-			return execSingle(node.right, input, buf[:0])
+			return execSingle(state, node.right, input, buf[:0])
 		}
 		if node.child != nil {
-			return execSingle(node.child, input, buf[:0])
+			return execSingle(state, node.child, input, buf[:0])
 		}
 		return execIdentity(input, buf[:0])
 
@@ -1369,20 +1358,20 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 
 	case opAlternative:
 		// Single-result path: if left is truthy return it, else evaluate right.
-		leftVal, err := execSingle(node.left, input, nil)
+		leftVal, err := execSingle(state, node.left, input, nil)
 		if err == nil && !isFalsy(leftVal) {
 			if buf == nil {
 				return leftVal, nil
 			}
 			return append(buf, leftVal...), nil
 		}
-		return execSingle(node.right, input, buf)
+		return execSingle(state, node.right, input, buf)
 
 	case opTry:
 		var result []byte
-		err := withTryScope(func() error {
+		err := state.withTryScope(func(state execState) error {
 			var execErr error
-			result, execErr = execSingle(node.left, input, buf)
+			result, execErr = execSingle(state, node.left, input, buf)
 			return execErr
 		})
 		if err == nil {
@@ -1395,15 +1384,15 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		if node.right == nil {
 			return nil, nil // no catch — produce no output
 		}
-		return execSingle(node.right, catchInputFromError(err), buf)
+		return execSingle(state, node.right, catchInputFromError(err), buf)
 
 	case opStringInterp:
-		return execStringTemplate(node, input, buf)
+		return execStringTemplate(state, node, input, buf)
 	case opFormatTemplate:
-		return execFormatTemplate(node, input, buf)
+		return execFormatTemplate(state, node, input, buf)
 
 	case opContains:
-		argVal, err := execSingle(node.child, input, nil)
+		argVal, err := execSingle(state, node.child, input, nil)
 		if err != nil {
 			return boolResult(buf, false), nil
 		}
@@ -1487,7 +1476,7 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opToBoolean:
 		return execToBoolean(input, buf)
 	default:
-		return execFirstResult(node, input, buf)
+		return execFirstResult(state, node, input, buf)
 	}
 }
 
@@ -1495,9 +1484,9 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 // returns the first result. Used as the fallback for multi-output ops (iterators,
 // pipes with multi-output left sides, scan, etc.) that execSingle cannot handle
 // directly without closures.
-func execFirstResult(node *op, input []byte, buf []byte) ([]byte, error) {
+func execFirstResult(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	var result []byte
-	err := execMulti(node, input, buf, func(r []byte) error {
+	err := execMulti(state, node, input, buf, func(r []byte) error {
 		if result == nil {
 			result = r
 		}
@@ -1517,8 +1506,8 @@ func execFirstResult(node *op, input []byte, buf []byte) ([]byte, error) {
 // all common single-output operations (field access, comparison, arithmetic,
 // math, etc.). Multi-output ops fall back to execFirstResult via execSingle's
 // default case.
-func exec(node *op, input []byte, buf []byte) ([]byte, error) {
-	return execSingle(node, input, buf)
+func exec(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	return execSingle(state, node, input, buf)
 }
 
 // execIdentity copies the input to the output buffer (trimmed of whitespace).
@@ -1535,7 +1524,7 @@ func execIdentity(input []byte, buf []byte) ([]byte, error) {
 
 // execFieldMulti extracts a field value from a JSON object, then recurses
 // into the child (if any) via execMulti to support multi-output children like iterators.
-func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execFieldMulti(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
@@ -1564,8 +1553,8 @@ func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	value := input[vs:ve]
 
 	if node.child != nil {
-		return withIndexScope(chainedIndexScope(input), func() error {
-			return execMulti(node.child, value, buf, fn)
+		return state.withIndexScope(state.chainedIndexScope(input), func(state execState) error {
+			return execMulti(state, node.child, value, buf, fn)
 		})
 	}
 	if buf == nil {
@@ -1575,7 +1564,7 @@ func execFieldMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 }
 
 // execField extracts a field value from a JSON object (single-result convenience).
-func execField(node *op, input []byte, buf []byte) ([]byte, error) {
+func execField(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
@@ -1604,9 +1593,9 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 
 	if node.child != nil {
 		var result []byte
-		err := withIndexScope(chainedIndexScope(input), func() error {
+		err := state.withIndexScope(state.chainedIndexScope(input), func(state execState) error {
 			var execErr error
-			result, execErr = exec(node.child, value, buf)
+			result, execErr = exec(state, node.child, value, buf)
 			return execErr
 		})
 		return result, err
@@ -1619,7 +1608,7 @@ func execField(node *op, input []byte, buf []byte) ([]byte, error) {
 
 // execIndexMulti accesses an array element by index, then recurses into
 // the child (if any) via execMulti to support multi-output children.
-func execIndexMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execIndexMulti(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
@@ -1652,8 +1641,8 @@ func execIndexMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	}
 
 	if node.child != nil {
-		return withIndexScope(chainedIndexScope(input), func() error {
-			return execMulti(node.child, result, buf, fn)
+		return state.withIndexScope(state.chainedIndexScope(input), func(state execState) error {
+			return execMulti(state, node.child, result, buf, fn)
 		})
 	}
 	if buf == nil {
@@ -1663,7 +1652,7 @@ func execIndexMulti(node *op, input []byte, buf []byte, fn func([]byte) error) e
 }
 
 // execIndex accesses an array element by index. Negative indices count from end.
-func execIndex(node *op, input []byte, buf []byte) ([]byte, error) {
+func execIndex(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
@@ -1698,9 +1687,9 @@ func execIndex(node *op, input []byte, buf []byte) ([]byte, error) {
 
 	if node.child != nil {
 		var out []byte
-		err := withIndexScope(chainedIndexScope(input), func() error {
+		err := state.withIndexScope(state.chainedIndexScope(input), func(state execState) error {
 			var execErr error
-			out, execErr = exec(node.child, result, buf)
+			out, execErr = exec(state, node.child, result, buf)
 			return execErr
 		})
 		return out, err
@@ -1711,31 +1700,31 @@ func execIndex(node *op, input []byte, buf []byte) ([]byte, error) {
 	return append(buf, result...), nil
 }
 
-func execIndexExprMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	scopeInput := currentIndexScope()
+func execIndexExprMulti(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	scopeInput := state.currentIndexScope()
 	if scopeInput == nil {
 		scopeInput = input
 	}
-	return execMulti(node.left, scopeInput, nil, func(key []byte) error {
+	return execMulti(state, node.left, scopeInput, nil, func(key []byte) error {
 		result, err := execIndexExprAccess(input, key, buf)
 		if err != nil {
 			return err
 		}
 		if node.child != nil {
-			return withIndexScope(chainedIndexScope(input), func() error {
-				return execMulti(node.child, result, buf, fn)
+			return state.withIndexScope(state.chainedIndexScope(input), func(state execState) error {
+				return execMulti(state, node.child, result, buf, fn)
 			})
 		}
 		return fn(result)
 	})
 }
 
-func execIndexExpr(node *op, input []byte, buf []byte) ([]byte, error) {
-	scopeInput := currentIndexScope()
+func execIndexExpr(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	scopeInput := state.currentIndexScope()
 	if scopeInput == nil {
 		scopeInput = input
 	}
-	key, err := execSingle(node.left, scopeInput, nil)
+	key, err := execSingle(state, node.left, scopeInput, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1745,9 +1734,9 @@ func execIndexExpr(node *op, input []byte, buf []byte) ([]byte, error) {
 	}
 	if node.child != nil {
 		var out []byte
-		err := withIndexScope(chainedIndexScope(input), func() error {
+		err := state.withIndexScope(state.chainedIndexScope(input), func(state execState) error {
 			var execErr error
-			out, execErr = exec(node.child, result, buf)
+			out, execErr = exec(state, node.child, result, buf)
 			return execErr
 		})
 		return out, err
@@ -1840,7 +1829,7 @@ func execIndexValue(input []byte, index int, buf []byte) ([]byte, error) {
 }
 
 // execIterator iterates all elements of an array or values of an object.
-func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execIterator(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) {
@@ -1856,9 +1845,9 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
 			var err error
 			if node.child != nil {
-				scope := chainedIndexScope(input)
-				err = withIndexScope(scope, func() error {
-					return execMulti(node.child, input[elemStart:elemEnd], buf, fn)
+				scope := state.chainedIndexScope(input)
+				err = state.withIndexScope(scope, func(state execState) error {
+					return execMulti(state, node.child, input[elemStart:elemEnd], buf, fn)
 				})
 			} else {
 				err = fn(input[elemStart:elemEnd])
@@ -1869,13 +1858,13 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 				// (e.g. field access on wrong type) are dropped, preserving
 				// the existing lenient multi-output behaviour.
 				if _, ok := err.(*jsonError); ok {
-					if !tryScopeActive() {
+					if !state.tryScopeActive() {
 						return false
 					}
 					caught = err
 				} else if isControlFlowError(err) {
 					caught = err
-				} else if optionalScopeActive() {
+				} else if state.optionalScopeActive() {
 					caught = err
 				}
 				return false
@@ -1888,22 +1877,22 @@ func execIterator(node *op, input []byte, buf []byte, fn func([]byte) error) err
 		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
 			var err error
 			if node.child != nil {
-				scope := chainedIndexScope(input)
-				err = withIndexScope(scope, func() error {
-					return execMulti(node.child, input[valueStart:valueEnd], buf, fn)
+				scope := state.chainedIndexScope(input)
+				err = state.withIndexScope(scope, func(state execState) error {
+					return execMulti(state, node.child, input[valueStart:valueEnd], buf, fn)
 				})
 			} else {
 				err = fn(input[valueStart:valueEnd])
 			}
 			if err != nil {
 				if _, ok := err.(*jsonError); ok {
-					if !tryScopeActive() {
+					if !state.tryScopeActive() {
 						return false
 					}
 					caught = err
 				} else if isControlFlowError(err) {
 					caught = err
-				} else if optionalScopeActive() {
+				} else if state.optionalScopeActive() {
 					caught = err
 				}
 				return false
@@ -1954,11 +1943,11 @@ func execRecursiveValue(value []byte, buf []byte, fn func([]byte) error) error {
 	}
 }
 
-func execRecurse(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	return execRecurseWithDepth(node, input, buf, fn, 0)
+func execRecurse(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	return execRecurseWithDepth(state, node, input, buf, fn, 0)
 }
 
-func execRecurseWithDepth(node *op, input []byte, buf []byte, fn func([]byte) error, depth int) error {
+func execRecurseWithDepth(state execState, node *op, input []byte, buf []byte, fn func([]byte) error, depth int) error {
 	if depth > maxRecurseDepth {
 		return errRecurseDepthLimit
 	}
@@ -1967,16 +1956,16 @@ func execRecurseWithDepth(node *op, input []byte, buf []byte, fn func([]byte) er
 		return err
 	}
 	if node.left == nil {
-		return execRecurseDefaultChildren(node, current, buf, fn, depth+1)
+		return execRecurseDefaultChildren(state, node, current, buf, fn, depth+1)
 	}
-	nextVals, err := collectExecOutputs(node.left, current)
+	nextVals, err := collectExecOutputs(state, node.left, current)
 	if err != nil {
 		return err
 	}
 	for _, next := range nextVals {
 		next = trimWhitespace(next)
 		if node.child != nil {
-			cond, err := execSingle(node.child, next, nil)
+			cond, err := execSingle(state, node.child, next, nil)
 			if err != nil {
 				return err
 			}
@@ -1987,14 +1976,14 @@ func execRecurseWithDepth(node *op, input []byte, buf []byte, fn func([]byte) er
 		if bytes.Equal(next, current) {
 			return errRecurseCycle
 		}
-		if err := execRecurseWithDepth(node, next, buf, fn, depth+1); err != nil {
+		if err := execRecurseWithDepth(state, node, next, buf, fn, depth+1); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func execRecurseDefaultChildren(node *op, current []byte, buf []byte, fn func([]byte) error, depth int) error {
+func execRecurseDefaultChildren(state execState, node *op, current []byte, buf []byte, fn func([]byte) error, depth int) error {
 	s := scanner{data: current}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) {
@@ -2004,14 +1993,14 @@ func execRecurseDefaultChildren(node *op, current []byte, buf []byte, fn func([]
 	case '[':
 		var walkErr error
 		s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-			walkErr = execRecurseWithDepth(node, current[elemStart:elemEnd], buf, fn, depth)
+			walkErr = execRecurseWithDepth(state, node, current[elemStart:elemEnd], buf, fn, depth)
 			return walkErr == nil
 		})
 		return walkErr
 	case '{':
 		var walkErr error
 		s.objectIter(func(_ []byte, valueStart, valueEnd int) bool {
-			walkErr = execRecurseWithDepth(node, current[valueStart:valueEnd], buf, fn, depth)
+			walkErr = execRecurseWithDepth(state, node, current[valueStart:valueEnd], buf, fn, depth)
 			return walkErr == nil
 		})
 		return walkErr
@@ -2020,8 +2009,8 @@ func execRecurseDefaultChildren(node *op, current []byte, buf []byte, fn func([]
 	}
 }
 
-func execWalk(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	outputs, err := walkOutputs(node.child, trimWhitespace(input))
+func execWalk(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	outputs, err := walkOutputs(state, node.child, trimWhitespace(input))
 	if err != nil {
 		return err
 	}
@@ -2033,16 +2022,16 @@ func execWalk(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	return nil
 }
 
-func walkOutputs(filter *op, value []byte) ([][]byte, error) {
-	rebuilt, err := walkRebuild(filter, trimWhitespace(value))
+func walkOutputs(state execState, filter *op, value []byte) ([][]byte, error) {
+	rebuilt, err := walkRebuild(state, filter, trimWhitespace(value))
 	if err != nil {
 		return nil, err
 	}
-	return collectExecOutputs(filter, rebuilt)
+	return collectExecOutputs(state, filter, rebuilt)
 }
 
-func walkFirstOutput(filter *op, value []byte) ([]byte, bool, error) {
-	outputs, err := walkOutputs(filter, value)
+func walkFirstOutput(state execState, filter *op, value []byte) ([]byte, bool, error) {
+	outputs, err := walkOutputs(state, filter, value)
 	if err != nil {
 		return nil, false, err
 	}
@@ -2052,7 +2041,7 @@ func walkFirstOutput(filter *op, value []byte) ([]byte, bool, error) {
 	return outputs[0], true, nil
 }
 
-func walkRebuild(filter *op, value []byte) ([]byte, error) {
+func walkRebuild(state execState, filter *op, value []byte) ([]byte, error) {
 	s := scanner{data: value}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) {
@@ -2060,15 +2049,15 @@ func walkRebuild(filter *op, value []byte) ([]byte, error) {
 	}
 	switch s.data[s.pos] {
 	case '[':
-		return walkRebuildArray(filter, value)
+		return walkRebuildArray(state, filter, value)
 	case '{':
-		return walkRebuildObject(filter, value)
+		return walkRebuildObject(state, filter, value)
 	default:
 		return cloneExecBytes(value), nil
 	}
 }
 
-func walkRebuildArray(filter *op, value []byte) ([]byte, error) {
+func walkRebuildArray(state execState, filter *op, value []byte) ([]byte, error) {
 	s := scanner{data: value}
 	s.skipWhitespace()
 	out := make([]byte, 0, len(value))
@@ -2076,7 +2065,7 @@ func walkRebuildArray(filter *op, value []byte) ([]byte, error) {
 	first := true
 	var walkErr error
 	s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-		child, keep, err := walkFirstOutput(filter, value[elemStart:elemEnd])
+		child, keep, err := walkFirstOutput(state, filter, value[elemStart:elemEnd])
 		if err != nil {
 			walkErr = err
 			return false
@@ -2098,7 +2087,7 @@ func walkRebuildArray(filter *op, value []byte) ([]byte, error) {
 	return out, nil
 }
 
-func walkRebuildObject(filter *op, value []byte) ([]byte, error) {
+func walkRebuildObject(state execState, filter *op, value []byte) ([]byte, error) {
 	s := scanner{data: value}
 	s.skipWhitespace()
 	out := make([]byte, 0, len(value))
@@ -2106,7 +2095,7 @@ func walkRebuildObject(filter *op, value []byte) ([]byte, error) {
 	first := true
 	var walkErr error
 	s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
-		child, keep, err := walkFirstOutput(filter, value[valueStart:valueEnd])
+		child, keep, err := walkFirstOutput(state, filter, value[valueStart:valueEnd])
 		if err != nil {
 			walkErr = err
 			return false
@@ -2133,9 +2122,9 @@ func walkRebuildObject(filter *op, value []byte) ([]byte, error) {
 
 // execDelete removes specified fields from a JSON object or elements from an array.
 // Never copies commas from input — reconstructs with our own commas.
-func execDelete(node *op, input []byte, buf []byte) ([]byte, error) {
+func execDelete(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	if deleteNeedsGenericPaths(node) {
-		return execDeleteGeneric(node, input, buf)
+		return execDeleteGeneric(state, node, input, buf)
 	}
 	s := &scanner{data: input}
 	s.skipWhitespace()
@@ -2145,9 +2134,9 @@ func execDelete(node *op, input []byte, buf []byte) ([]byte, error) {
 
 	switch s.data[s.pos] {
 	case '{':
-		return execDeleteObject(node, input, buf, s)
+		return execDeleteObject(state, node, input, buf, s)
 	case '[':
-		return execDeleteArray(node, input, buf, s)
+		return execDeleteArray(state, node, input, buf, s)
 	default:
 		return nil, fmt.Errorf("expected object or array for del()")
 	}
@@ -2174,10 +2163,10 @@ func deletePathNeedsGeneric(node *op) bool {
 	}
 }
 
-func execDeleteGeneric(node *op, input []byte, buf []byte) ([]byte, error) {
+func execDeleteGeneric(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	mutations := make([]pathMutation, 0, len(node.fields))
 	for i := range node.fields {
-		paths, err := collectAssignPaths(&node.fields[i], input)
+		paths, err := collectAssignPaths(state, &node.fields[i], input)
 		if err != nil {
 			return nil, err
 		}
@@ -2207,7 +2196,7 @@ func execDeleteGeneric(node *op, input []byte, buf []byte) ([]byte, error) {
 }
 
 // execDeleteObject removes specified fields from a JSON object.
-func execDeleteObject(node *op, input []byte, buf []byte, s *scanner) ([]byte, error) {
+func execDeleteObject(state execState, node *op, input []byte, buf []byte, s *scanner) ([]byte, error) {
 	// Validate all del() arguments are field accesses
 	for i := range node.fields {
 		if node.fields[i].typ != opField {
@@ -2244,7 +2233,7 @@ func execDeleteObject(node *op, input []byte, buf []byte, s *scanner) ([]byte, e
 			preDel := buf // full slice header — survives buf=nil from error
 			nestedNode := &op{typ: opDelete, fields: nestedFields}
 			var err error
-			buf, err = execDelete(nestedNode, input[valueStart:valueEnd], buf)
+			buf, err = execDelete(state, nestedNode, input[valueStart:valueEnd], buf)
 			if err != nil {
 				// Nested target is not an object/array — keep original value.
 				buf = append(preDel, input[valueStart:valueEnd]...)
@@ -2269,7 +2258,7 @@ func execDeleteObject(node *op, input []byte, buf []byte, s *scanner) ([]byte, e
 }
 
 // execDeleteArray removes specified elements from a JSON array.
-func execDeleteArray(node *op, input []byte, buf []byte, s *scanner) ([]byte, error) {
+func execDeleteArray(state execState, node *op, input []byte, buf []byte, s *scanner) ([]byte, error) {
 	// Build set of indices to delete
 	deleteSet := make(map[int]bool)
 	length := s.arrayLen()
@@ -2286,7 +2275,7 @@ func execDeleteArray(node *op, input []byte, buf []byte, s *scanner) ([]byte, er
 				deleteSet[idx] = true
 			}
 		case opSlice:
-			start, end, err := resolveDelSliceBounds(d, input, length)
+			start, end, err := resolveDelSliceBounds(state, d, input, length)
 			if err != nil {
 				return nil, err
 			}
@@ -2319,11 +2308,11 @@ func execDeleteArray(node *op, input []byte, buf []byte, s *scanner) ([]byte, er
 
 // resolveDelSliceBounds evaluates the start/end bounds of an opSlice node
 // against the given array length, applying the same clamping rules as execSlice.
-func resolveDelSliceBounds(node *op, input []byte, length int) (start, end int, err error) {
+func resolveDelSliceBounds(state execState, node *op, input []byte, length int) (start, end int, err error) {
 	start = 0
 	end = length
 	if node.left != nil {
-		sv, e := execSingle(node.left, input, nil)
+		sv, e := execSingle(state, node.left, input, nil)
 		if e != nil {
 			return 0, 0, e
 		}
@@ -2334,7 +2323,7 @@ func resolveDelSliceBounds(node *op, input []byte, length int) (start, end int, 
 		start = resolveSliceBound(f, length, false)
 	}
 	if node.right != nil {
-		sv, e := execSingle(node.right, input, nil)
+		sv, e := execSingle(state, node.right, input, nil)
 		if e != nil {
 			return 0, 0, e
 		}
@@ -2351,17 +2340,17 @@ func resolveDelSliceBounds(node *op, input []byte, length int) (start, end int, 
 }
 
 // execPipeMulti runs left, then feeds each result into right.
-func execPipeMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	return execMulti(node.left, input, nil, func(intermediate []byte) error {
-		return execMulti(node.right, intermediate, buf, fn)
+func execPipeMulti(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	return execMulti(state, node.left, input, nil, func(intermediate []byte) error {
+		return execMulti(state, node.right, intermediate, buf, fn)
 	})
 }
 
-func execApplyMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	scope := chainedIndexScope(input)
-	return execMulti(node.left, input, nil, func(intermediate []byte) error {
-		return withIndexScope(scope, func() error {
-			return execMulti(node.right, intermediate, buf, fn)
+func execApplyMulti(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	scope := state.chainedIndexScope(input)
+	return execMulti(state, node.left, input, nil, func(intermediate []byte) error {
+		return state.withIndexScope(scope, func(state execState) error {
+			return execMulti(state, node.right, intermediate, buf, fn)
 		})
 	})
 }
@@ -2385,11 +2374,11 @@ func objectKeyStringValue(value []byte) (string, error) {
 	return string(out), nil
 }
 
-func execConstructKey(p pair, input []byte) (string, error) {
+func execConstructKey(state execState, p pair, input []byte) (string, error) {
 	if p.keyExpr == nil {
 		return p.key, nil
 	}
-	keyValue, err := execSingle(p.keyExpr, input, nil)
+	keyValue, err := execSingle(state, p.keyExpr, input, nil)
 	if err != nil {
 		return "", err
 	}
@@ -2398,10 +2387,10 @@ func execConstructKey(p pair, input []byte) (string, error) {
 
 // execConstruct builds a JSON object from key-expression pairs (single-output per pair).
 // Used by the execSingle fast path via execFirstResult for common cases.
-func execConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
+func execConstruct(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	buf = append(buf, '{')
 	for i, p := range node.pairs {
-		key, err := execConstructKey(p, input)
+		key, err := execConstructKey(state, p, input)
 		if err != nil {
 			return nil, err
 		}
@@ -2411,7 +2400,7 @@ func execConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 		buf = append(buf, '"')
 		buf = append(buf, key...)
 		buf = append(buf, '"', ':')
-		val, err := exec(p.expr, input, buf[len(buf):len(buf):cap(buf)])
+		val, err := exec(state, p.expr, input, buf[len(buf):len(buf):cap(buf)])
 		if err != nil {
 			var te *transparentError
 			if errors.As(err, &te) {
@@ -2439,9 +2428,9 @@ func execConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
 // cascaded to all callers of execMulti (execFirstResult, execIterator, etc.),
 // introducing 3 allocs/op for every Tier 0 operation. By collecting combinations
 // first and then calling fn, fn stays out of the recursive machinery entirely.
-func execConstructMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execConstructMulti(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	var combos [][]byte
-	if err := collectPairCombos(node.pairs, 0, input, append(buf[:0], '{'), &combos); err != nil {
+	if err := collectPairCombos(state, node.pairs, 0, input, append(buf[:0], '{'), &combos); err != nil {
 		return err
 	}
 	for _, combo := range combos {
@@ -2456,7 +2445,7 @@ func execConstructMulti(node *op, input []byte, buf []byte, fn func([]byte) erro
 // values into out. It does NOT take fn so that fn from execConstructMulti stays out
 // of any closure captured by execMulti, preventing the escape analysis contamination
 // described in execConstructMulti's comment.
-func collectPairCombos(pairs []pair, idx int, input []byte, prefix []byte, out *[][]byte) error {
+func collectPairCombos(state execState, pairs []pair, idx int, input []byte, prefix []byte, out *[][]byte) error {
 	if idx == len(pairs) {
 		*out = append(*out, append(prefix, '}'))
 		return nil
@@ -2465,7 +2454,7 @@ func collectPairCombos(pairs []pair, idx int, input []byte, prefix []byte, out *
 	p := pairs[idx]
 	isFirst := prefix[len(prefix)-1] == '{'
 	emitWithKey := func(key string) error {
-		return execMulti(p.expr, input, nil, func(val []byte) error {
+		return execMulti(state, p.expr, input, nil, func(val []byte) error {
 			// Build this pair's key:value, branching independently for each val.
 			var obj []byte
 			obj = append(obj, prefix...)
@@ -2476,13 +2465,13 @@ func collectPairCombos(pairs []pair, idx int, input []byte, prefix []byte, out *
 			obj = append(obj, key...)
 			obj = append(obj, '"', ':')
 			obj = append(obj, normalizeNaNInf(val)...)
-			return collectPairCombos(pairs, idx+1, input, obj, out)
+			return collectPairCombos(state, pairs, idx+1, input, obj, out)
 		})
 	}
 	if p.keyExpr == nil {
 		return emitWithKey(p.key)
 	}
-	return execMulti(p.keyExpr, input, nil, func(keyValue []byte) error {
+	return execMulti(state, p.keyExpr, input, nil, func(keyValue []byte) error {
 		key, err := objectKeyStringValue(keyValue)
 		if err != nil {
 			return err
@@ -2506,11 +2495,11 @@ func collectPairCombos(pairs []pair, idx int, input []byte, prefix []byte, out *
 // arithmetic, string concatenation) allocate ~1 buffer per element. Elements
 // that return INPUT sub-slices (field access, identity, comparisons) remain
 // zero-alloc because they don't use the scratch at all.
-func execArrayConstruct(node *op, input []byte, buf []byte) ([]byte, error) {
+func execArrayConstruct(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	buf = append(buf, '[')
 	first := true
 	for _, elem := range node.elems {
-		err := execMulti(elem, input, nil, func(val []byte) error {
+		err := execMulti(state, elem, input, nil, func(val []byte) error {
 			if !first {
 				buf = append(buf, ',')
 			}
@@ -2558,8 +2547,8 @@ func execTypeSingle(input []byte, buf []byte) ([]byte, error) {
 }
 
 // execCompareSingle evaluates a comparison without callbacks (zero-alloc path).
-func execCompareSingle(node *op, input []byte, buf []byte) ([]byte, error) {
-	leftVal, err := execSingle(node.left, input, buf)
+func execCompareSingle(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	leftVal, err := execSingle(state, node.left, input, buf)
 	if err != nil {
 		return nil, err
 	}
@@ -2569,7 +2558,7 @@ func execCompareSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	if buf != nil {
 		rightBuf = leftVal[len(leftVal):len(leftVal):cap(leftVal)]
 	}
-	rightVal, err := execSingle(node.right, input, rightBuf)
+	rightVal, err := execSingle(state, node.right, input, rightBuf)
 	if err != nil {
 		return nil, err
 	}
@@ -2617,11 +2606,11 @@ func execType(input []byte, buf []byte, fn func([]byte) error) error {
 // sides (e.g. range(2) == range(2)), right values are collected first without fn,
 // then fn is called from the left-side closure without any sub-execMulti nesting.
 // For single-output operands the fast path is execCompareSingle via execSingle.
-func execCompare(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execCompare(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	if !hasMultiOutput(node.right) {
 		// Single-output right side: evaluate once per left value with execSingle.
-		return execMulti(node.left, input, nil, func(leftVal []byte) error {
-			rightVal, err := execSingle(node.right, input, nil)
+		return execMulti(state, node.left, input, nil, func(leftVal []byte) error {
+			rightVal, err := execSingle(state, node.right, input, nil)
 			if err != nil {
 				return err
 			}
@@ -2631,13 +2620,13 @@ func execCompare(node *op, input []byte, buf []byte, fn func([]byte) error) erro
 	// Multi-output right side: collect right values first (fn not captured here),
 	// then iterate left, calling fn directly without any nested execMulti call.
 	var rightVals [][]byte
-	if err := execMulti(node.right, input, nil, func(rightVal []byte) error {
+	if err := execMulti(state, node.right, input, nil, func(rightVal []byte) error {
 		rightVals = append(rightVals, rightVal)
 		return nil
 	}); err != nil {
 		return err
 	}
-	return execMulti(node.left, input, nil, func(leftVal []byte) error {
+	return execMulti(state, node.left, input, nil, func(leftVal []byte) error {
 		for _, rightVal := range rightVals {
 			if err := fn(boolResult(buf, evalCmpOp(node.cmpOp, leftVal, rightVal))); err != nil {
 				return err
@@ -2649,14 +2638,14 @@ func execCompare(node *op, input []byte, buf []byte, fn func([]byte) error) erro
 
 // execAnd evaluates left and right; returns true only if both are truthy.
 // Short-circuits: right is not evaluated if left is falsy.
-func execAnd(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execAnd(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	if hasMultiOutput(node.left) || hasMultiOutput(node.right) {
 		if !hasMultiOutput(node.right) {
-			return execMulti(node.left, input, nil, func(leftVal []byte) error {
+			return execMulti(state, node.left, input, nil, func(leftVal []byte) error {
 				if isFalsy(leftVal) {
 					return fn(append(buf[:0], "false"...))
 				}
-				rightVal, err := execSingle(node.right, input, nil)
+				rightVal, err := execSingle(state, node.right, input, nil)
 				if err != nil {
 					return err
 				}
@@ -2667,13 +2656,13 @@ func execAnd(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 			})
 		}
 		var rightVals [][]byte
-		if err := execMulti(node.right, input, nil, func(rightVal []byte) error {
+		if err := execMulti(state, node.right, input, nil, func(rightVal []byte) error {
 			rightVals = append(rightVals, rightVal)
 			return nil
 		}); err != nil {
 			return err
 		}
-		return execMulti(node.left, input, nil, func(leftVal []byte) error {
+		return execMulti(state, node.left, input, nil, func(leftVal []byte) error {
 			for _, rightVal := range rightVals {
 				if isFalsy(leftVal) || isFalsy(rightVal) {
 					if err := fn(append(buf[:0], "false"...)); err != nil {
@@ -2688,14 +2677,14 @@ func execAnd(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 			return nil
 		})
 	}
-	leftVal, err := execSingle(node.left, input, buf)
+	leftVal, err := execSingle(state, node.left, input, buf)
 	if err != nil {
 		return err
 	}
 	if isFalsy(leftVal) {
 		return fn(append(buf[:0], "false"...))
 	}
-	rightVal, err := execSingle(node.right, input, buf)
+	rightVal, err := execSingle(state, node.right, input, buf)
 	if err != nil {
 		return err
 	}
@@ -2707,14 +2696,14 @@ func execAnd(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 
 // execOr evaluates left or right; returns true if either is truthy.
 // Short-circuits: right is not evaluated if left is truthy.
-func execOr(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execOr(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	if hasMultiOutput(node.left) || hasMultiOutput(node.right) {
 		if !hasMultiOutput(node.right) {
-			return execMulti(node.left, input, nil, func(leftVal []byte) error {
+			return execMulti(state, node.left, input, nil, func(leftVal []byte) error {
 				if !isFalsy(leftVal) {
 					return fn(append(buf[:0], "true"...))
 				}
-				rightVal, err := execSingle(node.right, input, nil)
+				rightVal, err := execSingle(state, node.right, input, nil)
 				if err != nil {
 					return err
 				}
@@ -2725,13 +2714,13 @@ func execOr(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 			})
 		}
 		var rightVals [][]byte
-		if err := execMulti(node.right, input, nil, func(rightVal []byte) error {
+		if err := execMulti(state, node.right, input, nil, func(rightVal []byte) error {
 			rightVals = append(rightVals, rightVal)
 			return nil
 		}); err != nil {
 			return err
 		}
-		return execMulti(node.left, input, nil, func(leftVal []byte) error {
+		return execMulti(state, node.left, input, nil, func(leftVal []byte) error {
 			for _, rightVal := range rightVals {
 				if !isFalsy(leftVal) || !isFalsy(rightVal) {
 					if err := fn(append(buf[:0], "true"...)); err != nil {
@@ -2746,14 +2735,14 @@ func execOr(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 			return nil
 		})
 	}
-	leftVal, err := execSingle(node.left, input, buf)
+	leftVal, err := execSingle(state, node.left, input, buf)
 	if err != nil {
 		return err
 	}
 	if !isFalsy(leftVal) {
 		return fn(append(buf[:0], "true"...))
 	}
-	rightVal, err := execSingle(node.right, input, buf)
+	rightVal, err := execSingle(state, node.right, input, buf)
 	if err != nil {
 		return err
 	}
@@ -2764,9 +2753,9 @@ func execOr(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 }
 
 // execSelect evaluates a condition and emits the input if truthy, nothing if falsy.
-func execSelect(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execSelect(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	if isSingleOutputOp(node.child) {
-		condVal, err := execSingle(node.child, input, nil)
+		condVal, err := execSingle(state, node.child, input, nil)
 		if err != nil {
 			return err
 		}
@@ -2775,7 +2764,7 @@ func execSelect(node *op, input []byte, buf []byte, fn func([]byte) error) error
 		}
 		return fn(input)
 	}
-	return execMulti(node.child, input, nil, func(condVal []byte) error {
+	return execMulti(state, node.child, input, nil, func(condVal []byte) error {
 		if isFalsy(condVal) {
 			return nil
 		}
@@ -3002,8 +2991,8 @@ func execFromEntries(input []byte, buf []byte) ([]byte, error) {
 }
 
 // execLast runs the child expression to completion and emits only the last result.
-func execLast(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	result, err := execLastSingle(node, input, buf)
+func execLast(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	result, err := execLastSingle(state, node, input, buf)
 	if err != nil {
 		return err
 	}
@@ -3013,12 +3002,12 @@ func execLast(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	return fn(result)
 }
 
-func execLastSingle(node *op, input []byte, buf []byte) ([]byte, error) {
+func execLastSingle(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	// Keep a reference to the last result — no copy needed.
 	// Results from execMulti with nil buf are either sub-slices of input
 	// (safe for lifetime of this call) or global literals (bTrue/bFalse).
 	var lastResult []byte
-	err := execMulti(node.child, input, nil, func(result []byte) error {
+	err := execMulti(state, node.child, input, nil, func(result []byte) error {
 		lastResult = result
 		return nil
 	})
@@ -3036,8 +3025,8 @@ func execLastSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 
 // execLimit emits at most n results from the child expression.
 // n is evaluated from node.left; the generator is node.child.
-func execLimit(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	nVal, err := execSingle(node.left, input, nil)
+func execLimit(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	nVal, err := execSingle(state, node.left, input, nil)
 	if err != nil {
 		return err
 	}
@@ -3053,7 +3042,7 @@ func execLimit(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return nil
 	}
 	count := 0
-	err = execMulti(node.child, input, buf, func(result []byte) error {
+	err = execMulti(state, node.child, input, buf, func(result []byte) error {
 		if err := fn(result); err != nil {
 			return err
 		}
@@ -3069,8 +3058,8 @@ func execLimit(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	return err
 }
 
-func execSkip(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	return execMulti(node.left, input, nil, func(countVal []byte) error {
+func execSkip(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	return execMulti(state, node.left, input, nil, func(countVal []byte) error {
 		nf, ok := parseJSONFloat(countVal)
 		if !ok {
 			return fmt.Errorf("skip: count must be a number")
@@ -3080,7 +3069,7 @@ func execSkip(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 			return fmt.Errorf("skip doesn't support negative count")
 		}
 		skipped := 0
-		return execMulti(node.child, input, buf, func(result []byte) error {
+		return execMulti(state, node.child, input, buf, func(result []byte) error {
 			if skipped < n {
 				skipped++
 				return nil
@@ -3211,11 +3200,11 @@ func execAdd(input []byte, buf []byte, fn func([]byte) error) error {
 
 // execFlattenInto flattens a nested array into a single-level array.
 // node.index = -1 means unlimited depth; >= 0 means flatten that many levels.
-func execFlattenInto(input []byte, buf []byte, node *op) ([]byte, error) {
+func execFlattenInto(state execState, input []byte, buf []byte, node *op) ([]byte, error) {
 	maxDepth := node.index
 	if node.child != nil {
 		// flatten(n) — evaluate n
-		depthVal, err := execSingle(node.child, input, nil)
+		depthVal, err := execSingle(state, node.child, input, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -3371,7 +3360,7 @@ func execJoin(input []byte, buf []byte, sep string) ([]byte, error) {
 	return buf, nil
 }
 
-func execStrftimeBuiltin(node *op, input []byte, buf []byte, local bool, fn func([]byte) error) error {
+func execStrftimeBuiltin(state execState, node *op, input []byte, buf []byte, local bool, fn func([]byte) error) error {
 	name := "strftime/1"
 	loc := time.UTC
 	if local {
@@ -3382,7 +3371,7 @@ func execStrftimeBuiltin(node *op, input []byte, buf []byte, local bool, fn func
 	if err != nil {
 		return &transparentError{err: fmt.Errorf("%s requires parsed datetime inputs", name)}
 	}
-	formats, err := collectExecOutputs(node.child, input)
+	formats, err := collectExecOutputs(state, node.child, input)
 	if err != nil {
 		return err
 	}
@@ -3405,12 +3394,12 @@ func execStrftimeBuiltin(node *op, input []byte, buf []byte, local bool, fn func
 	return nil
 }
 
-func execStrptimeBuiltin(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execStrptimeBuiltin(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	value, err := decodeJSONStringValue(input)
 	if err != nil {
 		return &transparentError{err: fmt.Errorf("strptime/1 requires string inputs")}
 	}
-	formats, err := collectExecOutputs(node.child, input)
+	formats, err := collectExecOutputs(state, node.child, input)
 	if err != nil {
 		return err
 	}
@@ -3608,9 +3597,9 @@ func jqTimeLayout(format string) (string, error) {
 	return b.String(), nil
 }
 
-func execCombinations(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execCombinations(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	if node.child != nil {
-		nVal, err := execSingle(node.child, input, nil)
+		nVal, err := execSingle(state, node.child, input, nil)
 		if err != nil {
 			return err
 		}
@@ -3687,7 +3676,7 @@ func appendJSONArrayValues(buf []byte, elems [][]byte) []byte {
 // execSlice implements .[n:m], .[:m], .[n:] on arrays and strings.
 // node.left = start expr (nil = 0), node.right = end expr (nil = length).
 // Negative indices count from the end. Zero-alloc: writes directly into buf.
-func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
+func execSlice(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) {
@@ -3728,12 +3717,12 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 
 	// Resolve start bound
 	start := 0
-	scopeInput := currentIndexScope()
+	scopeInput := state.currentIndexScope()
 	if scopeInput == nil {
 		scopeInput = input
 	}
 	if node.left != nil {
-		sv, err := execSingle(node.left, scopeInput, nil)
+		sv, err := execSingle(state, node.left, scopeInput, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -3747,7 +3736,7 @@ func execSlice(node *op, input []byte, buf []byte) ([]byte, error) {
 	// Resolve end bound
 	end := length
 	if node.right != nil {
-		sv, err := execSingle(node.right, scopeInput, nil)
+		sv, err := execSingle(state, node.right, scopeInput, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -3830,8 +3819,8 @@ func resolveSliceBound(f float64, length int, isEnd bool) int {
 	return idx
 }
 
-func execNeg(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	return execMulti(node.child, input, nil, func(value []byte) error {
+func execNeg(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	return execMulti(state, node.child, input, nil, func(value []byte) error {
 		result, err := negateJSONValue(value, buf)
 		if err != nil {
 			return err
@@ -3840,8 +3829,8 @@ func execNeg(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	})
 }
 
-func execNegSingle(node *op, input []byte, buf []byte) ([]byte, error) {
-	value, err := execSingle(node.child, input, nil)
+func execNegSingle(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	value, err := execSingle(state, node.child, input, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -3870,21 +3859,21 @@ func previewJSONValue(value []byte) string {
 
 // execPlus implements expr + expr: null identity, string concat, array concat, numeric add.
 // Uses nil scratch for operands so results are input sub-slices (zero-alloc).
-func execPlus(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	result, err := execPlusSingle(node, input, buf)
+func execPlus(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	result, err := execPlusSingle(state, node, input, buf)
 	if err != nil {
 		return err
 	}
 	return fn(result)
 }
 
-func execPlusSingle(node *op, input []byte, buf []byte) ([]byte, error) {
+func execPlusSingle(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	// Evaluate both operands with nil scratch — cap-limited sub-slices, no alloc.
-	leftVal, err := execSingle(node.left, input, nil)
+	leftVal, err := execSingle(state, node.left, input, nil)
 	if err != nil {
 		return nil, err
 	}
-	rightVal, err := execSingle(node.right, input, nil)
+	rightVal, err := execSingle(state, node.right, input, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -4195,9 +4184,9 @@ func execValues(input []byte, buf []byte, fn func([]byte) error) error {
 
 // execIn implements in(obj): tests whether the input value is a key in obj (objects)
 // or an index in range for arrays. E.g. "foo" | in({"foo":1}) = true.
-func execIn(node *op, input []byte, buf []byte) []byte {
+func execIn(state execState, node *op, input []byte, buf []byte) []byte {
 	// Evaluate the container expression
-	container, err := execSingle(node.child, input, nil)
+	container, err := execSingle(state, node.child, input, nil)
 	if err != nil {
 		return boolResult(buf, false)
 	}
@@ -4233,8 +4222,8 @@ func execIn(node *op, input []byte, buf []byte) []byte {
 	return boolResult(buf, false)
 }
 
-func execINBuiltin(node *op, input []byte, buf []byte) ([]byte, error) {
-	rightVals, err := collectExecOutputs(node.child, input)
+func execINBuiltin(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	rightVals, err := collectExecOutputs(state, node.child, input)
 	if err != nil {
 		return nil, err
 	}
@@ -4246,7 +4235,7 @@ func execINBuiltin(node *op, input []byte, buf []byte) ([]byte, error) {
 		}
 		return boolResult(buf, false), nil
 	}
-	leftVals, err := collectExecOutputs(node.left, input)
+	leftVals, err := collectExecOutputs(state, node.left, input)
 	if err != nil {
 		return nil, err
 	}
@@ -4260,7 +4249,7 @@ func execINBuiltin(node *op, input []byte, buf []byte) ([]byte, error) {
 	return boolResult(buf, false), nil
 }
 
-func execBsearch(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execBsearch(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	input = trimWhitespace(input)
 	s := scanner{data: input}
 	s.skipWhitespace()
@@ -4272,7 +4261,7 @@ func execBsearch(node *op, input []byte, buf []byte, fn func([]byte) error) erro
 		elems = append(elems, input[elemStart:elemEnd])
 		return true
 	})
-	return execMulti(node.child, input, nil, func(search []byte) error {
+	return execMulti(state, node.child, input, nil, func(search []byte) error {
 		idx := binarySearchJSON(elems, search)
 		return fn(appendInt(buf[:0], idx))
 	})
@@ -4299,15 +4288,15 @@ type indexedObjectEntry struct {
 	value []byte
 }
 
-func execINDEXBuiltin(node *op, input []byte, buf []byte) ([]byte, error) {
-	streamVals, err := collectExecOutputs(node.left, input)
+func execINDEXBuiltin(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	streamVals, err := collectExecOutputs(state, node.left, input)
 	if err != nil {
 		return nil, err
 	}
 	var entries []indexedObjectEntry
 	positions := make(map[string]int)
 	for _, val := range streamVals {
-		keyVals, err := collectExecOutputs(node.child, val)
+		keyVals, err := collectExecOutputs(state, node.child, val)
 		if err != nil {
 			return nil, err
 		}
@@ -4339,8 +4328,8 @@ func execINDEXBuiltin(node *op, input []byte, buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
-func execJOINBuiltin(node *op, input []byte, buf []byte) ([]byte, error) {
-	indexVal, err := execSingle(node.left, input, nil)
+func execJOINBuiltin(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	indexVal, err := execSingle(state, node.left, input, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -4353,7 +4342,7 @@ func execJOINBuiltin(node *op, input []byte, buf []byte) ([]byte, error) {
 	out := append(buf[:0], '[')
 	first := true
 	appendJoin := func(elem []byte) error {
-		keyVals, err := collectExecOutputs(node.child, elem)
+		keyVals, err := collectExecOutputs(state, node.child, elem)
 		if err != nil {
 			return err
 		}
@@ -4381,7 +4370,7 @@ func execJOINBuiltin(node *op, input []byte, buf []byte) ([]byte, error) {
 	in := scanner{data: trimWhitespace(input)}
 	in.skipWhitespace()
 	if in.pos < len(in.data) && in.data[in.pos] == '[' {
-		if err := execMulti(&op{typ: opIterator}, input, nil, appendJoin); err != nil {
+		if err := execMulti(state, &op{typ: opIterator}, input, nil, appendJoin); err != nil {
 			return nil, err
 		}
 	} else {
@@ -4413,9 +4402,9 @@ func execDebug(input []byte) {
 //	last=true, all=false  → rindex: last occurrence
 //	last=false, all=false → index:  first occurrence, null if not found
 //	last=false, all=true  → indices: all occurrences as array
-func execFindIndex(node *op, input []byte, buf []byte, last, all bool) []byte {
+func execFindIndex(state execState, node *op, input []byte, buf []byte, last, all bool) []byte {
 	// Evaluate the search value
-	searchVal, err := execSingle(node.child, input, nil)
+	searchVal, err := execSingle(state, node.child, input, nil)
 	if err != nil {
 		if all {
 			return append(buf, "[]"...)
@@ -4754,8 +4743,8 @@ func execToStreamValue(value []byte, frame *pathFrame, buf []byte, fn func([]byt
 	}
 }
 
-func execFindIndexMulti(node *op, input []byte, buf []byte, fn func([]byte) error, last, all bool) error {
-	searchVals, err := collectExecOutputs(node.child, input)
+func execFindIndexMulti(state execState, node *op, input []byte, buf []byte, fn func([]byte) error, last, all bool) error {
+	searchVals, err := collectExecOutputs(state, node.child, input)
 	if err != nil {
 		if all {
 			return fn(append(buf[:0], "[]"...))
@@ -4770,7 +4759,7 @@ func execFindIndexMulti(node *op, input []byte, buf []byte, fn func([]byte) erro
 	}
 	for _, searchVal := range searchVals {
 		searchNode := &op{child: &op{typ: opLiteral, literal: searchVal}}
-		if err := fn(execFindIndex(searchNode, input, buf[:0], last, all)); err != nil {
+		if err := fn(execFindIndex(state, searchNode, input, buf[:0], last, all)); err != nil {
 			return err
 		}
 	}
@@ -4788,8 +4777,8 @@ func appendStreamEvent(dst []byte, frame *pathFrame, value []byte, withValue boo
 	return dst
 }
 
-func execTruncateStream(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	depthVal, err := execSingle(&op{typ: opIdentity}, input, nil)
+func execTruncateStream(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	depthVal, err := execSingle(state, &op{typ: opIdentity}, input, nil)
 	if err != nil {
 		return err
 	}
@@ -4798,7 +4787,7 @@ func execTruncateStream(node *op, input []byte, buf []byte, fn func([]byte) erro
 		return fmt.Errorf("truncate_stream depth must be numeric")
 	}
 	depth := int(f)
-	return execMulti(node.child, input, nil, func(event []byte) error {
+	return execMulti(state, node.child, input, nil, func(event []byte) error {
 		truncated, keep, err := truncateStreamEvent(event, depth, buf[:0])
 		if err != nil {
 			return err
@@ -4849,8 +4838,8 @@ func truncateStreamEvent(event []byte, depth int, buf []byte) ([]byte, bool, err
 	return out, true, nil
 }
 
-func execFromStream(node *op, input []byte, buf []byte) ([]byte, error) {
-	events, err := collectExecOutputs(node.child, input)
+func execFromStream(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	events, err := collectExecOutputs(state, node.child, input)
 	if err != nil {
 		return nil, err
 	}
@@ -4911,8 +4900,8 @@ func decodeStreamEvent(event []byte) (pathVal []byte, valueVal []byte, hasValue 
 	return pathVal, valueVal, hasValue, nil
 }
 
-func execGetPath(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	return execMulti(node.child, input, nil, func(pathVal []byte) error {
+func execGetPath(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	return execMulti(state, node.child, input, nil, func(pathVal []byte) error {
 		result, err := execGetPathOne(input, pathVal, buf)
 		if err != nil {
 			return err
@@ -4934,81 +4923,81 @@ type pathTraceState struct {
 	opaque bool
 }
 
-func execPath(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execPath(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	root := pathTraceState{value: trimWhitespace(input)}
-	return execPathExpr(node.child, root, buf, func(state pathTraceState) error {
-		if state.opaque {
-			return invalidPathResultError(state.value)
+	return execPathExpr(state, node.child, root, buf, func(trace pathTraceState) error {
+		if trace.opaque {
+			return invalidPathResultError(trace.value)
 		}
-		out := appendPathFrameJSON(buf[:0], state.frame)
+		out := appendPathFrameJSON(buf[:0], trace.frame)
 		return fn(out)
 	})
 }
 
-func execPathExpr(node *op, state pathTraceState, buf []byte, emit func(pathTraceState) error) error {
+func execPathExpr(state execState, node *op, trace pathTraceState, buf []byte, emit func(pathTraceState) error) error {
 	if node == nil {
-		return emit(state)
+		return emit(trace)
 	}
 
 	switch node.typ {
 	case opIdentity:
-		return emit(state)
+		return emit(trace)
 	case opField:
-		if state.opaque {
-			return invalidPathFieldError(state.value, node.field)
+		if trace.opaque {
+			return invalidPathFieldError(trace.value, node.field)
 		}
 		next := pathTraceState{
-			value: pathFieldTraceValue(state.value, node.field),
+			value: pathFieldTraceValue(trace.value, node.field),
 			frame: &pathFrame{
-				parent: state.frame,
+				parent: trace.frame,
 				kind:   pathStepString,
 				rawKey: []byte(node.field),
 			},
 		}
 		if node.child != nil {
-			return withIndexScope(chainedIndexScope(state.value), func() error {
-				return execPathExpr(node.child, next, buf, emit)
+			return state.withIndexScope(state.chainedIndexScope(trace.value), func(state execState) error {
+				return execPathExpr(state, node.child, next, buf, emit)
 			})
 		}
 		return emit(next)
 	case opIndex:
-		if state.opaque {
-			return invalidPathIndexError(state.value, node.index)
+		if trace.opaque {
+			return invalidPathIndexError(trace.value, node.index)
 		}
 		next := pathTraceState{
-			value: pathIndexTraceValue(state.value, node.index),
+			value: pathIndexTraceValue(trace.value, node.index),
 			frame: &pathFrame{
-				parent: state.frame,
+				parent: trace.frame,
 				kind:   pathStepNumber,
 				index:  node.index,
 			},
 		}
 		if node.child != nil {
-			return withIndexScope(chainedIndexScope(state.value), func() error {
-				return execPathExpr(node.child, next, buf, emit)
+			return state.withIndexScope(state.chainedIndexScope(trace.value), func(state execState) error {
+				return execPathExpr(state, node.child, next, buf, emit)
 			})
 		}
 		return emit(next)
 	case opIndexExpr:
-		scopeInput := currentIndexScope()
+		scopeInput := state.currentIndexScope()
 		if scopeInput == nil {
-			scopeInput = state.value
+			scopeInput = trace.value
 		}
-		keys, err := collectExecOutputs(node.left, scopeInput)
+		keys, err := collectExecOutputs(state, node.left, scopeInput)
 		if err != nil {
 			return err
 		}
 		for _, key := range keys {
-			if state.opaque {
-				return invalidPathDynamicIndexError(state.value, key)
+			if trace.opaque {
+				return invalidPathDynamicIndexError(trace.value, key)
 			}
-			next, err := pathTraceDynamicIndex(state, key)
+			next, err := pathTraceDynamicIndex(trace, key)
 			if err != nil {
 				return err
 			}
 			if node.child != nil {
-				if err := withIndexScope(chainedIndexScope(state.value), func() error {
-					return execPathExpr(node.child, next, buf, emit)
+				if err := state.withIndexScope(state.chainedIndexScope(trace.value), func(state execState) error {
+					return execPathExpr(state, node.child, next, buf, emit)
 				}); err != nil {
 					return err
 				}
@@ -5020,56 +5009,56 @@ func execPathExpr(node *op, state pathTraceState, buf []byte, emit func(pathTrac
 		}
 		return nil
 	case opIterator:
-		if state.opaque {
-			return invalidPathIteratorError(state.value)
+		if trace.opaque {
+			return invalidPathIteratorError(trace.value)
 		}
-		return withIndexScope(chainedIndexScope(state.value), func() error {
-			return execPathIterator(node, state, buf, emit)
+		return state.withIndexScope(state.chainedIndexScope(trace.value), func(state execState) error {
+			return execPathIterator(state, node, trace, buf, emit)
 		})
 	case opRecursiveDescent:
-		if err := emit(state); err != nil {
+		if err := emit(trace); err != nil {
 			return err
 		}
-		return execPathRecursive(state, buf, emit)
+		return execPathRecursive(trace, buf, emit)
 	case opPipe:
-		return execPathExpr(node.left, state, buf, func(next pathTraceState) error {
-			return execPathExpr(node.right, next, buf, emit)
+		return execPathExpr(state, node.left, trace, buf, func(next pathTraceState) error {
+			return execPathExpr(state, node.right, next, buf, emit)
 		})
 	case opApply:
-		return execPathExpr(node.left, state, buf, func(next pathTraceState) error {
-			return withIndexScope(chainedIndexScope(state.value), func() error {
-				return execPathExpr(node.right, next, buf, emit)
+		return execPathExpr(state, node.left, trace, buf, func(next pathTraceState) error {
+			return state.withIndexScope(state.chainedIndexScope(trace.value), func(state execState) error {
+				return execPathExpr(state, node.right, next, buf, emit)
 			})
 		})
 	case opSelect:
-		match, err := pathsFilterMatch(node.child, state.value)
+		match, err := pathsFilterMatch(state, node.child, trace.value)
 		if err != nil {
 			return err
 		}
 		if match {
-			return emit(state)
+			return emit(trace)
 		}
 		return nil
 	case opGenerator:
 		for _, elem := range node.elems {
-			if err := execPathExpr(elem, state, buf, emit); err != nil {
+			if err := execPathExpr(state, elem, trace, buf, emit); err != nil {
 				return err
 			}
 		}
 		return nil
 	default:
-		return execMulti(node, state.value, nil, func(out []byte) error {
+		return execMulti(state, node, trace.value, nil, func(out []byte) error {
 			return emit(pathTraceState{
 				value:  cloneExecBytes(out),
-				frame:  state.frame,
+				frame:  trace.frame,
 				opaque: true,
 			})
 		})
 	}
 }
 
-func execPathIterator(node *op, state pathTraceState, buf []byte, emit func(pathTraceState) error) error {
-	s := scanner{data: state.value}
+func execPathIterator(state execState, node *op, trace pathTraceState, buf []byte, emit func(pathTraceState) error) error {
+	s := scanner{data: trace.value}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) {
 		return nil
@@ -5080,15 +5069,15 @@ func execPathIterator(node *op, state pathTraceState, buf []byte, emit func(path
 		var iterErr error
 		s.arrayIter(func(index int, elemStart, elemEnd int) bool {
 			next := pathTraceState{
-				value: state.value[elemStart:elemEnd],
+				value: trace.value[elemStart:elemEnd],
 				frame: &pathFrame{
-					parent: state.frame,
+					parent: trace.frame,
 					kind:   pathStepNumber,
 					index:  index,
 				},
 			}
 			if node.child != nil {
-				iterErr = execPathExpr(node.child, next, buf, emit)
+				iterErr = execPathExpr(state, node.child, next, buf, emit)
 			} else {
 				iterErr = emit(next)
 			}
@@ -5099,15 +5088,15 @@ func execPathIterator(node *op, state pathTraceState, buf []byte, emit func(path
 		var iterErr error
 		s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
 			next := pathTraceState{
-				value: state.value[valueStart:valueEnd],
+				value: trace.value[valueStart:valueEnd],
 				frame: &pathFrame{
-					parent: state.frame,
+					parent: trace.frame,
 					kind:   pathStepString,
 					rawKey: key,
 				},
 			}
 			if node.child != nil {
-				iterErr = execPathExpr(node.child, next, buf, emit)
+				iterErr = execPathExpr(state, node.child, next, buf, emit)
 			} else {
 				iterErr = emit(next)
 			}
@@ -5169,13 +5158,13 @@ func execPathRecursiveNode(state pathTraceState, buf []byte, emit func(pathTrace
 	return execPathRecursive(state, buf, emit)
 }
 
-func execPick(node *op, input []byte, buf []byte) ([]byte, error) {
+func execPick(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	current := bNull
 	for _, expr := range node.elems {
 		if hasNegativePathIndex(expr) {
 			return nil, fmt.Errorf("Out of bounds negative array index")
 		}
-		paths, err := collectAssignPaths(expr, input)
+		paths, err := collectAssignPaths(state, expr, input)
 		if err != nil {
 			return nil, err
 		}
@@ -5213,18 +5202,18 @@ func hasNegativePathIndex(node *op) bool {
 	return hasNegativePathIndex(node.left) || hasNegativePathIndex(node.right) || hasNegativePathIndex(node.child) || hasNegativePathIndex(node.extra)
 }
 
-func execAssign(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execAssign(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	if node.left != nil && node.left.typ == opSlice {
-		return execAssignSlice(node, input, buf, fn)
+		return execAssignSlice(state, node, input, buf, fn)
 	}
 	if isNaNIndexAssign(node.left) {
 		return &transparentError{err: fmt.Errorf("Cannot set array element at NaN index")}
 	}
-	paths, err := collectAssignPaths(node.left, input)
+	paths, err := collectAssignPaths(state, node.left, input)
 	if err != nil {
 		return err
 	}
-	values, err := collectExecOutputs(node.right, input)
+	values, err := collectExecOutputs(state, node.right, input)
 	if err != nil {
 		return err
 	}
@@ -5251,13 +5240,13 @@ func isNaNIndexAssign(node *op) bool {
 	return lit == "NaN" || lit == "infinite" || lit == "-infinite"
 }
 
-func execAssignSlice(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	values, err := collectExecOutputs(node.right, input)
+func execAssignSlice(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	values, err := collectExecOutputs(state, node.right, input)
 	if err != nil {
 		return err
 	}
 	for _, value := range values {
-		current, err := setRootSliceValue(input, node.left, value, nil)
+		current, err := setRootSliceValue(state, input, node.left, value, nil)
 		if err != nil {
 			return err
 		}
@@ -5268,7 +5257,7 @@ func execAssignSlice(node *op, input []byte, buf []byte, fn func([]byte) error) 
 	return nil
 }
 
-func setRootSliceValue(input []byte, slice *op, value []byte, buf []byte) ([]byte, error) {
+func setRootSliceValue(state execState, input []byte, slice *op, value []byte, buf []byte) ([]byte, error) {
 	s := scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) {
@@ -5281,7 +5270,7 @@ func setRootSliceValue(input []byte, slice *op, value []byte, buf []byte) ([]byt
 		return nil, dynamicIndexNumberAccessError(input)
 	}
 	length := s.arrayLen()
-	start, end, err := resolveDelSliceBounds(slice, input, length)
+	start, end, err := resolveDelSliceBounds(state, slice, input, length)
 	if err != nil {
 		return nil, err
 	}
@@ -5336,8 +5325,8 @@ func decodeArrayElements(value []byte) ([][]byte, error) {
 	return elems, nil
 }
 
-func execUpdate(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	paths, err := collectAssignPaths(node.left, input)
+func execUpdate(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	paths, err := collectAssignPaths(state, node.left, input)
 	if err != nil {
 		return err
 	}
@@ -5348,7 +5337,7 @@ func execUpdate(node *op, input []byte, buf []byte, fn func([]byte) error) error
 		if err != nil {
 			return err
 		}
-		values, err := collectExecOutputs(node.right, oldVal)
+		values, err := collectExecOutputs(state, node.right, oldVal)
 		if err != nil {
 			return err
 		}
@@ -5376,8 +5365,8 @@ func execUpdate(node *op, input []byte, buf []byte, fn func([]byte) error) error
 	return fn(append(buf[:0], current...))
 }
 
-func execUpdateAlt(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	paths, err := collectAssignPaths(node.left, input)
+func execUpdateAlt(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	paths, err := collectAssignPaths(state, node.left, input)
 	if err != nil {
 		return err
 	}
@@ -5392,7 +5381,7 @@ func execUpdateAlt(node *op, input []byte, buf []byte, fn func([]byte) error) er
 			mutations = append(mutations, pathMutation{steps: steps, order: i, value: cloneExecBytes(oldVal)})
 			continue
 		}
-		values, err := collectExecOutputs(node.right, input)
+		values, err := collectExecOutputs(state, node.right, input)
 		if err != nil {
 			return err
 		}
@@ -5420,12 +5409,12 @@ func execUpdateAlt(node *op, input []byte, buf []byte, fn func([]byte) error) er
 	return fn(append(buf[:0], current...))
 }
 
-func execUpdateMath(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	paths, err := collectAssignPaths(node.left, input)
+func execUpdateMath(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	paths, err := collectAssignPaths(state, node.left, input)
 	if err != nil {
 		return err
 	}
-	rhs, err := execSingle(node.right, input, nil)
+	rhs, err := execSingle(state, node.right, input, nil)
 	if err != nil {
 		return err
 	}
@@ -5465,13 +5454,13 @@ func execUpdateMath(node *op, input []byte, buf []byte, fn func([]byte) error) e
 	return fn(append(buf[:0], current...))
 }
 
-func collectAssignPaths(node *op, input []byte) ([][]pathStep, error) {
+func collectAssignPaths(state execState, node *op, input []byte) ([][]pathStep, error) {
 	if node == nil {
 		return nil, nil
 	}
 	if node.typ == opBind {
-		baseCtx := currentExecContext()
-		values, err := collectExecOutputs(node.left, input)
+		baseCtx := state.currentExecContext()
+		values, err := collectExecOutputs(state, node.left, input)
 		if err != nil {
 			return nil, err
 		}
@@ -5482,9 +5471,9 @@ func collectAssignPaths(node *op, input []byte) ([][]pathStep, error) {
 				return nil, err
 			}
 			var nested [][]pathStep
-			if err := withExecContext(nextCtx, func() error {
+			if err := state.withExecContext(nextCtx, func(state execState) error {
 				var innerErr error
-				nested, innerErr = collectAssignPaths(node.right, input)
+				nested, innerErr = collectAssignPaths(state, node.right, input)
 				return innerErr
 			}); err != nil {
 				return nil, err
@@ -5494,21 +5483,21 @@ func collectAssignPaths(node *op, input []byte) ([][]pathStep, error) {
 		return all, nil
 	}
 	if node.typ == opCall {
-		callerCtx := currentExecContext()
+		callerCtx := state.currentExecContext()
 		def := callerCtx.lookupFunc(funcKey(node.name, len(node.elems)))
 		if def == nil {
 			return nil, fmt.Errorf("%s is not defined", funcKey(node.name, len(node.elems)))
 		}
-		callCtxs, err := bindCallContexts(def, callerCtx, node.elems, input)
+		callCtxs, err := bindCallContexts(state, def, callerCtx, node.elems, input)
 		if err != nil {
 			return nil, err
 		}
 		var all [][]pathStep
 		for _, callCtx := range callCtxs {
 			var nested [][]pathStep
-			if err := withExecContext(callCtx, func() error {
+			if err := state.withExecContext(callCtx, func(state execState) error {
 				var innerErr error
-				nested, innerErr = collectAssignPaths(def.body, input)
+				nested, innerErr = collectAssignPaths(state, def.body, input)
 				return innerErr
 			}); err != nil {
 				return nil, err
@@ -5518,7 +5507,7 @@ func collectAssignPaths(node *op, input []byte) ([][]pathStep, error) {
 		return all, nil
 	}
 	if node.typ == opGetPath {
-		pathVals, err := collectExecOutputs(node.child, input)
+		pathVals, err := collectExecOutputs(state, node.child, input)
 		if err != nil {
 			return nil, err
 		}
@@ -5534,7 +5523,7 @@ func collectAssignPaths(node *op, input []byte) ([][]pathStep, error) {
 	}
 
 	var paths [][]pathStep
-	err := execPath(&op{typ: opPath, child: node}, input, nil, func(pathVal []byte) error {
+	err := execPath(state, &op{typ: opPath, child: node}, input, nil, func(pathVal []byte) error {
 		steps, err := decodePath(pathVal)
 		if err != nil {
 			return err
@@ -5658,12 +5647,12 @@ func deletePathDecoded(input []byte, steps []pathStep) ([]byte, error) {
 	return out, err
 }
 
-func execPaths(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	return execPathsValue(node.child, trimWhitespace(input), nil, buf, fn)
+func execPaths(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	return execPathsValue(state, node.child, trimWhitespace(input), nil, buf, fn)
 }
 
-func execReduce(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	states, err := collectExecOutputs(node.right, input)
+func execReduce(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	states, err := collectExecOutputs(state, node.right, input)
 	if err != nil {
 		return err
 	}
@@ -5672,19 +5661,19 @@ func execReduce(node *op, input []byte, buf []byte, fn func([]byte) error) error
 	}
 
 	finalStates := make([][]byte, 0, len(states))
-	baseCtx := currentExecContext()
+	baseCtx := state.currentExecContext()
 	for _, initState := range states {
 		currentStates := [][]byte{initState}
-		err = execMulti(node.left, input, nil, func(item []byte) error {
+		err = execMulti(state, node.left, input, nil, func(item []byte) error {
 			nextStates := make([][]byte, 0, len(currentStates))
-			for _, state := range currentStates {
+			for _, currentState := range currentStates {
 				nextCtx, err := bindOpValue(baseCtx, node, item)
 				if err != nil {
 					return err
 				}
-				err = withExecContext(nextCtx, func() error {
+				err = state.withExecContext(nextCtx, func(state execState) error {
 					var last []byte
-					if err := execMulti(node.child, state, nil, func(out []byte) error {
+					if err := execMulti(state, node.child, currentState, nil, func(out []byte) error {
 						last = cloneExecBytes(out)
 						return nil
 					}); err != nil {
@@ -5715,8 +5704,8 @@ func execReduce(node *op, input []byte, buf []byte, fn func([]byte) error) error
 	return nil
 }
 
-func execForeach(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	states, err := collectExecOutputs(node.right, input)
+func execForeach(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	states, err := collectExecOutputs(state, node.right, input)
 	if err != nil {
 		return err
 	}
@@ -5724,22 +5713,22 @@ func execForeach(node *op, input []byte, buf []byte, fn func([]byte) error) erro
 		return nil
 	}
 
-	baseCtx := currentExecContext()
+	baseCtx := state.currentExecContext()
 	for _, initState := range states {
 		currentStates := [][]byte{initState}
-		err = execMulti(node.left, input, nil, func(item []byte) error {
+		err = execMulti(state, node.left, input, nil, func(item []byte) error {
 			nextStates := make([][]byte, 0, len(currentStates))
-			for _, state := range currentStates {
+			for _, currentState := range currentStates {
 				var last []byte
 				nextCtx, err := bindOpValue(baseCtx, node, item)
 				if err != nil {
 					return err
 				}
-				err = withExecContext(nextCtx, func() error {
-					return execMulti(node.child, state, nil, func(updated []byte) error {
+				err = state.withExecContext(nextCtx, func(state execState) error {
+					return execMulti(state, node.child, currentState, nil, func(updated []byte) error {
 						updatedState := cloneExecBytes(updated)
 						last = updatedState
-						if err := execMulti(node.extra, updatedState, nil, func(out []byte) error {
+						if err := execMulti(state, node.extra, updatedState, nil, func(out []byte) error {
 							return fn(append(buf[:0], out...))
 						}); err != nil {
 							return err
@@ -5764,10 +5753,10 @@ func execForeach(node *op, input []byte, buf []byte, fn func([]byte) error) erro
 	return nil
 }
 
-func execWhile(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execWhile(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	current := cloneExecBytes(input)
 	for {
-		condVal, err := execSingle(node.left, current, nil)
+		condVal, err := execSingle(state, node.left, current, nil)
 		if err != nil {
 			return err
 		}
@@ -5777,7 +5766,7 @@ func execWhile(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		if err := fn(append(buf[:0], current...)); err != nil {
 			return err
 		}
-		next, err := execSingle(node.child, current, nil)
+		next, err := execSingle(state, node.child, current, nil)
 		if err != nil {
 			return err
 		}
@@ -5785,25 +5774,25 @@ func execWhile(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 	}
 }
 
-func execRepeat(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execRepeat(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	for {
-		if err := execMulti(node.child, input, buf, fn); err != nil {
+		if err := execMulti(state, node.child, input, buf, fn); err != nil {
 			return err
 		}
 	}
 }
 
-func execUntil(node *op, input []byte, buf []byte) ([]byte, error) {
+func execUntil(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	current := cloneExecBytes(input)
 	for {
-		condVal, err := execSingle(node.left, current, nil)
+		condVal, err := execSingle(state, node.left, current, nil)
 		if err != nil {
 			return nil, err
 		}
 		if !isFalsy(condVal) {
 			return append(buf[:0], current...), nil
 		}
-		next, err := execSingle(node.child, current, nil)
+		next, err := execSingle(state, node.child, current, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -5811,8 +5800,8 @@ func execUntil(node *op, input []byte, buf []byte) ([]byte, error) {
 	}
 }
 
-func execDefScope(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	baseCtx := currentExecContext()
+func execDefScope(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	baseCtx := state.currentExecContext()
 	table := &funcTable{defs: map[string]*funcDef{}, parent: nil}
 	if baseCtx != nil {
 		table.parent = baseCtx.funcs
@@ -5832,25 +5821,25 @@ func execDefScope(node *op, input []byte, buf []byte, fn func([]byte) error) err
 		out.funcs = table
 		nextCtx = &out
 	}
-	return withExecContext(nextCtx, func() error {
-		return execMulti(node.child, input, buf, fn)
+	return state.withExecContext(nextCtx, func(state execState) error {
+		return execMulti(state, node.child, input, buf, fn)
 	})
 }
 
-func execCall(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	callerCtx := currentExecContext()
+func execCall(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	callerCtx := state.currentExecContext()
 	def := callerCtx.lookupFunc(funcKey(node.name, len(node.elems)))
 	if def == nil {
 		return fmt.Errorf("%s is not defined", funcKey(node.name, len(node.elems)))
 	}
-	callCtxs, err := bindCallContexts(def, callerCtx, node.elems, input)
+	callCtxs, err := bindCallContexts(state, def, callerCtx, node.elems, input)
 	if err != nil {
 		return err
 	}
 	for _, callCtx := range callCtxs {
 		var outputs [][]byte
-		if err := withExecContext(callCtx, func() error {
-			return execMulti(def.body, input, nil, func(out []byte) error {
+		if err := state.withExecContext(callCtx, func(state execState) error {
+			return execMulti(state, def.body, input, nil, func(out []byte) error {
 				outputs = append(outputs, cloneExecBytes(out))
 				return nil
 			})
@@ -5870,7 +5859,7 @@ func execCall(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	return nil
 }
 
-func bindCallContexts(def *funcDef, callerCtx *execContext, args []*op, input []byte) ([]*execContext, error) {
+func bindCallContexts(state execState, def *funcDef, callerCtx *execContext, args []*op, input []byte) ([]*execContext, error) {
 	var callCtx *execContext
 	if callerCtx != nil {
 		callCtx = &execContext{
@@ -5912,7 +5901,7 @@ func bindCallContexts(def *funcDef, callerCtx *execContext, args []*op, input []
 		if !def.valueParams[i] {
 			continue
 		}
-		values, err := collectExecOutputs(args[i], input)
+		values, err := collectExecOutputs(state, args[i], input)
 		if err != nil {
 			return nil, err
 		}
@@ -5944,9 +5933,9 @@ func callerCtxFuncs(ctx *execContext) *funcTable {
 	return ctx.funcs
 }
 
-func collectExecOutputs(node *op, input []byte) ([][]byte, error) {
+func collectExecOutputs(state execState, node *op, input []byte) ([][]byte, error) {
 	var out [][]byte
-	err := execMulti(node, input, nil, func(val []byte) error {
+	err := execMulti(state, node, input, nil, func(val []byte) error {
 		out = append(out, cloneExecBytes(val))
 		return nil
 	})
@@ -5957,7 +5946,7 @@ func cloneExecBytes(src []byte) []byte {
 	return append([]byte(nil), src...)
 }
 
-func execBindAlternatives(baseCtx *execContext, node *op, input, value []byte, fn func([]byte) error) error {
+func execBindAlternatives(state execState, baseCtx *execContext, node *op, input, value []byte, fn func([]byte) error) error {
 	base := prebindAlternationNulls(baseCtx, node.pattern, node.altPatterns)
 	targets := make([]*bindPattern, 0, 1+len(node.altPatterns))
 	targets = append(targets, node.pattern)
@@ -5971,8 +5960,8 @@ func execBindAlternatives(baseCtx *execContext, node *op, input, value []byte, f
 			continue
 		}
 		outputs := make([][]byte, 0, 1)
-		err = withExecContext(nextCtx, func() error {
-			return execMulti(node.right, input, nil, func(val []byte) error {
+		err = state.withExecContext(nextCtx, func(state execState) error {
+			return execMulti(state, node.right, input, nil, func(val []byte) error {
 				outputs = append(outputs, cloneExecBytes(val))
 				return nil
 			})
@@ -6155,9 +6144,9 @@ func bindPatternNull(ctx *execContext, pattern *bindPattern) *execContext {
 	}
 }
 
-func execPathsValue(filter *op, value []byte, frame *pathFrame, buf []byte, fn func([]byte) error) error {
+func execPathsValue(state execState, filter *op, value []byte, frame *pathFrame, buf []byte, fn func([]byte) error) error {
 	if frame != nil {
-		match, err := pathsFilterMatch(filter, value)
+		match, err := pathsFilterMatch(state, filter, value)
 		if err != nil {
 			return err
 		}
@@ -6184,7 +6173,7 @@ func execPathsValue(filter *op, value []byte, frame *pathFrame, buf []byte, fn f
 				kind:   pathStepString,
 				rawKey: key,
 			}
-			walkErr = execPathsValue(filter, value[valueStart:valueEnd], &childFrame, buf, fn)
+			walkErr = execPathsValue(state, filter, value[valueStart:valueEnd], &childFrame, buf, fn)
 			return walkErr == nil
 		})
 		return walkErr
@@ -6196,7 +6185,7 @@ func execPathsValue(filter *op, value []byte, frame *pathFrame, buf []byte, fn f
 				kind:   pathStepNumber,
 				index:  index,
 			}
-			walkErr = execPathsValue(filter, value[elemStart:elemEnd], &childFrame, buf, fn)
+			walkErr = execPathsValue(state, filter, value[elemStart:elemEnd], &childFrame, buf, fn)
 			return walkErr == nil
 		})
 		return walkErr
@@ -6205,11 +6194,11 @@ func execPathsValue(filter *op, value []byte, frame *pathFrame, buf []byte, fn f
 	}
 }
 
-func pathsFilterMatch(filter *op, value []byte) (bool, error) {
+func pathsFilterMatch(state execState, filter *op, value []byte) (bool, error) {
 	if filter == nil {
 		return true, nil
 	}
-	result, err := execSingle(filter, value, nil)
+	result, err := execSingle(state, filter, value, nil)
 	if err != nil {
 		return false, err
 	}
@@ -6479,12 +6468,12 @@ func decodePath(pathVal []byte) ([]pathStep, error) {
 	return steps, nil
 }
 
-func execSetPath(node *op, input []byte, buf []byte) ([]byte, error) {
-	pathVal, err := execSingle(node.left, input, nil)
+func execSetPath(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	pathVal, err := execSingle(state, node.left, input, nil)
 	if err != nil {
 		return nil, err
 	}
-	value, err := execSingle(node.child, input, nil)
+	value, err := execSingle(state, node.child, input, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -6499,8 +6488,8 @@ func execSetPath(node *op, input []byte, buf []byte) ([]byte, error) {
 	return out, nil
 }
 
-func execDelPaths(node *op, input []byte, buf []byte) ([]byte, error) {
-	pathsVal, err := execSingle(node.child, input, nil)
+func execDelPaths(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	pathsVal, err := execSingle(state, node.child, input, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -6860,21 +6849,21 @@ func isArrayValue(input []byte) bool {
 
 // execAnyAll implements any/all with optional expr argument.
 // wantAll=false → any (true if at least one match), wantAll=true → all (true if all match).
-func execAnyAll(node *op, input []byte, buf []byte, fn func([]byte) error, wantAll bool) error {
-	result, err := execAnyAllSingle(node, input, buf, wantAll)
+func execAnyAll(state execState, node *op, input []byte, buf []byte, fn func([]byte) error, wantAll bool) error {
+	result, err := execAnyAllSingle(state, node, input, buf, wantAll)
 	if err != nil {
 		return err
 	}
 	return fn(result)
 }
 
-func execAnyAllSingle(node *op, input []byte, buf []byte, wantAll bool) ([]byte, error) {
+func execAnyAllSingle(state execState, node *op, input []byte, buf []byte, wantAll bool) ([]byte, error) {
 	// Two-arg form: any(gen; cond) / all(gen; cond)
 	if node.left != nil {
 		breakFlag := false
 		var iterErr error
-		err := execMulti(node.left, input, nil, func(elem []byte) error {
-			condVal, _ := execSingle(node.child, elem, nil)
+		err := execMulti(state, node.left, input, nil, func(elem []byte) error {
+			condVal, _ := execSingle(state, node.child, elem, nil)
 			truthy := !isFalsy(condVal)
 			if (!wantAll && truthy) || (wantAll && !truthy) {
 				breakFlag = true
@@ -6912,7 +6901,7 @@ func execAnyAllSingle(node *op, input []byte, buf []byte, wantAll bool) ([]byte,
 		if node.child == nil {
 			truthy = !isFalsy(elem)
 		} else {
-			condVal, _ := execSingle(node.child, elem, nil)
+			condVal, _ := execSingle(state, node.child, elem, nil)
 			truthy = !isFalsy(condVal)
 		}
 		if !wantAll && truthy {
@@ -7156,12 +7145,12 @@ func execIsNormal(input, buf []byte) []byte {
 }
 
 // execPow implements pow(x; y) = math.Pow(x, y).
-func execPow(node *op, input []byte, buf []byte) ([]byte, error) {
-	xVal, err := execSingle(node.left, input, nil)
+func execPow(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	xVal, err := execSingle(state, node.left, input, nil)
 	if err != nil {
 		return nil, err
 	}
-	yVal, err := execSingle(node.right, input, nil)
+	yVal, err := execSingle(state, node.right, input, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -7173,12 +7162,12 @@ func execPow(node *op, input []byte, buf []byte) ([]byte, error) {
 	return appendNumber(buf[:0], math.Pow(xf, yf)), nil
 }
 
-func execHypot(node *op, input []byte, buf []byte) ([]byte, error) {
-	xVal, err := execSingle(node.left, input, nil)
+func execHypot(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	xVal, err := execSingle(state, node.left, input, nil)
 	if err != nil {
 		return nil, err
 	}
-	yVal, err := execSingle(node.right, input, nil)
+	yVal, err := execSingle(state, node.right, input, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -7190,16 +7179,16 @@ func execHypot(node *op, input []byte, buf []byte) ([]byte, error) {
 	return appendNumber(buf[:0], math.Hypot(xf, yf)), nil
 }
 
-func execFMA(node *op, input []byte, buf []byte) ([]byte, error) {
-	xVal, err := execSingle(node.left, input, nil)
+func execFMA(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	xVal, err := execSingle(state, node.left, input, nil)
 	if err != nil {
 		return nil, err
 	}
-	yVal, err := execSingle(node.right, input, nil)
+	yVal, err := execSingle(state, node.right, input, nil)
 	if err != nil {
 		return nil, err
 	}
-	zVal, err := execSingle(node.child, input, nil)
+	zVal, err := execSingle(state, node.child, input, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -7230,11 +7219,11 @@ func execStringPredicate(input []byte, buf []byte, s string, start, end bool) []
 	return boolResult(buf, match)
 }
 
-func resolveStringLikeArg(node *op, input []byte) ([]byte, error) {
+func resolveStringLikeArg(state execState, node *op, input []byte) ([]byte, error) {
 	if node.child == nil {
 		return []byte(node.field), nil
 	}
-	value, err := execSingle(node.child, input, nil)
+	value, err := execSingle(state, node.child, input, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -7249,8 +7238,8 @@ func resolveStringLikeArg(node *op, input []byte) ([]byte, error) {
 // execTrimStr implements ltrimstr (left=true) and rtrimstr (left=false).
 // If the input string starts/ends with s, returns the trimmed string.
 // If no match, returns the input unchanged (cap-limited zero-alloc sub-slice when buf is nil).
-func execTrimStr(node *op, input []byte, buf []byte, left bool) ([]byte, error) {
-	s, err := resolveStringLikeArg(node, input)
+func execTrimStr(state execState, node *op, input []byte, buf []byte, left bool) ([]byte, error) {
+	s, err := resolveStringLikeArg(state, node, input)
 	if err != nil {
 		if left {
 			return nil, &transparentError{err: fmt.Errorf("startswith() requires string inputs")}
@@ -7296,18 +7285,18 @@ func execTrimStr(node *op, input []byte, buf []byte, left bool) ([]byte, error) 
 	return buf, nil
 }
 
-func execTrimStrBoth(node *op, input []byte, buf []byte) ([]byte, error) {
-	s, err := resolveStringLikeArg(node, input)
+func execTrimStrBoth(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	s, err := resolveStringLikeArg(state, node, input)
 	if err != nil {
 		return nil, &transparentError{err: fmt.Errorf("startswith() requires string inputs")}
 	}
 	leftNode := &op{field: string(s)}
-	left, err := execTrimStr(leftNode, input, nil, true)
+	left, err := execTrimStr(state, leftNode, input, nil, true)
 	if err != nil {
 		return nil, err
 	}
 	rightNode := &op{field: string(s)}
-	return execTrimStr(rightNode, left, buf, false)
+	return execTrimStr(state, rightNode, left, buf, false)
 }
 
 type trimMode int
@@ -7432,27 +7421,27 @@ func isSingleOutputOp(o *op) bool {
 // If no else-branch is present (child==nil), the else defaults to identity.
 // Uses execMulti for the condition so that empty conditions produce no outputs,
 // and multiple condition outputs each independently select their branch.
-func execIf(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execIf(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	// Fast path for single-output conditions (common case): avoid closure allocation.
 	if isSingleOutputOp(node.left) {
-		condVal, err := execSingle(node.left, input, nil)
+		condVal, err := execSingle(state, node.left, input, nil)
 		if err != nil {
 			return err
 		}
 		if !isFalsy(condVal) {
-			return execMulti(node.right, input, buf, fn)
+			return execMulti(state, node.right, input, buf, fn)
 		}
 		if node.child != nil {
-			return execMulti(node.child, input, buf, fn)
+			return execMulti(state, node.child, input, buf, fn)
 		}
 		return fn(input)
 	}
-	return execMulti(node.left, input, nil, func(condVal []byte) error {
+	return execMulti(state, node.left, input, nil, func(condVal []byte) error {
 		if !isFalsy(condVal) {
-			return execMulti(node.right, input, buf, fn)
+			return execMulti(state, node.right, input, buf, fn)
 		}
 		if node.child != nil {
-			return execMulti(node.child, input, buf, fn)
+			return execMulti(state, node.child, input, buf, fn)
 		}
 		// default else: identity
 		return fn(input)
@@ -7463,9 +7452,9 @@ func execIf(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 // jq semantics: (null, false, 3) // 18 → 3 (truthy outputs pass through).
 //
 //	(null, false) // 18 → 18 (no truthy outputs, use right).
-func execAlternative(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+func execAlternative(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	anyTruthy := false
-	err := execMulti(node.left, input, buf, func(result []byte) error {
+	err := execMulti(state, node.left, input, buf, func(result []byte) error {
 		if isFalsy(result) {
 			return nil // skip falsy outputs
 		}
@@ -7477,7 +7466,7 @@ func execAlternative(node *op, input []byte, buf []byte, fn func([]byte) error) 
 	}
 	if !anyTruthy {
 		// No truthy outputs from left — use right side
-		return execMulti(node.right, input, buf, fn)
+		return execMulti(state, node.right, input, buf, fn)
 	}
 	return nil
 }
@@ -7613,12 +7602,12 @@ func execArithValues(typ opType, leftVal, rightVal, buf []byte) ([]byte, error) 
 // execArith implements binary arithmetic: -, *, /, %.
 // Both operands are evaluated with nil scratch (zero-alloc sub-slices).
 // Supports: number op number, array - array (difference), string * n (repeat), string / string (split).
-func execArith(node *op, input []byte, buf []byte) ([]byte, error) {
-	leftVal, err := execSingle(node.left, input, nil)
+func execArith(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	leftVal, err := execSingle(state, node.left, input, nil)
 	if err != nil {
 		return nil, err
 	}
-	rightVal, err := execSingle(node.right, input, nil)
+	rightVal, err := execSingle(state, node.right, input, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -7747,7 +7736,7 @@ func arrayContainsElem(arr, elem []byte) bool {
 // execMinMax finds the minimum or maximum element of a JSON array.
 // node.child, if non-nil, is the key function (for min_by/max_by).
 // Empty array returns null. Non-array input returns an error.
-func execMinMax(input []byte, buf []byte, node *op, wantMax bool) ([]byte, error) {
+func execMinMax(state execState, input []byte, buf []byte, node *op, wantMax bool) ([]byte, error) {
 	s := scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
@@ -7762,7 +7751,7 @@ func execMinMax(input []byte, buf []byte, node *op, wantMax bool) ([]byte, error
 		elem := input[start:end]
 		var key []byte
 		if node.child != nil {
-			k, err := execSingle(node.child, elem, nil)
+			k, err := execSingle(state, node.child, elem, nil)
 			if err != nil {
 				iterErr = err
 				return false
@@ -7822,7 +7811,7 @@ func collectArrayElems(input []byte) ([][]byte, error) {
 // Keys are collected with nil buf so field-access and identity keys are sub-slices
 // of input (no copy). Keys that require computation (arithmetic, etc.) allocate
 // their own buffers. Elements are also sub-slices of input (no copy).
-func collectElemKeys(node *op, input []byte) (elems [][]byte, keys [][][]byte, err error) {
+func collectElemKeys(state execState, node *op, input []byte) (elems [][]byte, keys [][][]byte, err error) {
 	s := scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
@@ -7831,7 +7820,7 @@ func collectElemKeys(node *op, input []byte) (elems [][]byte, keys [][][]byte, e
 	s.arrayIter(func(_ int, start, end int) bool {
 		elem := input[start:end:end]
 		var ks [][]byte
-		execErr := execMulti(node, elem, nil, func(k []byte) error {
+		execErr := execMulti(state, node, elem, nil, func(k []byte) error {
 			// k is valid for the lifetime of this call stack; since we collect
 			// it into ks which persists, we must ensure it stays valid.
 			// With nil buf, field-access returns a cap-limited sub-slice of elem
@@ -7908,8 +7897,8 @@ func execSort(input []byte, buf []byte, fn func([]byte) error) error {
 // execSortBy sorts a JSON array by a key function.
 // sort_by(.a, .b) uses a generator as key; elements are ordered by the
 // tuple of key values, compared lexicographically.
-func execSortBy(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	elems, keys, err := collectElemKeys(node.child, input)
+func execSortBy(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	elems, keys, err := collectElemKeys(state, node.child, input)
 	if err != nil {
 		return err
 	}
@@ -7954,8 +7943,8 @@ func execUnique(input []byte, buf []byte, fn func([]byte) error) error {
 
 // execUniqueBy removes elements whose key function produces the same value as
 // the preceding element (after sorting by key).
-func execUniqueBy(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	elems, keys, err := collectElemKeys(node.child, input)
+func execUniqueBy(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	elems, keys, err := collectElemKeys(state, node.child, input)
 	if err != nil {
 		return err
 	}
@@ -7987,8 +7976,8 @@ func execUniqueBy(node *op, input []byte, buf []byte, fn func([]byte) error) err
 // execGroupBy groups array elements by a key function.
 // Returns an array of arrays: each sub-array contains elements with the same key.
 // Elements within each group preserve their original order; groups are in key order.
-func execGroupBy(node *op, input []byte, buf []byte, fn func([]byte) error) error {
-	elems, keys, err := collectElemKeys(node.child, input)
+func execGroupBy(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	elems, keys, err := collectElemKeys(state, node.child, input)
 	if err != nil {
 		return err
 	}
@@ -8884,19 +8873,19 @@ func normalizeOutputValue(value, buf []byte) []byte {
 	return append(out, '"')
 }
 
-func execStringTemplate(node *op, input, buf []byte) ([]byte, error) {
-	return execInterpolatedTemplate(node, input, buf, false)
+func execStringTemplate(state execState, node *op, input, buf []byte) ([]byte, error) {
+	return execInterpolatedTemplate(state, node, input, buf, false)
 }
 
-func execFormatTemplate(node *op, input, buf []byte) ([]byte, error) {
-	return execInterpolatedTemplate(node, input, buf, true)
+func execFormatTemplate(state execState, node *op, input, buf []byte) ([]byte, error) {
+	return execInterpolatedTemplate(state, node, input, buf, true)
 }
 
-func execInterpolatedTemplate(node *op, input, buf []byte, applyFormat bool) ([]byte, error) {
+func execInterpolatedTemplate(state execState, node *op, input, buf []byte, applyFormat bool) ([]byte, error) {
 	buf = append(buf, '"')
 	for i, expr := range node.elems {
 		buf = append(buf, node.segs[i]...)
-		result, err := execSingle(expr, input, nil)
+		result, err := execSingle(state, expr, input, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -8997,107 +8986,6 @@ func catchInputFromError(err error) []byte {
 		}
 	}
 	return append(msg, '"')
-}
-
-func withTryScope(fn func() error) error {
-	gid := currentGID()
-	tryScopeMu.Lock()
-	tryScopeByGID[gid]++
-	tryScopeMu.Unlock()
-	defer func() {
-		tryScopeMu.Lock()
-		if tryScopeByGID[gid] <= 1 {
-			delete(tryScopeByGID, gid)
-		} else {
-			tryScopeByGID[gid]--
-		}
-		tryScopeMu.Unlock()
-	}()
-	return fn()
-}
-
-func tryScopeActive() bool {
-	gid := currentGID()
-	tryScopeMu.Lock()
-	active := tryScopeByGID[gid] > 0
-	tryScopeMu.Unlock()
-	return active
-}
-
-func withOptionalScope(fn func() error) error {
-	gid := currentGID()
-	optionalScopeMu.Lock()
-	optionalScopeByGID[gid]++
-	optionalScopeMu.Unlock()
-	defer func() {
-		optionalScopeMu.Lock()
-		if optionalScopeByGID[gid] <= 1 {
-			delete(optionalScopeByGID, gid)
-		} else {
-			optionalScopeByGID[gid]--
-		}
-		optionalScopeMu.Unlock()
-	}()
-	return fn()
-}
-
-func optionalScopeActive() bool {
-	gid := currentGID()
-	optionalScopeMu.Lock()
-	active := optionalScopeByGID[gid] > 0
-	optionalScopeMu.Unlock()
-	return active
-}
-
-func currentIndexScope() []byte {
-	gid := currentGID()
-	indexScopeMu.Lock()
-	stack := indexScopeByGID[gid]
-	var scope []byte
-	if len(stack) > 0 {
-		scope = stack[len(stack)-1]
-	}
-	indexScopeMu.Unlock()
-	return scope
-}
-
-func chainedIndexScope(input []byte) []byte {
-	if scope := currentIndexScope(); scope != nil {
-		return scope
-	}
-	return input
-}
-
-func withIndexScope(scope []byte, fn func() error) error {
-	gid := currentGID()
-	indexScopeMu.Lock()
-	indexScopeByGID[gid] = append(indexScopeByGID[gid], scope)
-	indexScopeMu.Unlock()
-	defer func() {
-		indexScopeMu.Lock()
-		stack := indexScopeByGID[gid]
-		if len(stack) <= 1 {
-			delete(indexScopeByGID, gid)
-		} else {
-			indexScopeByGID[gid] = stack[:len(stack)-1]
-		}
-		indexScopeMu.Unlock()
-	}()
-	return fn()
-}
-
-func currentGID() uint64 {
-	var buf [64]byte
-	n := runtime.Stack(buf[:], false)
-	var id uint64
-	for i := len("goroutine "); i < n; i++ {
-		b := buf[i]
-		if b < '0' || b > '9' {
-			break
-		}
-		id = id*10 + uint64(b-'0')
-	}
-	return id
 }
 
 func jsonTypeName(input []byte) string {
@@ -9902,12 +9790,12 @@ func execGSub(node *op, input []byte, buf []byte) ([]byte, error) {
 //
 // Supports errBreak for early exit: limit(3; range(100)) stops after 3 values.
 // Float steps and negative steps are supported. Step of 0 returns an error.
-func execRange(node *op, input []byte, fn func([]byte) error) error {
-	fromVals, err := collectExecOutputs(node.left, input)
+func execRange(state execState, node *op, input []byte, fn func([]byte) error) error {
+	fromVals, err := collectExecOutputs(state, node.left, input)
 	if err != nil {
 		return err
 	}
-	toVals, err := collectExecOutputs(node.right, input)
+	toVals, err := collectExecOutputs(state, node.right, input)
 	if err != nil {
 		return err
 	}
@@ -9917,7 +9805,7 @@ func execRange(node *op, input []byte, fn func([]byte) error) error {
 
 	stepVals := [][]byte{[]byte("1")}
 	if node.child != nil {
-		stepVals, err = collectExecOutputs(node.child, input)
+		stepVals, err = collectExecOutputs(state, node.child, input)
 		if err != nil {
 			return err
 		}

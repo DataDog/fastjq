@@ -35,21 +35,21 @@ The core tier covers the full hot path for log processing. For operations that d
 
 | Operation | Input | fastjq | gojq | Speedup | allocs |
 |-----------|-------|--------|------|---------|--------|
-| `select(.f == "x")` | Small (~100B) | 0.130 µs | 1.73 µs | **13x** | 0 |
-| `select(.f == "x")`¹ | Large (~100KB) | 32.9 µs | 786 µs | **24x** | 0 |
-| `.field` | Small (~100B) | 0.085 µs | 0.986 µs | **12x** | 0 |
-| `.field` | Large (~100KB) | 7.50 µs | 587 µs | **78x** | 0 |
-| `del(.f)` | Large (~100KB) | 33.7 µs | 817 µs | **24x** | 0 |
-| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 33.6 µs | 799 µs | **24x** | 0 |
-| `map(.name)` | 200-elem array (~6KB) | 12.9 µs | 93.7 µs | **7.3x** | 6 |
-| `min_by(.value)` | 100-elem array (~3KB) | 8.2 µs | 54 µs | **6.6x** | 0 |
-| `.a * .b` (multiply) | Small (~100B) | 0.064 µs | 0.70 µs | **11x** | 0 |
-| `first(.[] \| select(. > 100))` | 200-int array | 3.5 µs | 1.4 µs | **0.4x**² | 0 |
+| `select(.f == "x")` | Small (~100B) | 0.132 µs | 1.75 µs | **13x** | 0 |
+| `select(.f == "x")`¹ | Large (~100KB) | 32.4 µs | 800 µs | **25x** | 0 |
+| `.field` | Small (~100B) | 0.088 µs | 1.00 µs | **11x** | 0 |
+| `.field` | Large (~100KB) | 7.44 µs | 609 µs | **82x** | 0 |
+| `del(.f)` | Large (~100KB) | 35.9 µs | 845 µs | **24x** | 0 |
+| `select(.f \| ascii_downcase == "x")` | Large (~100KB) | 33.5 µs | 818 µs | **24x** | 0 |
+| `map(.name)` | 200-elem array (~6KB) | 12.7 µs | 95.5 µs | **7.5x** | 6 |
+| `min_by(.value)` | 100-elem array (~3KB) | 11.1 µs | 56.0 µs | **5x** | 297 |
+| `.a * .b` (multiply) | Small (~100B) | 0.072 µs | 0.727 µs | **10x** | 0 |
+| `first(.[] \| select(. > 100))` | 200-int array | 6.61 µs | 26.5 µs | **4x**² | 209 |
 
 ¹ Large select uses the last field in a 200-field object — fastjq scans the full document, no early-exit advantage.
-² gojq wins on small arrays of raw integers: after unmarshal, element access is native Go slice operations.
+² Iterator-heavy control-flow queries over primitive arrays allocate more than the core hot path, but they still stay ahead of gojq in the current benchmark set.
 
-The speedup is largest on small inputs where gojq's marshal/unmarshal overhead dominates. On large inputs fastjq is roughly 19–78x faster thanks to SIMD-accelerated string scanning. The exception is small primitive integer arrays, where gojq's in-memory representation wins.
+The speedup is largest on small inputs where gojq's marshal/unmarshal overhead dominates. On large inputs fastjq is roughly 19–82x faster thanks to SIMD-accelerated string scanning. Control-flow-heavy iterator queries allocate more, but the regenerated benchmark set still keeps a healthy lead over gojq.
 
 ### vs jq CLI (JSONL throughput, 100K lines, ~11MB, Apple M4 Max, jq 1.8.1)
 
@@ -57,19 +57,19 @@ Both tools validate JSON. fastjq calls `json.Valid()` before processing each rec
 
 | Operation | Input | jq (s) | fastjq (s) | Speedup |
 |-----------|-------|--------|------------|---------|
-| `.` (identity) | small | 0.368 | 0.059 | **6.2x** |
-| `.field` | small | 0.165 | 0.049 | **3.4x** |
+| `.` (identity) | small | 0.368 | 0.061 | **6.0x** |
+| `.field` | small | 0.167 | 0.051 | **3.3x** |
 | `.field` | large (~16MB, 100 lines) | 0.092 | 0.044 | **2.1x** |
-| `del(.field)` | small | 0.381 | 0.065 | **5.9x** |
-| `{field_0, field_2}` (construct) | small | 0.263 | 0.060 | **4.4x** |
-| `select(.f == "x")` (all match) | small | 0.388 | 0.057 | **6.8x** |
-| `select(.f == "x")` (none match) | small | 0.152 | 0.059 | **2.6x** |
-| `.field // "default"` | small | 0.177 | 0.052 | **3.4x** |
-| `select(.f \| ascii_downcase == "x")` | small | 0.693 | 0.061 | **11.4x** |
-| `select(.f \| startswith("x"))` | small | 0.383 | 0.053 | **7.2x** |
+| `del(.field)` | small | 0.380 | 0.068 | **5.6x** |
+| `{field_0, field_2}` (construct) | small | 0.260 | 0.064 | **4.1x** |
+| `select(.f == "x")` (all match) | small | 0.388 | 0.058 | **6.7x** |
+| `select(.f == "x")` (none match) | small | 0.150 | 0.060 | **2.5x** |
+| `.field // "default"` | small | 0.178 | 0.057 | **3.1x** |
+| `select(.f \| ascii_downcase == "x")` | small | 0.702 | 0.062 | **11.3x** |
+| `select(.f \| startswith("x"))` | small | 0.394 | 0.053 | **7.4x** |
 | `select(has("field"))` | small | 0.380 | 0.052 | **7.3x** |
-| `to_entries` | small | 0.739 | 0.069 | **10.7x** |
-| `keys_unsorted` | small | 0.259 | 0.060 | **4.3x** |
+| `to_entries` | small | 0.761 | 0.068 | **11.2x** |
+| `keys_unsorted` | small | 0.256 | 0.061 | **4.2x** |
 
 **Without validation** (using `RunWithBuffer`/`RunFunc` directly on known-valid inputs), the Go library benchmarks show roughly **12–78x** speedups on the common access/filter/delete slice — see the table at the top of this section and [BENCHMARKS.md](docs/BENCHMARKS.md) for the full comparison.
 
