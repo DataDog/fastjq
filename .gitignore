@@ -12,8 +12,8 @@ fastjq-bench
 *.swp
 *.swo
 
-# Local Claude Code settings
-.claude/settings.local.json
+# Local Claude Code state (settings, worktrees, etc.)
+.claude/
 
 # Personal dev notes
 DEV_TODO.md
