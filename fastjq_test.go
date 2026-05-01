@@ -229,6 +229,7 @@ func TestAssignmentBuiltin(t *testing.T) {
 	assertQuery(t, `.message = "goodbye"`, `{"message":"hello"}`, `{"message":"goodbye"}`)
 	assertQuery(t, `.foo = .bar`, `{"bar":42}`, `{"bar":42,"foo":42}`)
 	assertQuery(t, `.foo |= .+1`, `{"foo":42}`, `{"foo":43}`)
+	assertQuery(t, `.[] //= .[0]`, `["hello",true,false,[false],null]`, `["hello",true,"hello",[false],"hello"]`)
 	assertQueryAll(t, `.[] += 2, .[] *= 2, .[] -= 2, .[] /= 2, .[] %=2`, `[1,3,5]`, `[3,5,7]`, `[2,6,10]`, `[-1,1,3]`, `[0.5,1.5,2.5]`, `[1,1,1]`)
 	assertQuery(t, `.foo += .foo`, `{"foo":2}`, `{"foo":4}`)
 	assertQuery(t, `.[0].a |= {"old":., "new":(.+1)}`, `[{"a":1,"b":2}]`, `[{"a":{"old":1,"new":2},"b":2}]`)
@@ -256,6 +257,7 @@ func TestAssignmentPaths(t *testing.T) {
 		`{"a":[{"c":3,"b":5}]}`)
 	assertQuery(t, `def inc(x): x |= .+1; inc(.[].a)`, `[{"a":1,"b":2},{"a":2,"b":4},{"a":7,"b":8}]`, `[{"a":2,"b":2},{"a":3,"b":4},{"a":8,"b":8}]`)
 	assertQuery(t, `def x: .[1,2]; x=10`, `[0,1,2]`, `[0,10,10]`)
+	assertQuery(t, `(.a as $x | .b) = "b"`, `{"a":null,"b":null}`, `{"a":null,"b":"b"}`)
 	assertQuery(t, `(.. | select(type=="boolean")) |= if . then 1 else 0 end`, `[true,false,[5,true,[true,[false]],false]]`, `[1,0,[5,1,[1,[0]],0]]`)
 }
 
@@ -908,6 +910,17 @@ func TestArrayDeleteMultiIndex(t *testing.T) {
 	assertQuery(t, "del(.[1,2])", `["foo","bar","baz"]`, `["foo"]`)
 }
 
+func TestDeleteDynamicPaths(t *testing.T) {
+	assertQueryAll(t,
+		`del(.), del(empty), del((.foo,.bar,.baz) | .[2,3,0]), del(.foo[0], .bar[0], .foo, .baz.bar[0].x)`,
+		`{"foo":[0,1,2,3,4],"bar":[0,1]}`,
+		`null`,
+		`{"foo":[0,1,2,3,4],"bar":[0,1]}`,
+		`{"foo":[1,4],"bar":[1]}`,
+		`{"bar":[1]}`,
+	)
+}
+
 func TestArrayDeleteLast(t *testing.T) {
 	p, err := Compile("del(.[-1])")
 	if err != nil {
@@ -1007,6 +1020,28 @@ func TestRecursiveDescentScalars(t *testing.T) {
 
 func TestRecursiveDescentScalarInput(t *testing.T) {
 	assertQuery(t, `..`, `42`, `42`)
+}
+
+func TestRecurseBuiltin(t *testing.T) {
+	assertQueryAll(t, `recurse`, `{"a":0,"b":[1]}`,
+		`{"a":0,"b":[1]}`,
+		`0`,
+		`[1]`,
+		`1`)
+	assertQueryAll(t, `recurse(.foo[])`, `{"foo":[{"foo":[]},{"foo":[{"foo":[]}]}]}`,
+		`{"foo":[{"foo":[]},{"foo":[{"foo":[]}]}]}`,
+		`{"foo":[]}`,
+		`{"foo":[{"foo":[]}]}`,
+		`{"foo":[]}`)
+	assertQueryAll(t, `recurse(. * .; . < 20)`, `2`, `2`, `4`, `16`)
+}
+
+func TestWalkBuiltin(t *testing.T) {
+	assertQuery(t, `walk(.)`, `{"x":0}`, `{"x":0}`)
+	assertQuery(t, `walk(1)`, `{"x":0}`, `1`)
+	assertQuery(t, `[walk(.,1)]`, `{"x":0}`, `[{"x":0},1]`)
+	assertQuery(t, `walk(select(IN({}, []) | not))`, `{"a":1,"b":[]}`, `{"a":1}`)
+	assertQuery(t, `walk(if type == "array" then sort else . end)`, `[[4,1,7],[8,5,2],[3,6,9]]`, `[[1,4,7],[2,5,8],[3,6,9]]`)
 }
 
 func TestIteratorEmptyArray(t *testing.T) {

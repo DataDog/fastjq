@@ -158,6 +158,10 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execIterator(node, input, buf, fn)
 	case opRecursiveDescent:
 		return execRecursiveDescent(input, buf, fn)
+	case opRecurse:
+		return execRecurse(node, input, buf, fn)
+	case opWalk:
+		return execWalk(node, input, buf, fn)
 	case opConstruct:
 		if node.multiValuePairs {
 			return execConstructMulti(node, input, buf, fn)
@@ -283,6 +287,8 @@ func execMulti(node *op, input []byte, buf []byte, fn func([]byte) error) error 
 		return execAssign(node, input, buf, fn)
 	case opUpdate:
 		return execUpdate(node, input, buf, fn)
+	case opUpdateAlt:
+		return execUpdateAlt(node, input, buf, fn)
 	case opUpdateMath:
 		return execUpdateMath(node, input, buf, fn)
 	case opPath:
@@ -1026,6 +1032,10 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 		return execFirstResult(node, input, buf)
 	case opRecursiveDescent:
 		return execFirstResult(node, input, buf)
+	case opRecurse:
+		return execFirstResult(node, input, buf)
+	case opWalk:
+		return execFirstResult(node, input, buf)
 	case opUntil:
 		return execUntil(node, input, buf)
 	case opDefScope:
@@ -1035,6 +1045,8 @@ func execSingle(node *op, input []byte, buf []byte) ([]byte, error) {
 	case opAssign:
 		return execFirstResult(node, input, buf)
 	case opUpdate:
+		return execFirstResult(node, input, buf)
+	case opUpdateAlt:
 		return execFirstResult(node, input, buf)
 	case opUpdateMath:
 		return execFirstResult(node, input, buf)
@@ -1893,9 +1905,178 @@ func execRecursiveValue(value []byte, buf []byte, fn func([]byte) error) error {
 	}
 }
 
+func execRecurse(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	current := trimWhitespace(input)
+	if err := fn(append(buf[:0], current...)); err != nil {
+		return err
+	}
+	if node.left == nil {
+		return execRecurseDefaultChildren(node, current, buf, fn)
+	}
+	nextVals, err := collectExecOutputs(node.left, current)
+	if err != nil {
+		return err
+	}
+	for _, next := range nextVals {
+		if node.child != nil {
+			cond, err := execSingle(node.child, next, nil)
+			if err != nil {
+				return err
+			}
+			if isFalsy(cond) {
+				continue
+			}
+		}
+		if err := execRecurse(node, next, buf, fn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func execRecurseDefaultChildren(node *op, current []byte, buf []byte, fn func([]byte) error) error {
+	s := scanner{data: current}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return nil
+	}
+	switch s.data[s.pos] {
+	case '[':
+		var walkErr error
+		s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
+			walkErr = execRecurse(node, current[elemStart:elemEnd], buf, fn)
+			return walkErr == nil
+		})
+		return walkErr
+	case '{':
+		var walkErr error
+		s.objectIter(func(_ []byte, valueStart, valueEnd int) bool {
+			walkErr = execRecurse(node, current[valueStart:valueEnd], buf, fn)
+			return walkErr == nil
+		})
+		return walkErr
+	default:
+		return nil
+	}
+}
+
+func execWalk(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	outputs, err := walkOutputs(node.child, trimWhitespace(input))
+	if err != nil {
+		return err
+	}
+	for _, out := range outputs {
+		if err := fn(append(buf[:0], out...)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func walkOutputs(filter *op, value []byte) ([][]byte, error) {
+	rebuilt, err := walkRebuild(filter, trimWhitespace(value))
+	if err != nil {
+		return nil, err
+	}
+	return collectExecOutputs(filter, rebuilt)
+}
+
+func walkFirstOutput(filter *op, value []byte) ([]byte, bool, error) {
+	outputs, err := walkOutputs(filter, value)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(outputs) == 0 {
+		return nil, false, nil
+	}
+	return outputs[0], true, nil
+}
+
+func walkRebuild(filter *op, value []byte) ([]byte, error) {
+	s := scanner{data: value}
+	s.skipWhitespace()
+	if s.pos >= len(s.data) {
+		return cloneExecBytes(value), nil
+	}
+	switch s.data[s.pos] {
+	case '[':
+		return walkRebuildArray(filter, value)
+	case '{':
+		return walkRebuildObject(filter, value)
+	default:
+		return cloneExecBytes(value), nil
+	}
+}
+
+func walkRebuildArray(filter *op, value []byte) ([]byte, error) {
+	s := scanner{data: value}
+	s.skipWhitespace()
+	out := make([]byte, 0, len(value))
+	out = append(out, '[')
+	first := true
+	var walkErr error
+	s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
+		child, keep, err := walkFirstOutput(filter, value[elemStart:elemEnd])
+		if err != nil {
+			walkErr = err
+			return false
+		}
+		if !keep {
+			return true
+		}
+		if !first {
+			out = append(out, ',')
+		}
+		first = false
+		out = append(out, child...)
+		return true
+	})
+	if walkErr != nil {
+		return nil, walkErr
+	}
+	out = append(out, ']')
+	return out, nil
+}
+
+func walkRebuildObject(filter *op, value []byte) ([]byte, error) {
+	s := scanner{data: value}
+	s.skipWhitespace()
+	out := make([]byte, 0, len(value))
+	out = append(out, '{')
+	first := true
+	var walkErr error
+	s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
+		child, keep, err := walkFirstOutput(filter, value[valueStart:valueEnd])
+		if err != nil {
+			walkErr = err
+			return false
+		}
+		if !keep {
+			return true
+		}
+		if !first {
+			out = append(out, ',')
+		}
+		first = false
+		out = append(out, '"')
+		out = appendJSONStringContent(out, key)
+		out = append(out, '"', ':')
+		out = append(out, child...)
+		return true
+	})
+	if walkErr != nil {
+		return nil, walkErr
+	}
+	out = append(out, '}')
+	return out, nil
+}
+
 // execDelete removes specified fields from a JSON object or elements from an array.
 // Never copies commas from input — reconstructs with our own commas.
 func execDelete(node *op, input []byte, buf []byte) ([]byte, error) {
+	if deleteNeedsGenericPaths(node) {
+		return execDeleteGeneric(node, input, buf)
+	}
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) {
@@ -1912,6 +2093,59 @@ func execDelete(node *op, input []byte, buf []byte) ([]byte, error) {
 	}
 }
 
+func deleteNeedsGenericPaths(node *op) bool {
+	for i := range node.fields {
+		if deletePathNeedsGeneric(&node.fields[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func deletePathNeedsGeneric(node *op) bool {
+	if node == nil {
+		return false
+	}
+	switch node.typ {
+	case opField, opIndex, opSlice:
+		return deletePathNeedsGeneric(node.child)
+	default:
+		return true
+	}
+}
+
+func execDeleteGeneric(node *op, input []byte, buf []byte) ([]byte, error) {
+	mutations := make([]pathMutation, 0, len(node.fields))
+	for i := range node.fields {
+		paths, err := collectAssignPaths(&node.fields[i], input)
+		if err != nil {
+			return nil, err
+		}
+		for _, steps := range paths {
+			if len(steps) == 0 {
+				if buf == nil {
+					return bNull, nil
+				}
+				return append(buf[:0], "null"...), nil
+			}
+			mutations = append(mutations, pathMutation{steps: steps, order: len(mutations), delete: true})
+		}
+	}
+	if len(mutations) == 0 {
+		return normalizeOutputValue(input, buf), nil
+	}
+	sortPathMutations(mutations)
+	current := normalizeOutputValue(input, nil)
+	var err error
+	for _, mutation := range mutations {
+		current, err = deletePathDecoded(current, mutation.steps)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return normalizeOutputValue(current, buf), nil
+}
+
 // execDeleteObject removes specified fields from a JSON object.
 func execDeleteObject(node *op, input []byte, buf []byte, s *scanner) ([]byte, error) {
 	// Validate all del() arguments are field accesses
@@ -1925,32 +2159,37 @@ func execDeleteObject(node *op, input []byte, buf []byte, s *scanner) ([]byte, e
 	first := true
 
 	s.objectIter(func(key []byte, valueStart, valueEnd int) bool {
+		var nestedFields []op
 		for i := range node.fields {
 			d := &node.fields[i]
-			if bytesEqualStr(key, d.field) {
-				if d.child == nil {
-					return true // simple delete — skip this pair
-				}
-				// Nested delete — recurse into the value.
-				// Save the slice header before the call so we can recover if
-				// the nested target is not an object/array (execDelete returns nil).
-				if !first {
-					buf = append(buf, ',')
-				}
-				first = false
-				buf = append(buf, '"')
-				buf = append(buf, key...)
-				buf = append(buf, '"', ':')
-				preDel := buf // full slice header — survives buf=nil from error
-				nestedNode := &op{typ: opDelete, fields: []op{*d.child}}
-				var err error
-				buf, err = execDelete(nestedNode, input[valueStart:valueEnd], buf)
-				if err != nil {
-					// Nested target is not an object/array — keep original value.
-					buf = append(preDel, input[valueStart:valueEnd]...)
-				}
-				return true
+			if !bytesEqualStr(key, d.field) {
+				continue
 			}
+			if d.child == nil {
+				return true // simple delete wins over any nested delete for this key
+			}
+			nestedFields = append(nestedFields, *d.child)
+		}
+		if len(nestedFields) > 0 {
+			// Nested delete — recurse into the value.
+			// Save the slice header before the call so we can recover if
+			// the nested target is not an object/array (execDelete returns nil).
+			if !first {
+				buf = append(buf, ',')
+			}
+			first = false
+			buf = append(buf, '"')
+			buf = append(buf, key...)
+			buf = append(buf, '"', ':')
+			preDel := buf // full slice header — survives buf=nil from error
+			nestedNode := &op{typ: opDelete, fields: nestedFields}
+			var err error
+			buf, err = execDelete(nestedNode, input[valueStart:valueEnd], buf)
+			if err != nil {
+				// Nested target is not an object/array — keep original value.
+				buf = append(preDel, input[valueStart:valueEnd]...)
+			}
+			return true
 		}
 
 		// Keep this pair — copy verbatim
@@ -4340,12 +4579,12 @@ var supportedBuiltinNames = []string{
 	"ltrim/0", "ltrimstr/1", "map/1", "map_values/1", "match/1", "max/0", "max_by/1",
 	"mktime/0", "min/0", "min_by/1", "nearbyint/0", "nth/2", "path/1", "paths/0", "paths/1",
 	"pick/1", "pow/2", "range/1", "range/2", "range/3", "reduce/3", "repeat/1", "reverse/0",
-	"rindex/1", "round/0", "rtrim/0", "rtrimstr/1", "scan/1", "select/1", "setpath/2",
+	"recurse/0", "recurse/1", "recurse/2", "rindex/1", "round/0", "rtrim/0", "rtrimstr/1", "scan/1", "select/1", "setpath/2",
 	"skip/2", "sort/0", "sort_by/1", "split/1", "sqrt/0", "startswith/1", "strflocaltime/1",
 	"strftime/1", "strptime/1", "sub/2", "test/1", "to_entries/0", "toboolean/0", "todate/0",
 	"tojson/0", "tonumber/0", "tostream/0", "tostring/0", "transpose/0", "trim/0", "trimstr/1",
 	"truncate_stream/1", "type/0", "unique/0", "unique_by/1", "until/2", "utf8bytelength/0",
-	"values/0", "while/2", "fromstream/1",
+	"values/0", "walk/1", "while/2", "fromstream/1",
 	"with_entries/1",
 }
 
@@ -5035,6 +5274,50 @@ func execUpdate(node *op, input []byte, buf []byte, fn func([]byte) error) error
 	return fn(append(buf[:0], current...))
 }
 
+func execUpdateAlt(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	paths, err := collectAssignPaths(node.left, input)
+	if err != nil {
+		return err
+	}
+	mutations := make([]pathMutation, 0, len(paths))
+	needsDeleteOrdering := false
+	for i, steps := range paths {
+		oldVal, err := getPathDecoded(input, steps, nil)
+		if err != nil {
+			return err
+		}
+		if !isFalsy(oldVal) {
+			mutations = append(mutations, pathMutation{steps: steps, order: i, value: cloneExecBytes(oldVal)})
+			continue
+		}
+		values, err := collectExecOutputs(node.right, input)
+		if err != nil {
+			return err
+		}
+		if len(values) == 0 {
+			mutations = append(mutations, pathMutation{steps: steps, order: i, delete: true})
+			needsDeleteOrdering = true
+			continue
+		}
+		mutations = append(mutations, pathMutation{steps: steps, order: i, value: values[0]})
+	}
+	if needsDeleteOrdering {
+		sortPathMutations(mutations)
+	}
+	current := normalizeOutputValue(input, nil)
+	for _, mutation := range mutations {
+		if mutation.delete {
+			current, err = deletePathDecoded(current, mutation.steps)
+		} else {
+			current, err = setPathDecoded(current, mutation.steps, 0, mutation.value, nil)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return fn(append(buf[:0], current...))
+}
+
 func execUpdateMath(node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	paths, err := collectAssignPaths(node.left, input)
 	if err != nil {
@@ -5083,6 +5366,30 @@ func execUpdateMath(node *op, input []byte, buf []byte, fn func([]byte) error) e
 func collectAssignPaths(node *op, input []byte) ([][]pathStep, error) {
 	if node == nil {
 		return nil, nil
+	}
+	if node.typ == opBind {
+		baseCtx := currentExecContext()
+		values, err := collectExecOutputs(node.left, input)
+		if err != nil {
+			return nil, err
+		}
+		var all [][]pathStep
+		for _, value := range values {
+			nextCtx, err := bindOpValue(baseCtx, node, value)
+			if err != nil {
+				return nil, err
+			}
+			var nested [][]pathStep
+			if err := withExecContext(nextCtx, func() error {
+				var innerErr error
+				nested, innerErr = collectAssignPaths(node.right, input)
+				return innerErr
+			}); err != nil {
+				return nil, err
+			}
+			all = append(all, nested...)
+		}
+		return all, nil
 	}
 	if node.typ == opCall {
 		callerCtx := currentExecContext()

@@ -96,6 +96,8 @@ var tableRows = []row{
 	{"``[.,1]|until(...)|.[1]``", "integer 5", "Small_Until", "Small_Until"},
 	{"`paths`", "Small (~100B)", "Small_Paths", "Small_Paths"},
 	{"`..`", "Small (~100B)", "Small_RecursiveDescent", "Small_RecursiveDescent"},
+	{"`recurse`", "Small (~20B object)", "Small_Recurse", "Small_Recurse"},
+	{"`walk(.)`", "Small (~10B object)", "Small_Walk", "Small_Walk"},
 	{"`path(.field_0)`", "Small (~100B)", "Small_Path", "Small_Path"},
 	// Object transforms
 	{"`to_entries`", "Small (~100B)", "Small_ToEntries", "Small_ToEntries"},

@@ -42,14 +42,14 @@ const manTestLocalCache = "testdata/man.test"
 //
 // Official-suite snapshot for this branch:
 //   - Total: 751
-//   - Skipped: 79
-//   - Attempted: 672
-//   - Passed: 672
+//   - Skipped: 32
+//   - Attempted: 719
+//   - Passed: 719
 //   - Failed: 0
 //
 // Skip families currently driving the branch:
+//   - have_decnum / full decimal semantics
 //   - leaf_paths
-//   - walk
 //   - stream, module, env, and reflection helpers
 //   - smaller parser tail and low-yield builtin stragglers
 //
@@ -57,8 +57,6 @@ const manTestLocalCache = "testdata/man.test"
 // A test whose program contains any of these tokens is skipped — NOT counted
 // as a failure. Keep this list tight: only skip what we genuinely don't support.
 var unsupportedOps = []string{
-	// recurse/walk remain out of scope for the library executor.
-	"recurse",
 	// Path operations
 	"leaf_paths",
 	// Decimal-mode capability flag — fastjq intentionally does not claim jq's full decnum semantics.
@@ -80,8 +78,6 @@ var unsupportedOps = []string{
 	"env", "$ENV",
 	// Reflection
 	"modulemeta",
-	// walk — recursive tree transform still deferred
-	"walk(",
 }
 
 // test represents one parsed test case.
@@ -220,9 +216,6 @@ func isBlankOrComment(s string) bool {
 // that appear as bare values — these would be inside quoted strings if
 // they were data, so matching without a leading quote is safe.
 func isUnsupported(program string) string {
-	if strings.Contains(program, "del((") {
-		return "dynamic del() path"
-	}
 	for _, op := range unsupportedOps {
 		if containsUnsupportedOp(program, op) {
 			return op

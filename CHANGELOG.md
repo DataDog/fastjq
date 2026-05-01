@@ -19,6 +19,7 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 - Added jq-compatible `with_entries(f)` as parser sugar over `to_entries | map(f) | from_entries`, including the jq-suite key-update form `with_entries(.key |= "KEY_" + .)`.
 - Added jq-compatible `paths` and `paths(filter)` for non-root structural path enumeration.
 - Added jq-compatible dedicated recursive descent `..` for root-first, depth-first structural traversal and recursive path updates such as `(.. | select(type=="boolean")) |= ...`.
+- Added jq-compatible `recurse`, `recurse(f)`, `recurse(f; cond)`, and `walk(f)` for the official recursive helper cases covered by jq's suite.
 - Added jq-compatible `path(expr)` for symbolic path extraction across direct field, index, dynamic-index, iterator, `select`, and pipe compositions.
 - Added jq-compatible `getpath(path)` with variadic path-output support and `$var` path arguments.
 - Added jq-compatible `setpath(path; value)` and `delpaths(paths)` for direct path-array updates.
@@ -32,7 +33,7 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ### Fixed
 
-- Moved the official jq-suite branch coverage from `356/751` passing to `708/751` passing while keeping `0` active jq-suite failures.
+- Moved the official jq-suite branch coverage from `356/751` passing to `719/751` passing while keeping `0` active jq-suite failures.
 - Removed the blanket jq-suite skip for variable binding syntax so implemented `as $x` cases now run instead of being hidden behind harness filters.
 - Fixed variable-binding parsing inside array-construction generator contexts such as `1 as $x | [$x,$x,$x as $x | $x]`.
 - Fixed jq-suite structural comparison for JSON outputs that differ only by numerically equivalent number spellings inside arrays or objects (for example `0.1` vs `1e-1`).
@@ -52,9 +53,10 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 - Fixed jq-style subtraction diagnostics for non-numeric values, including typed/truncated messages like `string ("very-long-...) and string ("very-long-...) cannot be subtracted`.
 - Fixed parser breadth for template-format strings so previously skipped official-suite cases now run and pass.
 - Fixed parser breadth for `map_values(...)` and `with_entries(...)`, removing another small batch of compile skips without introducing general update-syntax support yet.
+- Fixed the remaining non-module parser-tail assignment cases, including `//=` updates and grouped/bound lhs assignment such as `(.a as $x | .b) = "b"`.
 - Fixed labeled control-flow unwinding so `break $label` now exits the correct surrounding `label` through iterators, `foreach`, array construction, and `try` boundaries.
 - Fixed user-call continuation scoping so downstream pipeline stages resume in the caller's lexical function environment instead of leaking the callee's captured scope.
-- Fixed jq-suite skip filtering so dedicated recursive descent `..` now runs while broader `recurse` / `walk` helpers remain skipped.
+- Fixed jq-compatible grouped dynamic `del(...)` paths such as `del((.foo,.bar,.baz) | .[2,3,0])`, along with mixed deletes where whole-field removal must win over nested element deletes.
 
 ### Tradeoffs
 
@@ -62,6 +64,7 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 - `reduce` currently targets the high-yield jq form `reduce gen as $x (init; update)` and reuses the existing lexical binding frames rather than introducing a broader mutable-control runtime yet.
 - `paths` prioritizes jq-suite parity over the usual hot-path allocation target on this branch. The current structural walker allocates on its call path (`17 allocs/op` on the small benchmark) but still stays far below gojq for the same query.
 - `..` is implemented as a parity-first structural generator on this branch rather than waiting for a full generic-recursion executor redesign. The focused benchmark currently lands at `224.5 ns/op`, `7 allocs/op` in fastjq versus `2995 ns/op`, `90 allocs/op` in gojq on the same small traversal.
+- `recurse` and `walk` follow the same parity-first posture as `..`: the focused benchmarks currently land at `100.7 ns/op`, `5 allocs/op` for `recurse` and `217.6 ns/op`, `12 allocs/op` for `walk(.)`, still far below gojq on the same queries.
 - `path(expr)` follows the same parity-first posture as the other path-family work on this branch: correctness against the official suite takes precedence over the usual hot-path allocation target.
 - `@format "...\(...)"` template execution inherits the allocation profile of the underlying formatter (`@html`, `@uri`, `@sh`, etc.) because each interpolation is decoded and re-encoded independently.
 - `with_entries(f)` is implemented as parity-first parser sugar over `to_entries | map(f) | from_entries` on this branch, even though the project previously rejected it as a first-class primitive under the stricter allocation posture.

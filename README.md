@@ -129,9 +129,9 @@ fastjq supports a large targeted subset of jq. The complete reference with examp
 
 **Quick summary by category:**
 
-- **Access:** `.`, `.foo`, `.[0]`, `.[i,j]`, `.[]`, `..`, `.[n:m]`, `.foo?`, `paths`, `path(expr)`, chained access
+- **Access:** `.`, `.foo`, `.[0]`, `.[i,j]`, `.[]`, `..`, `recurse`, `.[n:m]`, `.foo?`, `paths`, `path(expr)`, chained access
 - **Modification:** `del(.foo)`, `del(.[i,j])`, `del(.[n:m])`, `setpath(path; value)`, `delpaths(paths)`, `{name, a: .b}`, `[.a, .b]`
-- **Control flow:** `\|`, `select`, `if-elif-else`, `try-catch`, `//`, `empty`, `expr as $x | body`, destructuring `as` binds, `?//` binding alternation, `def f: body; expr`, parameterized defs, `reduce`, `foreach`, `while`, `until`, `label` / `break`, `"\(expr)"`
+- **Control flow:** `\|`, `select`, `if-elif-else`, `try-catch`, `//`, `empty`, `expr as $x | body`, destructuring `as` binds, `?//` binding alternation, `def f: body; expr`, parameterized defs, `reduce`, `foreach`, `while`, `until`, `recurse`, `walk(f)`, `label` / `break`, `"\(expr)"`
 - **Arithmetic:** `+`, `-`, `*`, `/`, `%`, `add`, `floor`, `ceil`, `round`, `nearbyint`
 - **Math:** `abs`, `sqrt`, `log`, `exp`, `sin`, `cos`, `atan`, `tgamma`, `j0`, `pow(x;y)`, and 15 more — all zero-alloc
 - **Special values:** `nan`, `infinite`, `-nan`, `-infinite`; `isnan`, `isinfinite`, `isfinite`, `isnormal`; `nan`/`infinite` output as `null` (JSON-safe)
@@ -149,22 +149,20 @@ fastjq is validated against two official jq test files (`go test ./jqtest/`).
 
 | File | Total | Skipped | Attempted | Passed | Failed |
 |------|-------|---------|-----------|--------|--------|
-| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 32 | 489 | **489 (100.0%)** | 0 |
-| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 11 | 219 | **219 (100.0%)** | 0 |
-| **Combined** | **751** | **43** | **708** | **708 (100.0%)** | **0** |
+| [`tests/jq.test`](https://github.com/jqlang/jq/blob/master/tests/jq.test) (regression suite) | 521 | 25 | 496 | **496 (100.0%)** | 0 |
+| [`tests/man.test`](https://github.com/jqlang/jq/blob/master/tests/man.test) (manual examples) | 230 | 7 | 223 | **223 (100.0%)** | 0 |
+| **Combined** | **751** | **32** | **719** | **719 (100.0%)** | **0** |
 
-All currently attempted official jq tests pass on this branch, and the branch now clears an even larger majority of the full official suite. Recent parity work removed compile skips around destructuring `as` binds, `?//` binding alternation, user-defined functions (`def`), `@format "template"` strings, `map_values`, `with_entries`, `label` / `break`, unary minus, postfix optional `expr?`, quoted field access (`."foo"`), `while` / `until`, dynamic slice bounds, `paths`, `path(...)`, `getpath(...)`, `setpath(...)`, `delpaths(...)`, `reduce`, `foreach`, dedicated recursive descent (`..`), richer object construction, date/time builtins (`strftime`, `strflocaltime`, `strptime`, `mktime`, `gmtime`, `fromdate`), `pick`, `bsearch`, `IN`, `INDEX`, `JOIN`, `combinations`, jq-style multi-index array access/deletion (`.[4,2]`, `del(.[1,2])`), root slice assignment, and identity-before-operator forms like `.-.`. The remaining skipped tests are concentrated in still-unimplemented families such as `recurse` / `walk`, stream/module helpers, environment/reflection builtins, and a smaller parser tail listed in the [Limitations](#limitations) section.
+All currently attempted official jq tests pass on this branch, and the branch now clears an even larger majority of the full official suite. Recent parity work removed compile skips around destructuring `as` binds, `?//` binding alternation, user-defined functions (`def`), `@format "template"` strings, `map_values`, `with_entries`, `label` / `break`, unary minus, postfix optional `expr?`, quoted field access (`."foo"`), `while` / `until`, `recurse`, `walk(f)`, dynamic slice bounds, grouped/dynamic `del(...)` paths, `paths`, `path(...)`, `getpath(...)`, `setpath(...)`, `delpaths(...)`, `reduce`, `foreach`, dedicated recursive descent (`..`), richer object construction, date/time builtins (`strftime`, `strflocaltime`, `strptime`, `mktime`, `gmtime`, `fromdate`), `pick`, `bsearch`, `IN`, `INDEX`, `JOIN`, `combinations`, jq-style multi-index array access/deletion (`.[4,2]`, `del(.[1,2])`), `//=` updates, grouped assignment, root slice assignment, and identity-before-operator forms like `.-.`. The remaining skipped tests are now concentrated in full decimal semantics (`have_decnum`), module/import helpers, and environment/stream features we are still intentionally deferring.
 
 ## Limitations
 
 **Regex uses Go RE2, not PCRE/Oniguruma.**
 Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are unsupported. `test(re)` is 0-alloc; `match`/`capture` alloc one `[]int` on a hit; `scan`/`gsub` alloc per match. Replacement strings in `sub`/`gsub` are literals.
 
-**Generic recursive helpers remain out of scope.** fastjq supports dedicated recursive descent via `..`, but still does not implement jq's broader `recurse` family or recursive transforms like `walk`.
-
 **`nan`/`infinite` are supported but serialize to `null` at output.** `nan | type` = `"number"`, `nan | isnan` = `true`, `infinite * -1 < 0` = `true`. `nan` and `infinite` values convert to JSON `null` at the API boundary. Values inside arrays/objects are also normalized to `null`.
 
-**Still not implemented:** `leaf_paths`; recursive helpers built on descent such as `walk`; module/import syntax; stream builders such as `repeat`, `truncate_stream`, `fromstream`; environment/reflection/IO helpers such as `env`, `$ENV`, `input`, `inputs`, `stderr`, `builtins`, `modulemeta`, `$__loc__`; and a few remaining math/date helpers such as `hypot(x;y)`, `fma(x;y;z)`, `date`, `now`, and `todate`.
+**Still not implemented:** `leaf_paths`; module/import syntax; stream builders such as `repeat`, `truncate_stream`, `fromstream`; environment/reflection/IO helpers such as `env`, `$ENV`, `input`, `inputs`, `stderr`, `builtins`, `modulemeta`, `$__loc__`; and full decimal-mode semantics behind `have_decnum`, plus a few remaining math/date helpers such as `hypot(x;y)`, `fma(x;y;z)`, `date`, `now`, and `todate`.
 
 See [SYNTAX.md](docs/SYNTAX.md) for the full allocation-tiered roadmap.
 

@@ -32,6 +32,8 @@ slice offsets — no `interface{}`, no `map[string]interface{}`.
 - `setpath(path; value)` and `delpaths(paths)` for direct path-array updates
 - `.[]` (iterator — all elements of array or values of object)
 - `..` (recursive descent — depth-first, root-first structural traversal)
+- `recurse`, `recurse(f)`, `recurse(f; cond)` (recursive generator traversal)
+- `walk(f)` (bottom-up recursive transform)
 - `.items[]`, `.items[0]`, `.data[0].name` (chained access)
 - `.[n:m]`, `.[:m]`, `.[n:]` (array/string slicing, negative indices from end)
 - `{name, age}` (object construction, shorthand)

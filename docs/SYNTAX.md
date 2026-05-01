@@ -64,6 +64,17 @@ Use `RunAll` or `RunFunc` to consume multiple outputs. `Run`/`RunWithBuffer` ret
 
 `..` is implemented as a dedicated structural generator. It composes with the existing pipeline and path-update machinery, so forms like `(.. | select(type=="boolean")) |= ...` behave like jq.
 
+### Recursive Helpers
+
+| Syntax | Description | Example Input | Example Output |
+|--------|-------------|---------------|----------------|
+| `recurse` | Recurse structurally through child values | `{"a":0,"b":[1]}` | `{"a":0,"b":[1]}`, `0`, `[1]`, `1` |
+| `recurse(.foo[])` | Recurse by applying an explicit generator at each step | `{"foo":[{"foo":[]},{"foo":[{"foo":[]}]}]}` | `{"foo":[{"foo":[]},{"foo":[{"foo":[]}]}]}`, `{"foo":[]}`, `{"foo":[{"foo":[]}]}`, `{"foo":[]}` |
+| `recurse(. * .; . < 20)` | Recurse while new outputs satisfy a condition | `2` | `2`, `4`, `16` |
+| `walk(f)` | Rebuild arrays/objects bottom-up, then apply `f` at each node | `[[4,1,7],[8,5,2],[3,6,9]]` with `walk(if type == "array" then sort else . end)` | `[[1,4,7],[2,5,8],[3,6,9]]` |
+
+`recurse` and `walk` are implemented on this branch for jq-suite parity. They are not part of the zero-allocation hot path.
+
 ### Object Construction
 
 | Syntax | Description | Example Input | Example Output |
@@ -547,7 +558,6 @@ These operations are implementable at zero allocation but involve more complexit
 
 | Syntax | Description | Challenge |
 |--------|-------------|-----------|
-| `walk(f)` | Recursive transform | Apply f to every value bottom-up. Reconstruct entire tree with transformed values. Intermediate results from inner expressions may need temp storage. |
 
 ### Implemented — bounded O(n) allocation (Tier 2)
 
@@ -578,13 +588,6 @@ The governing principle rejects operations where allocation scales with the *sha
 | Syntax | Why rejected |
 |--------|-------------|
 | *(range is now implemented as Tier 2)* | `range(n)`, `range(from;to)`, `range(from;to;step)` are supported. See Stream Control section above. |
-| `recurse` | Full recursive helper over arbitrary filters | Still deferred. The dedicated `..` generator is supported, but generic recursive fanout over arbitrary filters would need broader executor changes to keep control flow and allocation behavior predictable. |
-
-### Not yet implemented (feasible, zero-alloc)
-
-| Syntax | Description | Challenge |
-|--------|-------------|-----------|
-| `walk(f)` | Bottom-up tree transform | Feasible; complex buffer management when `f` constructs new data. |
 
 ### Not applicable (streaming/CLI concerns)
 
@@ -605,4 +608,4 @@ The governing principle rejects operations where allocation scales with the *sha
 - **Tier 0 (zero-alloc):** field access, filtering, comparison, arithmetic, construction, `map(.field)`, math, `test(re)` — the full hot path for log processing.
 - **Tier 1 (alloc ∝ output):** `@base64`, `@uri`, `match`, `capture`, `scan`, `gsub`, `map(f)` with construction — allocate proportional to the data they produce, never to the input size.
 - **Tier 2 (alloc ∝ collection, implemented):** `sort`, `sort_by(f)`, `unique`, `unique_by(f)`, `group_by(f)`, `transpose`, `range(n)`, multi-output object construction — O(n) bounded by the array/output the user explicitly requested.
-- **Tier 3 (deferred — executor redesign needed):** `recurse`, `walk(f)` — generic recursive helpers still need broader executor support than the dedicated `..` traversal.
+- **Still intentionally deferred:** full decimal-mode semantics behind `have_decnum`, module/import loading, and CLI/environment helpers such as `input`, `inputs`, `env`, and `$ENV`.

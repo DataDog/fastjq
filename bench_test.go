@@ -285,6 +285,12 @@ func BenchmarkFastjq_Small_Paths(b *testing.B) {
 func BenchmarkFastjq_Small_RecursiveDescent(b *testing.B) {
 	benchFastjqFunc(b, `..`, smallJSON)
 }
+func BenchmarkFastjq_Small_Recurse(b *testing.B) {
+	benchFastjqFunc(b, `recurse`, []byte(`{"a":0,"b":[1]}`))
+}
+func BenchmarkFastjq_Small_Walk(b *testing.B) {
+	benchFastjqObj(b, `walk(.)`, []byte(`{"x":0}`))
+}
 func BenchmarkFastjq_Small_Path(b *testing.B) {
 	benchFastjqObj(b, `path(.field_0)`, smallJSON)
 }
@@ -542,6 +548,12 @@ func BenchmarkGojq_Small_Paths(b *testing.B) {
 }
 func BenchmarkGojq_Small_RecursiveDescent(b *testing.B) {
 	benchGojqIter(b, `..`, smallJSON)
+}
+func BenchmarkGojq_Small_Recurse(b *testing.B) {
+	benchGojqIter(b, `recurse`, []byte(`{"a":0,"b":[1]}`))
+}
+func BenchmarkGojq_Small_Walk(b *testing.B) {
+	benchGojqObj(b, `walk(.)`, []byte(`{"x":0}`))
 }
 func BenchmarkGojq_Small_Path(b *testing.B) {
 	benchGojqObj(b, `path(.field_0)`, smallJSON)

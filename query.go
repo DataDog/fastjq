@@ -29,11 +29,14 @@ const (
 	opCall                           // f / f(a; b)
 	opAssign                         // lhs = rhs
 	opUpdate                         // lhs |= rhs
+	opUpdateAlt                      // lhs //= rhs
 	opUpdateMath                     // lhs += rhs, -=, *=, /=, %=
 	opIndex                          // .[0], .[-1]
 	opIndexExpr                      // .[expr] dynamic index/key expression
 	opIterator                       // .[]
 	opRecursiveDescent               // ..
+	opRecurse                        // recurse / recurse(f) / recurse(f; cond)
+	opWalk                           // walk(f)
 	opConstruct                      // {name, a: .foo}
 	opArrayConstruct                 // [.foo, .bar]
 	opLiteral                        // null, true, false, "string", 123
@@ -384,6 +387,12 @@ func parseAssignExpr(s string) (*op, string, error) {
 	}
 
 	switch {
+	case strings.HasPrefix(rest, "//="):
+		right, remaining, err := parseExpr(strings.TrimSpace(rest[3:]))
+		if err != nil {
+			return nil, remaining, err
+		}
+		return &op{typ: opUpdateAlt, left: left, right: right}, remaining, nil
 	case strings.HasPrefix(rest, "|="):
 		right, remaining, err := parseExpr(strings.TrimSpace(rest[2:]))
 		if err != nil {
@@ -434,7 +443,7 @@ func containsUnsupportedAssignNode(node *op) bool {
 		return false
 	}
 	switch node.typ {
-	case opBind, opReduce, opForeach, opDefScope:
+	case opReduce, opForeach, opDefScope:
 		return true
 	case opIndexExpr:
 		return containsUnsupportedAssignNode(node.left) || containsUnsupportedAssignNode(node.child)
@@ -553,6 +562,9 @@ func parseAlt(s string) (*op, string, error) {
 	for {
 		rest = strings.TrimSpace(rest)
 		if len(rest) >= 2 && rest[0] == '/' && rest[1] == '/' {
+			if len(rest) >= 3 && rest[2] == '=' {
+				break
+			}
 			rest = strings.TrimSpace(rest[2:])
 			right, remainder, err := parseCmp(rest)
 			if err != nil {
@@ -780,6 +792,24 @@ func parseAtom(s string) (*op, string, error) {
 	// select()
 	if strings.HasPrefix(s, "select(") {
 		return parseSelect(s)
+	}
+	if strings.HasPrefix(s, "walk(") {
+		node, rest, err := parseUnaryGenBuiltin(s[5:], opWalk)
+		if err != nil {
+			return nil, rest, err
+		}
+		return applyPostfixPipe(node, rest)
+	}
+	if strings.HasPrefix(s, "recurse") && (len(s) == 7 || !isIdentChar(s[7])) {
+		rest := strings.TrimSpace(s[7:])
+		if len(rest) > 0 && rest[0] == '(' {
+			node, tail, err := parseRecurse(rest[1:])
+			if err != nil {
+				return nil, tail, err
+			}
+			return applyPostfixPipe(node, tail)
+		}
+		return applyPostfixPipe(&op{typ: opRecurse}, rest)
 	}
 
 	// null literal (with boundary check)
@@ -1764,6 +1794,36 @@ func parseDefExpr(s string) (*op, string, error) {
 	}, rest, nil
 }
 
+func parseRecurse(s string) (*op, string, error) {
+	s = strings.TrimSpace(s)
+	if len(s) > 0 && s[0] == ')' {
+		return &op{typ: opRecurse}, s[1:], nil
+	}
+	update, rest, err := parseGeneratorExpr(s)
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 {
+		return nil, rest, fmt.Errorf("expected ')' after recurse() arguments")
+	}
+	if rest[0] == ')' {
+		return &op{typ: opRecurse, left: update}, rest[1:], nil
+	}
+	if rest[0] != ';' {
+		return nil, rest, fmt.Errorf("expected ';' or ')' after recurse() update expression")
+	}
+	cond, rest, err := parseGeneratorExpr(rest[1:])
+	if err != nil {
+		return nil, rest, err
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) == 0 || rest[0] != ')' {
+		return nil, rest, fmt.Errorf("expected ')' after recurse() condition")
+	}
+	return &op{typ: opRecurse, left: update, child: cond}, rest[1:], nil
+}
+
 func parseDefParams(s string) ([]string, []bool, string, error) {
 	var params []string
 	var valueParams []bool
@@ -1957,7 +2017,7 @@ func validateVars(node *op, scope map[string]bool) error {
 			}
 		}
 		return nil
-	case opSelect, opFlatten, opContains, opIsEmpty, opNth, opSortBy, opUniqueBy, opGroupBy, opTest, opMatchRe, opCapture, opScan, opSub, opGSub, opPaths:
+	case opSelect, opFlatten, opContains, opIsEmpty, opNth, opSortBy, opUniqueBy, opGroupBy, opTest, opMatchRe, opCapture, opScan, opSub, opGSub, opPaths, opWalk:
 		if err := validateVars(node.child, scope); err != nil {
 			return err
 		}
@@ -3243,7 +3303,7 @@ func hasMultiOutput(n *op) bool {
 		return false
 	}
 	switch n.typ {
-	case opIterator, opRecursiveDescent, opRange, opScan, opGenerator, opPaths, opReduce, opForeach, opWhile, opRepeat, opPath, opCall, opAssign, opUpdate, opUpdateMath, opBsearch, opToStream, opTruncateStream:
+	case opIterator, opRecursiveDescent, opRecurse, opWalk, opRange, opScan, opGenerator, opPaths, opReduce, opForeach, opWhile, opRepeat, opPath, opCall, opAssign, opUpdate, opUpdateAlt, opUpdateMath, opBsearch, opToStream, opTruncateStream:
 		return true
 
 	// Ops that cap or reduce to at most one output regardless of their children:
