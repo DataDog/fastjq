@@ -55,9 +55,7 @@ var suiteFiles = []struct{ url, cache, name string }{
 	{uriTestURL, uriTestLocalCache, "uri.test"},
 }
 
-// codex/jq-parity tracking snapshot (baseline on 2026-04-30)
-//
-// Official-suite snapshot for this branch:
+// Official-suite snapshot:
 //   - Total: 783
 //   - Skipped: 32
 //   - Attempted: 751
@@ -72,13 +70,14 @@ var suiteFiles = []struct{ url, cache, name string }{
 // unsupportedOps lists functions/syntax that fastjq does not implement.
 // A test whose program contains any of these tokens is skipped — NOT counted
 // as a failure. Keep this list tight: only skip what we genuinely don't support.
+//
+// Important: skip accounting is per test case, not per token. Some skipped
+// cases overlap multiple unsupported tokens, and the suite also counts a few
+// non-token skips such as compile-time parser gaps, jq %%FAIL compatibility
+// cases where fastjq succeeds, and timeout guards.
 var unsupportedOps = []string{
 	// Decimal-mode capability flag — fastjq intentionally does not claim jq's full decnum semantics.
 	"have_decnum",
-	// frexp/modf/ldexp/scalb/scalbln/significand: REJECTED — 0 exclusive tests
-	"frexp", "modf", "ldexp", "scalb", "scalbln", "significand",
-	// splits( — streaming split variant, 0 exclusive tests
-	"splits(",
 	// Date/time operations
 	"dateadd",
 	// Streaming / IO
@@ -299,10 +298,11 @@ func TestJQOfficialSuite(t *testing.T) {
 		}
 		s.total++
 
-		// Skip unsupported operations (check program and input)
-		if reason := isUnsupported(tc.program); reason != "" {
-			s.skipped++
-			continue
+	// Skip unsupported operations (check program and input). This count is per
+	// test case, not per unsupported token.
+	if reason := isUnsupported(tc.program); reason != "" {
+		s.skipped++
+		continue
 		}
 		if reason := inputContainsUnsupported(tc.input); reason != "" {
 			s.skipped++

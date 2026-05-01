@@ -149,7 +149,7 @@ Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are 
 
 **`nan`/`infinite` are supported but serialize to `null` at output.** `nan | type` = `"number"`, `nan | isnan` = `true`, `infinite * -1 < 0` = `true`. `nan` and `infinite` values convert to JSON `null` at the API boundary. Values inside arrays/objects are also normalized to `null`.
 
-**Still intentionally deferred:** module/import syntax and `modulemeta` (they need filesystem-backed resolution and module-loading semantics that break the current pure library boundary); host-boundary helpers such as `input`, `inputs`, `env`, `$ENV`, and `stderr` (they depend on process state or stdin rather than pure input bytes); and full decimal-mode semantics behind `have_decnum` (they need a different numeric runtime than the current float-based executor).
+**Not supported:** module/import syntax and `modulemeta` (they need filesystem-backed resolution and module-loading semantics that break the current pure library boundary); host-boundary helpers such as `input`, `inputs`, `env`, `$ENV`, and `stderr` (they depend on process state or stdin rather than pure input bytes); and full decimal-mode semantics behind `have_decnum` (they need a different numeric runtime than the current float-based executor).
 
 **Compatibility aliases:** fastjq accepts historical jq names `leaf_paths` and `date` for parity convenience. Current jq 1.8.1 does not expose those names directly; `leaf_paths` maps to `paths(scalars)` semantics and `date` maps to `todate`.
 
