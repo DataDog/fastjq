@@ -39,6 +39,21 @@ func assertNoOutput(t *testing.T, query, input string) {
 	}
 }
 
+func assertQueryErrorContains(t *testing.T, query, input, want string) {
+	t.Helper()
+	p, err := Compile(query)
+	if err != nil {
+		t.Fatalf("Compile(%q): %v", query, err)
+	}
+	_, err = p.Run([]byte(input))
+	if err == nil {
+		t.Fatalf("Run(%q on %s): expected error containing %q, got nil", query, input, want)
+	}
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("Run(%q on %s): got error %q, want substring %q", query, input, err.Error(), want)
+	}
+}
+
 func TestIdentity(t *testing.T) {
 	assertQuery(t, ".", `{"name":"alice","age":30}`, `{"name":"alice","age":30}`)
 }
@@ -148,6 +163,10 @@ func TestBindMultiOutput(t *testing.T) {
 			t.Fatalf("result %d: got %s, want %s", i, got[i], want[i])
 		}
 	}
+}
+
+func TestRecurseSelfLoopReturnsError(t *testing.T) {
+	assertQueryErrorContains(t, `recurse(.foo[])`, `null`, `recurse() produced its input again`)
 }
 
 func TestBindDestructuring(t *testing.T) {

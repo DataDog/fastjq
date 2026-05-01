@@ -1,6 +1,7 @@
 package fastjq
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,12 +22,15 @@ var (
 	errExpectedArrayIndex  = errors.New("expected array for index access")
 	errExpectedIterable    = errors.New("expected array or object for .[]")
 	errBreak               = errors.New("stop iteration") // sentinel for first/limit
+	errRecurseCycle        = errors.New("recurse() produced its input again")
+	errRecurseDepthLimit   = errors.New("recurse() exceeded depth limit")
 )
 
 const (
 	jsonParseDepthLimit         = 10000
 	jsonStringifySkipDepthLimit = jsonParseDepthLimit + 1
 	maxArrayUpdateIndex         = 1 << 20
+	maxRecurseDepth             = jsonParseDepthLimit
 )
 
 // jsonError carries a JSON value thrown by the `error` builtin.
@@ -1951,18 +1955,26 @@ func execRecursiveValue(value []byte, buf []byte, fn func([]byte) error) error {
 }
 
 func execRecurse(node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	return execRecurseWithDepth(node, input, buf, fn, 0)
+}
+
+func execRecurseWithDepth(node *op, input []byte, buf []byte, fn func([]byte) error, depth int) error {
+	if depth > maxRecurseDepth {
+		return errRecurseDepthLimit
+	}
 	current := trimWhitespace(input)
 	if err := fn(append(buf[:0], current...)); err != nil {
 		return err
 	}
 	if node.left == nil {
-		return execRecurseDefaultChildren(node, current, buf, fn)
+		return execRecurseDefaultChildren(node, current, buf, fn, depth+1)
 	}
 	nextVals, err := collectExecOutputs(node.left, current)
 	if err != nil {
 		return err
 	}
 	for _, next := range nextVals {
+		next = trimWhitespace(next)
 		if node.child != nil {
 			cond, err := execSingle(node.child, next, nil)
 			if err != nil {
@@ -1972,14 +1984,17 @@ func execRecurse(node *op, input []byte, buf []byte, fn func([]byte) error) erro
 				continue
 			}
 		}
-		if err := execRecurse(node, next, buf, fn); err != nil {
+		if bytes.Equal(next, current) {
+			return errRecurseCycle
+		}
+		if err := execRecurseWithDepth(node, next, buf, fn, depth+1); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func execRecurseDefaultChildren(node *op, current []byte, buf []byte, fn func([]byte) error) error {
+func execRecurseDefaultChildren(node *op, current []byte, buf []byte, fn func([]byte) error, depth int) error {
 	s := scanner{data: current}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) {
@@ -1989,14 +2004,14 @@ func execRecurseDefaultChildren(node *op, current []byte, buf []byte, fn func([]
 	case '[':
 		var walkErr error
 		s.arrayIter(func(_ int, elemStart, elemEnd int) bool {
-			walkErr = execRecurse(node, current[elemStart:elemEnd], buf, fn)
+			walkErr = execRecurseWithDepth(node, current[elemStart:elemEnd], buf, fn, depth)
 			return walkErr == nil
 		})
 		return walkErr
 	case '{':
 		var walkErr error
 		s.objectIter(func(_ []byte, valueStart, valueEnd int) bool {
-			walkErr = execRecurse(node, current[valueStart:valueEnd], buf, fn)
+			walkErr = execRecurseWithDepth(node, current[valueStart:valueEnd], buf, fn, depth)
 			return walkErr == nil
 		})
 		return walkErr
