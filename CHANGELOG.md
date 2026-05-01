@@ -9,8 +9,8 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 ### Added
 - `LICENSE` (Apache 2.0), `NOTICE`, and `LICENSE-3rdparty.csv` per Datadog's
   open-source release policy.
-- `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), and
-  `SECURITY.md` for community contributions and vulnerability reporting.
+- `CONTRIBUTING.md` and `SECURITY.md` for community contributions and
+  vulnerability reporting.
 - `.github/PULL_REQUEST_TEMPLATE.md` plus issue templates under
   `.github/ISSUE_TEMPLATE/` (bug report, feature request, config).
 - Apache 2.0 / Datadog copyright headers on every first-party `.go` file.

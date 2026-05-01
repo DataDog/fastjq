@@ -174,5 +174,5 @@ inventory of third-party components used by the benchmark comparison module.
 
 ## Contributing
 
-Contributions are welcome — please read [CONTRIBUTING.md](CONTRIBUTING.md) and
-[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before opening a pull request.
+Contributions are welcome — please read [CONTRIBUTING.md](CONTRIBUTING.md)
+before opening a pull request.
