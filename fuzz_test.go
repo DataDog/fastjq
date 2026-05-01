@@ -68,6 +68,34 @@ func FuzzCompile(f *testing.F) {
 		// try / // precedence
 		`try error(0) // 1`,
 		`try .a // "default"`,
+		// Variable binding / destructuring / defs / control flow
+		`. as $x | [$x,$x]`,
+		`. as [$a,$b] | [$b,$a]`,
+		`. as {$a, b: [$c]} | [$a,$c]`,
+		`reduce .[] as $x (0; . + $x)`,
+		`foreach .[] as $x (0; . + $x; .)`,
+		`label $out | .[] | if . > 2 then break $out else . end`,
+		`def inc: . + 1; inc`,
+		`def addn($x): . + $x; addn(2)`,
+		`def twice(f): f | f; twice(. + 1)`,
+		// Path / update / recursion helpers
+		`paths`, `paths(type == "number")`,
+		`path(.foo[0])`, `getpath(["foo",0])`,
+		`setpath(["foo",0]; 1)`, `delpaths([["foo",0]])`,
+		`pick(.foo, .bar[0])`,
+		`..`, `[..]`, `.. | scalars`,
+		`recurse(.foo[])`, `recurse(. * 2; . < 20)`,
+		`walk(if type == "array" then sort else . end)`,
+		// Newer builtin / formatter parity
+		`map_values(. + 1)`, `with_entries(.key |= "x_" + .)`,
+		`INDEX(.[]; .id)`, `IN(.[])`, `bsearch(3)`,
+		`combinations`, `combinations(2)`,
+		`@html "<b>\(.)</b>"`, `@sh "echo \(.)"`,
+		`todate`, `date`, `now`, `fromdate`,
+		`strftime("%Y-%m-%d")`, `strflocaltime("%Y")`,
+		`strptime("%Y-%m-%d")`, `mktime`, `gmtime`,
+		`builtins`, `$__loc__`,
+		`leaf_paths`, `hypot(3;4)`, `fma(2;3;4)`,
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -120,6 +148,13 @@ func FuzzRunFixed(f *testing.F) {
 		`-1`, `-100`, `2`,
 		// Mixed objects for string interpolation
 		`{"name":"alice","level":"error","svc":"api","status":500}`,
+		`{"foo":[{"id":1},{"id":2}],"bar":[3,2,1],"flags":{"a":true,"b":false}}`,
+		`{"foo":{"bar":[1,2,3],"baz":{"qux":4}},"id":2}`,
+		`[{"id":1,"name":"a"},{"id":2,"name":"b"}]`,
+		`{"nested":[[4,1,7],[8,5,2],[3,6,9]]}`,
+		`[{"foo":[{"foo":[]},{"foo":[{"foo":[]}]}]}]`,
+		`"2024-01-02T03:04:05Z"`,
+		`"2024-01-02"`,
 		// Boolean and null for isempty
 		`true`, `false`,
 	}
@@ -180,6 +215,34 @@ func FuzzRunFixed(f *testing.F) {
 		// try / // precedence
 		`try error(0) // 1`,
 		`try .a // "default"`,
+		// Variable binding / defs / control flow
+		`. as $x | [$x,$x]`,
+		`. as [$a,$b] | [$b,$a]`,
+		`. as {$a, b: [$c]} | [$a,$c]`,
+		`reduce .[] as $x (0; . + $x)`,
+		`foreach .[] as $x (0; . + $x; .)`,
+		`label $out | .[] | if . > 2 then break $out else . end`,
+		`def inc: . + 1; inc`,
+		`def addn($x): . + $x; addn(2)`,
+		`def twice(f): f | f; twice(. + 1)`,
+		// Path / update / recursion helpers
+		`paths`, `paths(type == "number")`,
+		`path(.foo[0])`, `getpath(["foo",0])`,
+		`setpath(["foo",0]; 1)`, `delpaths([["foo",0]])`,
+		`pick(.foo, .bar[0])`,
+		`..`, `.. | scalars`,
+		`recurse(.foo[])`, `recurse(. * 2; . < 20)`,
+		`walk(if type == "array" then sort else . end)`,
+		// Newer builtin / formatter parity
+		`map_values(. + 1)`, `with_entries(.key |= "x_" + .)`,
+		`INDEX(.[]; .id)`, `IN(.[])`, `bsearch(3)`,
+		`combinations`, `combinations(2)`,
+		`@html "<b>\(.)</b>"`, `@sh "echo \(.)"`,
+		`todate`, `date`, `now`, `fromdate`,
+		`strftime("%Y-%m-%d")`, `strflocaltime("%Y")`,
+		`strptime("%Y-%m-%d")`, `mktime`, `gmtime`,
+		`builtins`, `$__loc__`,
+		`leaf_paths`, `hypot(3;4)`, `fma(2;3;4)`,
 	}
 
 	programs := make([]*Program, 0, len(queries))
@@ -247,9 +310,9 @@ func FuzzBoth(f *testing.F) {
 	f.Add(`.`, "\xEF\xBB\xBF{\"a\":1}")
 	// Math builtins — verify no panic on any float input including domain errors
 	f.Add(`sqrt`, `9`)
-	f.Add(`sqrt`, `-1`)   // NaN domain → null
+	f.Add(`sqrt`, `-1`) // NaN domain → null
 	f.Add(`log`, `1`)
-	f.Add(`log`, `-1`)    // NaN domain → null
+	f.Add(`log`, `-1`) // NaN domain → null
 	f.Add(`sin`, `0`)
 	f.Add(`cos`, `0`)
 	f.Add(`atan`, `1`)
@@ -263,8 +326,8 @@ func FuzzBoth(f *testing.F) {
 	f.Add(`nearbyint`, `3.7`)
 	f.Add(`j0`, `0`)
 	f.Add(`j1`, `1`)
-	f.Add(`asin`, `2`)    // NaN domain → null
-	f.Add(`acos`, `2`)    // NaN domain → null
+	f.Add(`asin`, `2`) // NaN domain → null
+	f.Add(`acos`, `2`) // NaN domain → null
 	// String interpolation — field access (0 allocs) and number embedding
 	f.Add(`"\(.name)"`, `{"name":"alice","age":30}`)
 	f.Add(`"\(.a) + \(.b)"`, `{"a":"foo","b":"bar"}`)
@@ -288,6 +351,50 @@ func FuzzBoth(f *testing.F) {
 	// try / // precedence
 	f.Add(`try error(0) // 1`, `null`)
 	f.Add(`try .missing // "default"`, `{}`)
+	// Variable binding / defs / control flow
+	f.Add(`. as $x | [$x,$x]`, `{"a":1}`)
+	f.Add(`. as [$a,$b] | [$b,$a]`, `[1,2]`)
+	f.Add(`. as {$a, b: [$c]} | [$a,$c]`, `{"a":1,"b":[2]}`)
+	f.Add(`reduce .[] as $x (0; . + $x)`, `[1,2,3,4]`)
+	f.Add(`foreach .[] as $x (0; . + $x; .)`, `[1,2,3]`)
+	f.Add(`label $out | .[] | if . > 2 then break $out else . end`, `[0,1,2,3]`)
+	f.Add(`def inc: . + 1; inc`, `41`)
+	f.Add(`def addn($x): . + $x; addn(2)`, `40`)
+	f.Add(`def twice(f): f | f; twice(. + 1)`, `1`)
+	// Path / update / recursion helpers
+	f.Add(`paths`, `{"a":[1,true,{"b":"x"}],"c":null}`)
+	f.Add(`paths(type == "number")`, `{"a":[1,true,{"b":"x"}],"c":null}`)
+	f.Add(`path(.foo[0])`, `{"foo":["x","y"]}`)
+	f.Add(`getpath(["foo",0])`, `{"foo":["x","y"]}`)
+	f.Add(`setpath(["foo",0]; 1)`, `{"foo":[0,2]}`)
+	f.Add(`delpaths([["foo",0]])`, `{"foo":[0,2]}`)
+	f.Add(`pick(.foo, .bar[0])`, `{"foo":1,"bar":[2,3],"baz":4}`)
+	f.Add(`.. | scalars`, `{"a":[1,true,{"b":"x"}],"c":null}`)
+	f.Add(`recurse(.foo[])`, `{"foo":[{"foo":[]},{"foo":[{"foo":[]}]}]}`)
+	f.Add(`walk(if type == "array" then sort else . end)`, `[[4,1,7],[8,5,2],[3,6,9]]`)
+	// Newer builtins / formatters
+	f.Add(`map_values(. + 1)`, `[1,2,3]`)
+	f.Add(`with_entries(.key |= "x_" + .)`, `{"a":1,"b":2}`)
+	f.Add(`INDEX(.[]; .id)`, `[{"id":1,"name":"a"},{"id":2,"name":"b"}]`)
+	f.Add(`IN(.[])`, `[1,2,3]`)
+	f.Add(`bsearch(3)`, `[1,2,3,4,5]`)
+	f.Add(`combinations`, `[[1,2],[3,4]]`)
+	f.Add(`combinations(2)`, `[[1,2],[3,4]]`)
+	f.Add(`@html "<b>\(.)</b>"`, `"x&y"`)
+	f.Add(`@sh "echo \(.)"`, `"hello world"`)
+	f.Add(`todate`, `1704164645`)
+	f.Add(`date`, `1704164645`)
+	f.Add(`fromdate`, `"2024-01-02T03:04:05Z"`)
+	f.Add(`strftime("%Y-%m-%d")`, `[1704164645,0]`)
+	f.Add(`strflocaltime("%Y")`, `[1704164645,0]`)
+	f.Add(`strptime("%Y-%m-%d")`, `"2024-01-02"`)
+	f.Add(`mktime`, `[2024,0,2,3,4,5,0,1]`)
+	f.Add(`gmtime`, `1704164645`)
+	f.Add(`builtins`, `null`)
+	f.Add(`$__loc__`, `null`)
+	f.Add(`leaf_paths`, `{"a":[1,true,{"b":"x"}],"c":null}`)
+	f.Add(`hypot(3;4)`, `null`)
+	f.Add(`fma(2;3;4)`, `null`)
 	f.Fuzz(func(t *testing.T, query, input string) {
 		p, err := Compile(query)
 		if err != nil {
