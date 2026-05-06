@@ -2,7 +2,7 @@
 // under the Apache License 2.0.
 //
 // This product includes software developed at Datadog (https://www.datadoghq.com/)
-// Copyright 2025-Present Datadog, Inc.
+// Copyright 2026-Present Datadog, Inc.
 
 package compare
 
