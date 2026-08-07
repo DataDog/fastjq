@@ -126,6 +126,8 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 
 `Compile` allocates. Core operations via `RunWithBuffer`/`RunFunc` achieve zero allocations at steady state. Operations that produce new structured output (regex matches, base64/URI encoding, `map(f)` with construction) allocate proportional to result size.
 
+Returning a non-nil error from a `RunFunc` callback stops iteration, and `RunFunc` returns that error unchanged. Use it to consume just the first result, or to abort a long stream early.
+
 ## Supported Operations
 
 fastjq supports most of jq's library-oriented surface. See [SYNTAX.md](docs/SYNTAX.md) for the complete operation list, examples, allocation notes, and the remaining unsupported features.

@@ -7,6 +7,7 @@
 package fastjq
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -601,6 +602,229 @@ func TestRunWithBuffer(t *testing.T) {
 	}
 	if string(got2) != expected {
 		t.Errorf("got %s, want %s", got2, expected)
+	}
+}
+
+func TestRunFuncCallbackErrorStopsIteration(t *testing.T) {
+	errStop := errors.New("stop")
+
+	// Every case produces at least 2 outputs. The callback fails on the second,
+	// so each must call fn exactly twice and hand errStop back to the caller.
+	arr := []byte(`[1,2,3,4]`)
+	obj := []byte(`{"a":1,"b":2,"c":3,"d":4}`)
+	for _, tc := range []struct {
+		query string
+		input []byte
+	}{
+		{".[]", arr},             // array iterator — the reported bug
+		{".[]", obj},             // object iterator — same code, copy-pasted
+		{".[] | .", arr},         // pipe hands the decision back to the iterator
+		{".[]?", arr},            // optional iterator
+		{".a, .b, .c, .d", obj},  // comma generator — already correct
+		{"limit(4; .[])", arr},   // limit's own errBreak must not shadow ours
+		{"try .[] catch .", arr}, // try must not catch the caller's signal
+		{"(repeat(.))?", arr},    // repeat under `?` takes its own unwind path
+	} {
+		t.Run(tc.query+string(tc.input), func(t *testing.T) {
+			p, err := Compile(tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := tc.input
+
+			seen := 0
+			err = p.RunFunc(input, func([]byte) error {
+				seen++
+				if seen == 2 {
+					return errStop
+				}
+				return nil
+			})
+			// Identity, not errors.Is: the caller must get its own error back,
+			// not a callbackError wrapping it.
+			if err != errStop {
+				t.Errorf("RunFunc returned %v (%T), want errStop unwrapped", err, err)
+			}
+			if seen != 2 {
+				t.Errorf("callback ran %d times, want 2", seen)
+			}
+		})
+	}
+}
+
+func TestRunFuncCallbackErrorMultiSource(t *testing.T) {
+	// A single-source iterator hid this bug: only a comma combined with an
+	// iterator exposed it, because the enclosing generator kept going after the
+	// inner one stopped. These are the queries reported in #31.
+	errStop := errors.New("stop")
+	input := []byte(`{"a":[1,2,3],"s":"str","o":{"x":1,"y":2}}`)
+	for _, query := range []string{".a[], .o[]", "(.a[], .s)", ".a[]?, .s", ".s, .a[]"} {
+		t.Run(query, func(t *testing.T) {
+			p, err := Compile(query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out []byte
+			err = p.RunFunc(input, func(result []byte) error {
+				out = append(out, result...)
+				return errStop
+			})
+			if err != errStop {
+				t.Errorf("returned %v (%T), want errStop", err, err)
+			}
+			if want := 1; len(out) == 0 {
+				t.Errorf("no output, want %d", want)
+			}
+			if string(out) != "1" && string(out) != `"str"` {
+				t.Errorf("got %q, want a single output", out)
+			}
+		})
+	}
+}
+
+func TestRunFuncCallbackErrorAtEveryPosition(t *testing.T) {
+	errStop := errors.New("stop")
+	p, err := Compile(".[]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte(`[1,2,3,4]`)
+
+	// Stopping on the first and last output are the boundaries: the first has no
+	// preceding successful call, the last has no following element to skip.
+	for _, stopAt := range []int{1, 2, 3, 4} {
+		seen := 0
+		err := p.RunFunc(input, func([]byte) error {
+			seen++
+			if seen == stopAt {
+				return errStop
+			}
+			return nil
+		})
+		if err != errStop {
+			t.Errorf("stopAt=%d: returned %v, want errStop", stopAt, err)
+		}
+		if seen != stopAt {
+			t.Errorf("stopAt=%d: callback ran %d times", stopAt, seen)
+		}
+	}
+
+	// A callback that never fails must still see everything and return nil.
+	seen := 0
+	if err := p.RunFunc(input, func([]byte) error { seen++; return nil }); err != nil {
+		t.Errorf("non-failing callback returned %v, want nil", err)
+	}
+	if seen != 4 {
+		t.Errorf("non-failing callback ran %d times, want 4", seen)
+	}
+}
+
+func TestRunFuncCallbackErrorNestedIterators(t *testing.T) {
+	// The inner iterator returns the callbackError to the outer one, so both
+	// unwind paths have to respect it.
+	errStop := errors.New("stop")
+	p, err := Compile(".[] | .[]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	err = p.RunFunc([]byte(`[[1,2],[3,4],[5,6]]`), func([]byte) error {
+		seen++
+		if seen == 3 {
+			return errStop
+		}
+		return nil
+	})
+	if err != errStop {
+		t.Errorf("returned %v, want errStop", err)
+	}
+	if seen != 3 {
+		t.Errorf("callback ran %d times, want 3", seen)
+	}
+}
+
+func TestRunFuncEngineErrorsStayLenient(t *testing.T) {
+	// Regression guard for the branch this fix touches. Iterators deliberately
+	// drop their own evaluation errors so multi-output queries stay lenient.
+	// Only the caller's error was ever meant to change.
+	for _, tc := range []struct {
+		query string
+		input string
+		want  []string
+	}{
+		// .foo on 42 is an engine error: iteration stops, error is dropped.
+		{".[] | .foo", `[{"foo":1},42,{"foo":3}]`, []string{"1"}},
+		// The optional form skips the bad element and keeps going.
+		{".[] | .foo?", `[{"foo":1},42,{"foo":3}]`, []string{"1", "3"}},
+		{".[] | .foo", `[1,2,3]`, nil},
+	} {
+		t.Run(tc.query+tc.input, func(t *testing.T) {
+			p, err := Compile(tc.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			err = p.RunFunc([]byte(tc.input), func(r []byte) error {
+				got = append(got, string(r))
+				return nil
+			})
+			if err != nil {
+				t.Errorf("RunFunc returned %v, want nil (engine errors are dropped)", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("output %d: got %s, want %s", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestRunFuncStaysZeroAlloc(t *testing.T) {
+	// Guards the type assertion in RunFunc: errors.As there would cost an
+	// allocation per call even when the callback never fails.
+	p, err := Compile(".name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []byte(`{"name":"alice","age":30}`)
+	sink := 0
+	// Hoisted: a callback defined inside the measured function would be
+	// allocated per run and mask what we are measuring.
+	fn := func(r []byte) error {
+		sink += len(r)
+		return nil
+	}
+	got := testing.AllocsPerRun(100, func() {
+		_ = p.RunFunc(input, fn)
+	})
+	// 1 is RunFunc's own wrapper closure and predates this fix.
+	if got > 1 {
+		t.Errorf("RunFunc allocated %.0f times per run on the success path, want at most 1", got)
+	}
+}
+
+func TestRunFuncCallbackErrorNotCaughtByTry(t *testing.T) {
+	// jq's `try` catches errors raised by the query, not the caller's stop
+	// signal. Swallowing it here would resurrect the bug behind a catch handler.
+	p, err := Compile("try (.[] | error(\"boom\")) catch .")
+	if err != nil {
+		t.Fatal(err)
+	}
+	errStop := errors.New("stop")
+	seen := 0
+	err = p.RunFunc([]byte(`[1,2,3]`), func([]byte) error {
+		seen++
+		return errStop
+	})
+	if err != errStop {
+		t.Errorf("RunFunc returned %v (%T), want errStop", err, err)
+	}
+	if seen != 1 {
+		t.Errorf("callback ran %d times, want 1", seen)
 	}
 }
 
