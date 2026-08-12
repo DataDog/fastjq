@@ -102,8 +102,20 @@ func (p *Program) RunAll(input []byte) ([][]byte, error) {
 // This is the most efficient multi-output API — it avoids allocating
 // result slices. The result bytes passed to fn are only valid for the
 // duration of the callback.
+//
+// Returning a non-nil error from fn stops iteration; RunFunc returns that error
+// unchanged. A jq `try` does not catch it.
 func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error {
-	return execMulti(execState{}, p.root, stripBOM(input), nil, func(result []byte) error {
-		return fn(normalizeNaNInf(result))
+	err := execMulti(execState{}, p.root, stripBOM(input), nil, func(result []byte) error {
+		if err := fn(normalizeNaNInf(result)); err != nil {
+			return &callbackError{err: err}
+		}
+		return nil
 	})
+	// opTry strips its downstreamError before returning, so a callbackError
+	// always surfaces bare here.
+	if ce, ok := err.(*callbackError); ok {
+		return ce.err
+	}
+	return err
 }

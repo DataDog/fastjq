@@ -54,6 +54,32 @@ type downstreamError struct {
 
 func (e *downstreamError) Error() string { return e.err.Error() }
 
+// callbackError marks an error returned by a RunFunc callback, so iterators can
+// tell it apart from their own evaluation errors, which they drop on purpose.
+// Allocated only when a callback fails.
+type callbackError struct {
+	err error
+}
+
+func (e *callbackError) Error() string { return e.err.Error() }
+
+func (e *callbackError) Unwrap() error { return e.err }
+
+// isCallbackError reports whether err is a caller's stop signal, including one
+// opTry has wrapped on its way out. Type assertions, not errors.As: errors.As
+// takes an interface{}, so its target escapes and would allocate on every
+// dropped engine error.
+func isCallbackError(err error) bool {
+	if _, ok := err.(*callbackError); ok {
+		return true
+	}
+	if de, ok := err.(*downstreamError); ok {
+		_, ok := de.err.(*callbackError)
+		return ok
+	}
+	return false
+}
+
 type transparentError struct {
 	err error
 }
@@ -74,6 +100,9 @@ var bNull = []byte("null")
 
 func isControlFlowError(err error) bool {
 	if err == errBreak {
+		return true
+	}
+	if isCallbackError(err) {
 		return true
 	}
 	var bs *breakSignal
@@ -198,7 +227,7 @@ func execMulti(state execState, node *op, input []byte, buf []byte, fn func([]by
 			})
 			if err != nil {
 				var bs *breakSignal
-				if errors.As(err, &bs) {
+				if errors.As(err, &bs) || isCallbackError(err) {
 					return err
 				}
 				return nil

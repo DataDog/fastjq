@@ -4,6 +4,22 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — propagate RunFunc callback errors
+
+### Fixed
+
+- `RunFunc` no longer discards the error its callback returns. Callback errors now travel as an internal `callbackError` that the iterator unwind paths propagate instead of dropping, and `RunFunc` returns the caller's error unchanged. Fixes #31.
+
+### Tradeoffs
+
+- A jq `try` does not catch a callback error. Engine errors are still dropped, so `.[] | .foo` over a mixed array skips non-objects.
+
+### Benchmark results
+
+- No change. `Small_Iterator` and `Large_Iterator` hold at 16 B/op, 1 alloc/op.
+
+---
+
 ## [Unreleased] — Open-source release prep
 
 ### Added

@@ -330,3 +330,8 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
 return the first result. `RunAll` collects all results. `RunFunc` streams
 results via callback with zero steady-state allocations. All API methods strip
 a UTF-8 BOM from input before parsing.
+
+Returning a non-nil error from a `RunFunc` callback stops iteration, and
+`RunFunc` returns that error unchanged. The executor wraps it internally so
+iterators can tell it apart from their own evaluation errors, which they drop on
+purpose to keep multi-output queries lenient. A jq `try` does not catch it.
