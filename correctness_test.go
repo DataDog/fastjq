@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- No-panic: malformed/edge-case inputs ---
@@ -71,6 +72,10 @@ func TestNoPanicMalformedInput(t *testing.T) {
 		`{"a":`, `{"a":"b`, `[1,2,`,
 		`{"a":1`, `[1,2,3`,
 		`{"a":{"b":`, `[[[`,
+		// Truncated on a backslash escape — the escape skip has no second byte
+		// to consume, in a string value, an object key, and a \u form.
+		`"ab\`, `"000000\`, `{"ab\`, `{"a":"b\`, `[1,"x\`, `{"a":1,"b\`,
+		`"ab\u`, `"ab\u00`, `"abcdefghijklmnop\`,
 		// Invalid structure
 		`{null}`, `[,]`, `{:1}`, `{1:2}`,
 		// Stray values
@@ -117,6 +122,103 @@ func TestNoPanicMalformedInput(t *testing.T) {
 				}()
 				p.Run([]byte(input))
 			}()
+		}
+	}
+}
+
+// TestNoReadPastInputLength is the sharp form of the truncated-escape contract:
+// the scanner must never read beyond len(input), even when the slice has spare
+// capacity holding unrelated bytes.
+//
+// This is the realistic shape — a record sliced out of a larger read buffer, as
+// cmd/fastjq does with bufio lines. Before the escape skip was clamped, a string
+// truncated on a backslash advanced past the end and the output picked up a byte
+// of whatever followed in the caller's buffer. When the slice had no spare
+// capacity the same overshoot was a panic instead.
+func TestNoReadPastInputLength(t *testing.T) {
+	// Everything after the truncation point must never appear in any output.
+	const tail = `","secret":"hunter2"}`
+	backing := []byte(`{"ab\` + tail)
+
+	queries := []string{
+		".", "keys", "keys_unsorted", "to_entries", "tojson", "length", "type",
+		"ascii_downcase", "ascii_upcase", ".[0:3]", ".[1:]", ".a", ".[]",
+		"with_entries(.)", "paths", "[..]", "@json", "@base64",
+	}
+	for _, q := range queries {
+		p, err := Compile(q)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", q, err)
+		}
+		for n := 1; n <= len(`{"ab\`); n++ {
+			input := backing[:n]
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("PANIC: query=%q input=%q: %v", q, input, r)
+					}
+				}()
+				out, _ := p.RunAll(input)
+				for _, o := range out {
+					// "secret" only exists past len(input), so seeing any of it
+					// means the scanner ran off the end.
+					if strings.Contains(string(o), "secret") || strings.Contains(string(o), "hunter2") {
+						t.Errorf("query=%q input=%q: output %q contains bytes from beyond len(input)", q, input, o)
+					}
+				}
+			}()
+		}
+	}
+
+	// Same overshoot, no spare capacity: the byte past the end is off the end of
+	// the allocation, so this is where it used to panic.
+	for _, q := range queries {
+		p, err := Compile(q)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", q, err)
+		}
+		for _, in := range []string{`"ab\`, `"000000\`, `{"ab\`, `{"a":"b\`, `"ab\u00`} {
+			exact := make([]byte, len(in))
+			copy(exact, in)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("PANIC: query=%q input=%q: %v", q, in, r)
+					}
+				}()
+				p.RunAll(exact)
+			}()
+		}
+	}
+}
+
+// TestTruncatedEscapeTerminates guards the other half of the same defect: the
+// ascii_downcase / ascii_upcase loop used to see a trailing backslash, decline to
+// copy a second byte that wasn't there, and `continue` without advancing — an
+// infinite loop on malformed input, reachable from any caller running untrusted
+// documents.
+func TestTruncatedEscapeTerminates(t *testing.T) {
+	for _, q := range []string{"ascii_downcase", "ascii_upcase", ".[0:3]", "@base64", "explode"} {
+		for _, in := range []string{`"ab\`, `"abcdefghijklmnopqrstuvwxyz\`, `"ab\u`} {
+			t.Run(q+in, func(t *testing.T) {
+				p, err := Compile(q)
+				if err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan struct{})
+				go func() {
+					defer func() {
+						recover() // a panic is TestNoReadPastInputLength's business
+						close(done)
+					}()
+					p.RunAll([]byte(in))
+				}()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Fatalf("query=%q input=%q did not terminate", q, in)
+				}
+			})
 		}
 	}
 }

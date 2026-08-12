@@ -141,6 +141,9 @@ func FuzzRunFixed(f *testing.F) {
 		// Strings with JSON escape sequences (for @base64/@uri decode correctness)
 		`"foo\nbar"`,
 		`"tab\there"`,
+		// Truncated on a backslash escape: the escape skip has no second byte to
+		// consume. Overshot the end of input until skipEscape clamped it.
+		`"ab\`, `"000000\`, `{"ab\`, `{"a":"b\`, `[1,"x\`, `"ab\u`, `"ab\u00`,
 		// Arrays for subsequence search
 		`[0,1,2,3,1,4,2,5,1,2,6,7]`,
 		`[1,2,1,2,1,2]`,

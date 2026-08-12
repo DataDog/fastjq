@@ -38,16 +38,35 @@ func (s *scanner) skipWhitespace() {
 	}
 }
 
+// clampPos pulls pos back to the end of input. Skipping a backslash escape
+// advances by the escape width without checking that the whole escape is
+// present, so a string truncated mid-escape leaves pos past len(data). A caller
+// slicing data[start:pos] would then read a byte from whatever the caller's
+// slice holds beyond its length — adjacent bytes of a shared read buffer — or
+// panic outright when the slice has no spare capacity.
+//
+// Callers clamp where the scan ends rather than on every escape, keeping the
+// check off the byte loop so escape-free strings pay nothing.
+func (s *scanner) clampPos() {
+	if s.pos > len(s.data) {
+		s.pos = len(s.data)
+	}
+}
+
 // readString reads a JSON string and returns the raw content between quotes
 // as a sub-slice (zero allocation). Advances pos past the closing quote.
 // Assumes pos is at the opening '"'.
 // Uses byte-by-byte scanning — readString is called on field keys which are
 // typically short (3-20 bytes), where function call overhead of bytes.IndexByte
 // outweighs its SIMD benefit. skipString handles long values separately.
+// len(s.data) is hoisted into n so the loop's bounds check is eliminated and the
+// body stays inside the inliner's 80-node budget; clamping inline rather than
+// calling clampPos is what keeps it there.
 func (s *scanner) readString() []byte {
 	s.pos++ // skip opening '"'
 	start := s.pos
-	for s.pos < len(s.data) {
+	n := len(s.data)
+	for s.pos < n {
 		ch := s.data[s.pos]
 		if ch == '\\' {
 			s.pos += 2 // skip escaped char
@@ -59,6 +78,9 @@ func (s *scanner) readString() []byte {
 			return result
 		}
 		s.pos++
+	}
+	if s.pos > n {
+		s.pos = n // a truncated trailing escape overshot the end
 	}
 	return s.data[start:s.pos]
 }
@@ -103,6 +125,10 @@ func (s *scanner) skipString() {
 			return
 		}
 		s.pos++
+	}
+	if s.pos >= len(s.data) {
+		s.clampPos() // a truncated trailing escape overshot the end
+		return
 	}
 	// SIMD path: use bytes.IndexByte for remaining long strings (x86/ARM64 accelerated)
 	for s.pos < len(s.data) {
