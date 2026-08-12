@@ -4,6 +4,18 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — fix Compile panic on a truncated object construction
+
+### Fixed
+
+- `Compile` panicked with `index out of range` instead of returning a parse error for an object construction ending on its separator — `{a,`, `{a:1,`, `{0,`, `{"a",`, `{$a,`, `{(1):2,`. `parseConstruct` checked for end of input only at the top of its loop, before consuming the comma, so the following iteration read the key byte from an empty string. Now returns `unclosed object construction`, matching `{a`. Fixes #39.
+
+### Benchmark results
+
+- No change. Compile-time only; no runtime path touched.
+
+---
+
 ## [Unreleased] — propagate RunFunc callback errors
 
 ### Fixed
