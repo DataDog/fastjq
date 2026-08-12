@@ -6,7 +6,10 @@
 
 package fastjq
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // FuzzCompile ensures no query string causes Compile to panic.
 func FuzzCompile(f *testing.F) {
@@ -407,5 +410,91 @@ func FuzzBoth(f *testing.F) {
 			return // invalid query — compile errors are expected, panics are not
 		}
 		p.Run([]byte(input)) // must not panic
+	})
+}
+
+// FuzzRunFuncCallbackError checks the RunFunc contract that no other target
+// exercises: an error returned by the callback reaches the caller unchanged, and
+// the callback is never invoked again afterwards. The other targets pass a
+// nil-returning callback (or none at all), so an unwind path that drops a
+// caller's error looks correct to them.
+//
+// Queries are fixed and the input is fuzzed, like FuzzRunFixed — the query
+// string itself is already covered by FuzzCompile and FuzzBoth.
+//
+// The seed corpus passes. Running with -fuzz currently reproduces #39 and #40,
+// two pre-existing panics that predate this target and are unrelated to it.
+func FuzzRunFuncCallbackError(f *testing.F) {
+	// Multi-output queries only: a single-output query cannot expose a drop.
+	// The try nestings matter — each one wraps the signal on its way out, so an
+	// iterator two try bodies deep sees it wrapped twice.
+	queries := []string{
+		`.[]`, `.[]?`, `.[] | .`, `.[] | .a`, `.[] | .a?`, `.[] | .[]`,
+		`.a[], .b[]`, `.a, .b`, `(.[])?`,
+		`try .[] catch .`,
+		`try (try .[] catch 1) catch 2`,
+		`try (try (try .[] catch 1) catch 2) catch 3`,
+		`try (.[] | try .a catch 1) catch 2`,
+		`try (.[] | error("boom")) catch .`,
+		`limit(3; .[])`, `first(.[])`, `nth(1; .[])`,
+		`range(3)`, `range(3) | . + 1`,
+		`(repeat(.))?`,
+		`while(. < 5; . + 1)`,
+		`foreach .[] as $x (0; . + $x)`,
+		`label $out | .[] | if . > 2 then break $out else . end`,
+		`..`, `.. | scalars`, `paths`, `tostream`,
+		`.[] as [$a] | $a`, `.[] // 99`,
+		`to_entries[]`, `keys[]`, `.[] | tostring`,
+	}
+	programs := make([]*Program, 0, len(queries))
+	compiled := make([]string, 0, len(queries))
+	for _, q := range queries {
+		p, err := Compile(q)
+		if err == nil {
+			programs = append(programs, p)
+			compiled = append(compiled, q)
+		}
+	}
+
+	inputs := []string{
+		`[1,2,3]`, `[1,2,3,4,5]`, `{"a":1,"b":2}`, `{"a":[1,2],"b":3}`,
+		`[{"a":1},42,{"a":3}]`, `[[1,2],[3,4]]`, `[]`, `{}`, `null`, `0`,
+		`[null,false,0,"",[],{}]`, `{"a":[1,2],"b":[3,4]}`,
+		// Malformed, so the engine raises its own errors alongside ours.
+		`[1,2,`, `{"a":`, `[1,{"a":2},`,
+	}
+	for _, in := range inputs {
+		f.Add(in, 1)
+		f.Add(in, 2)
+	}
+
+	errStop := errors.New("stop")
+	f.Fuzz(func(t *testing.T, input string, stopAt int) {
+		if stopAt < 1 || stopAt > 8 {
+			return // keep the stream bounded; a large cap just burns time
+		}
+		for i, p := range programs {
+			seen, after := 0, 0
+			got := p.RunFunc([]byte(input), func([]byte) error {
+				seen++
+				if seen > stopAt {
+					after++
+				}
+				if seen >= stopAt {
+					return errStop
+				}
+				return nil
+			})
+			if seen < stopAt {
+				continue // fewer outputs than the cap — the callback never failed
+			}
+			if after > 0 {
+				t.Fatalf("callback ran %d more times after failing: %q over %q", after, compiled[i], input)
+			}
+			// Identity, not errors.Is: the caller must get its own error back.
+			if got != errStop {
+				t.Fatalf("RunFunc returned %v (%T), want the callback's error: %q over %q", got, got, compiled[i], input)
+			}
+		}
 	})
 }

@@ -624,6 +624,13 @@ func TestRunFuncCallbackErrorStopsIteration(t *testing.T) {
 		{"limit(4; .[])", arr},   // limit's own errBreak must not shadow ours
 		{"try .[] catch .", arr}, // try must not catch the caller's signal
 		{"(repeat(.))?", arr},    // repeat under `?` takes its own unwind path
+		// Each enclosing try wraps the signal again, so an iterator two try
+		// bodies deep sees it doubly wrapped. One layer of unwrapping is not
+		// enough — these all reported success before callbackErrorCause looped.
+		{"try (try .[] catch 1) catch 2", arr},
+		{"try (try .[] catch 1) catch 2", obj},
+		{"try (try (.[]?) catch 1) catch 2", arr},
+		{"try (try (try .[] catch 1) catch 2) catch 3", arr},
 	} {
 		t.Run(tc.query+string(tc.input), func(t *testing.T) {
 			p, err := Compile(tc.query)
