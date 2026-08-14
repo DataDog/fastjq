@@ -3438,6 +3438,12 @@ func parseConstruct(s string) (*op, string, error) {
 				return nil, s, fmt.Errorf("expected ',' in object construction")
 			}
 			s = strings.TrimSpace(s[1:])
+			// The emptiness check at the top of the loop runs before the comma is
+			// consumed, so a query ending in one (`{a,`) would reach the key
+			// switch below with nothing left to switch on.
+			if s == "" {
+				return nil, "", fmt.Errorf("unclosed object construction")
+			}
 		}
 
 		var (

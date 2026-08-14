@@ -105,6 +105,10 @@ func FuzzCompile(f *testing.F) {
 		`strptime("%Y-%m-%d")`, `mktime`, `gmtime`,
 		`builtins`, `$__loc__`,
 		`leaf_paths`, `hypot(3;4)`, `fma(2;3;4)`,
+		// Truncated object construction — one per key form. These panicked
+		// until parseConstruct rechecked for end of input after the comma.
+		"{a,", "{a:1,", "{a,b,", "{0,", `{"a",`, `{"a":1,`, "{$a,", "{(1):2,",
+		"{a", "{a,}", "{",
 	}
 	for _, s := range seeds {
 		f.Add(s)
