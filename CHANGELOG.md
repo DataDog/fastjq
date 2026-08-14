@@ -16,6 +16,22 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — propagate callback errors through nested try wrappers
+
+### Fixed
+
+- A `RunFunc` callback error was still dropped when the iterator producing it sat inside two or more `try` bodies, e.g. `try (try (.items[] | .name) catch "inner") catch "outer"`. Each `opTry` wraps the signal again on its way out, and the check only unwrapped one layer, so `RunFunc` stopped early and reported success. Follow-up to #31 / #38.
+
+### Added
+
+- `FuzzRunFuncCallbackError`, covering the `RunFunc` callback contract — no other fuzz target calls `RunFunc`, so an unwind path that drops a caller's error looked correct to all of them.
+
+### Benchmark results
+
+- No change. Allocation counts identical across the Iterator, Map, Try, Select, Field, and Del benchmarks.
+
+---
+
 ## [Unreleased] — fix infinite loop in compareJSONOrder on malformed arrays
 
 ### Fixed
