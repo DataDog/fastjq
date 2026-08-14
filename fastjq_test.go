@@ -624,6 +624,13 @@ func TestRunFuncCallbackErrorStopsIteration(t *testing.T) {
 		{"limit(4; .[])", arr},   // limit's own errBreak must not shadow ours
 		{"try .[] catch .", arr}, // try must not catch the caller's signal
 		{"(repeat(.))?", arr},    // repeat under `?` takes its own unwind path
+		// Each enclosing try wraps the signal again, so an iterator two try
+		// bodies deep sees it doubly wrapped. One layer of unwrapping is not
+		// enough — these all reported success before callbackErrorCause looped.
+		{"try (try .[] catch 1) catch 2", arr},
+		{"try (try .[] catch 1) catch 2", obj},
+		{"try (try (.[]?) catch 1) catch 2", arr},
+		{"try (try (try .[] catch 1) catch 2) catch 3", arr},
 	} {
 		t.Run(tc.query+string(tc.input), func(t *testing.T) {
 			p, err := Compile(tc.query)
@@ -968,6 +975,59 @@ func TestCompileError(t *testing.T) {
 	_, err = Compile("del()")
 	if err == nil {
 		t.Error("expected error for del() with no args")
+	}
+}
+
+// TestCompileTruncatedObjectConstruct covers an object construction that ends on
+// its separator. The emptiness check runs before the comma is consumed, so these
+// used to reach the key switch with an empty string and panic.
+func TestCompileTruncatedObjectConstruct(t *testing.T) {
+	// Every key form has to be covered: each one leaves the loop in the same
+	// place, and only the following iteration notices.
+	for _, query := range []string{
+		"{a,",
+		"{a:1,",
+		"{a,b,",
+		"{0,",
+		`{"a",`,
+		`{"a":1,`,
+		"{$a,",
+		"{(1):2,",
+		"{a, ",
+		"{a,\n",
+	} {
+		t.Run(query, func(t *testing.T) {
+			if _, err := Compile(query); err == nil {
+				t.Errorf("Compile(%q) succeeded, want an error", query)
+			}
+		})
+	}
+
+	// The neighbouring forms already errored and must keep doing so — the fix
+	// must not swallow a trailing `}` or a genuine key.
+	for _, tc := range []struct{ query, want string }{
+		{"{a", "unclosed object construction"},
+		{"{a,}", "expected field name in object construction"},
+		{"{a,b", "unclosed object construction"},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			_, err := Compile(tc.query)
+			if err == nil {
+				t.Fatalf("Compile(%q) succeeded, want %q", tc.query, tc.want)
+			}
+			if err.Error() != tc.want {
+				t.Errorf("Compile(%q) = %q, want %q", tc.query, err, tc.want)
+			}
+		})
+	}
+
+	// And valid constructions still compile.
+	for _, query := range []string{"{a}", "{a,b}", "{a:1,b:2}", `{"a":1}`, "{a: .b, c}"} {
+		t.Run(query, func(t *testing.T) {
+			if _, err := Compile(query); err != nil {
+				t.Errorf("Compile(%q) failed: %v", query, err)
+			}
+		})
 	}
 }
 

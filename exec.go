@@ -65,19 +65,31 @@ func (e *callbackError) Error() string { return e.err.Error() }
 
 func (e *callbackError) Unwrap() error { return e.err }
 
+// callbackErrorCause returns the caller's error if err carries a callbackError,
+// and reports whether it found one. Every opTry the output passed through wraps
+// the error again on its way out, so the loop peels all of them: an iterator
+// nested in two try bodies sees a doubly wrapped signal.
+//
+// Type assertions, not errors.As: errors.As takes an interface{}, so its target
+// escapes and would allocate on every dropped engine error.
+func callbackErrorCause(err error) (error, bool) {
+	for {
+		switch e := err.(type) {
+		case *callbackError:
+			return e.err, true
+		case *downstreamError:
+			err = e.err
+		default:
+			return nil, false
+		}
+	}
+}
+
 // isCallbackError reports whether err is a caller's stop signal, including one
-// opTry has wrapped on its way out. Type assertions, not errors.As: errors.As
-// takes an interface{}, so its target escapes and would allocate on every
-// dropped engine error.
+// opTry has wrapped on its way out.
 func isCallbackError(err error) bool {
-	if _, ok := err.(*callbackError); ok {
-		return true
-	}
-	if de, ok := err.(*downstreamError); ok {
-		_, ok := de.err.(*callbackError)
-		return ok
-	}
-	return false
+	_, ok := callbackErrorCause(err)
+	return ok
 }
 
 type transparentError struct {
@@ -8221,6 +8233,11 @@ func compareJSONOrder(a, b []byte) int {
 			as.skipValue()
 			bElemStart := bs.pos
 			bs.skipValue()
+			// Malformed input (e.g. `[}`) can leave skipValue parked on a
+			// delimiter with zero progress, which would otherwise loop forever.
+			if as.pos == aElemStart || bs.pos == bElemStart {
+				return bytesCompare(a[aElemStart:], b[bElemStart:])
+			}
 			if c := compareJSONOrder(a[aElemStart:as.pos], b[bElemStart:bs.pos]); c != 0 {
 				return c
 			}

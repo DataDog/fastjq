@@ -21,6 +21,58 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — fix Compile panic on a truncated object construction
+
+### Fixed
+
+- `Compile` panicked with `index out of range` instead of returning a parse error for an object construction ending on its separator — `{a,`, `{a:1,`, `{0,`, `{"a",`, `{$a,`, `{(1):2,`. `parseConstruct` checked for end of input only at the top of its loop, before consuming the comma, so the following iteration read the key byte from an empty string. Now returns `unclosed object construction`, matching `{a`. Fixes #39.
+
+### Benchmark results
+
+- No change. Compile-time only; no runtime path touched.
+
+---
+
+## [Unreleased] — propagate callback errors through nested try wrappers
+
+### Fixed
+
+- A `RunFunc` callback error was still dropped when the iterator producing it sat inside two or more `try` bodies, e.g. `try (try (.items[] | .name) catch "inner") catch "outer"`. Each `opTry` wraps the signal again on its way out, and the check only unwrapped one layer, so `RunFunc` stopped early and reported success. Follow-up to #31 / #38.
+
+### Added
+
+- `FuzzRunFuncCallbackError`, covering the `RunFunc` callback contract — no other fuzz target calls `RunFunc`, so an unwind path that drops a caller's error looked correct to all of them.
+
+### Benchmark results
+
+- No change. Allocation counts identical across the Iterator, Map, Try, Select, Field, and Del benchmarks.
+
+---
+
+## [Unreleased] — fix infinite loop in compareJSONOrder on malformed arrays
+
+### Fixed
+
+- `compareJSONOrder` no longer hangs forever on malformed array input such as
+  `[[},[},00`. The array-comparison loop assumed `skipValue()` always advances;
+  on a delimiter byte (e.g. `}` inside `[}`) it consumed zero bytes, causing the
+  loop to re-read the same position indefinitely. A zero-progress guard now falls
+  back to a raw byte comparison, guaranteeing termination. Fixes #43.
+
+### Tradeoffs
+
+- Ordering for malformed array values is undefined (raw byte fallback), consistent
+  with the project's existing policy that behaviour on invalid JSON is unspecified.
+  Valid-JSON paths are completely unchanged.
+
+### Benchmark results
+
+- No change. The guard is on a malformed-input-only branch; the valid-JSON hot path
+  is unaffected. `Small_Min`, `Sort`, `Unique`, and `GroupBy` benchmarks hold their
+  existing alloc counts.
+
+---
+
 ## [Unreleased] — propagate RunFunc callback errors
 
 ### Fixed

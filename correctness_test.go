@@ -78,6 +78,9 @@ func TestNoPanicMalformedInput(t *testing.T) {
 		`"ab\u`, `"ab\u00`, `"abcdefghijklmnop\`,
 		// Invalid structure
 		`{null}`, `[,]`, `{:1}`, `{1:2}`,
+		// Regression seed for #43: skipValue makes zero progress on `[}`,
+		// which previously hung compareJSONOrder's array-comparison loop.
+		`[[},[},00`,
 		// Stray values
 		`undefined`, `NaN`, `Infinity`, `-`,
 		// Bare scalars (valid JSON but not objects/arrays)
@@ -223,6 +226,34 @@ func TestTruncatedEscapeTerminates(t *testing.T) {
 	}
 }
 
+// TestMalformedArrayComparisonTerminates is a regression test for #43: `[}`
+// left skipValue parked on the delimiter with zero progress, hanging
+// compareJSONOrder's array-comparison loop forever.
+func TestMalformedArrayComparisonTerminates(t *testing.T) {
+	input := []byte(`[[},[},00`)
+
+	for _, query := range []string{"min", "max", "sort", "unique", "group_by(.)", "bsearch(0)"} {
+		t.Run(query, func(t *testing.T) {
+			p, err := Compile(query)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			done := make(chan struct{})
+			go func() {
+				_, _ = p.Run(input)
+				close(done)
+			}()
+
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatalf("%s did not terminate on malformed array input", query)
+			}
+		})
+	}
+}
+
 // TestNoPanicInvalidQueries ensures Compile never panics, only returns errors.
 func TestNoPanicInvalidQueries(t *testing.T) {
 	badQueries := []string{
@@ -299,9 +330,9 @@ func TestEdgeCaseStringEscapes(t *testing.T) {
 	assertQuery(t, ".a", `{"a":"\b\f\r"}`, `"\b\f\r"`)
 
 	// length counts chars, escape sequences = 1 char each
-	assertQuery(t, `length`, `"he\"llo"`, `6`)   // he"llo = 6 chars
-	assertQuery(t, `length`, `"a\nb"`, `3`)       // a\nb = 3 chars
-	assertQuery(t, `length`, `"\u0041BC"`, `3`)   // ABC = 3 chars
+	assertQuery(t, `length`, `"he\"llo"`, `6`)  // he"llo = 6 chars
+	assertQuery(t, `length`, `"a\nb"`, `3`)     // a\nb = 3 chars
+	assertQuery(t, `length`, `"\u0041BC"`, `3`) // ABC = 3 chars
 }
 
 func TestEdgeCaseUnicode(t *testing.T) {
@@ -318,8 +349,8 @@ func TestEdgeCaseNumbers(t *testing.T) {
 	assertQuery(t, ".", `-0`, `-0`)
 	assertQuery(t, ".", `1e10`, `1e10`)
 	assertQuery(t, ".", `1.5e-3`, `1.5e-3`)
-	assertQuery(t, ".a == 1", `{"a":1.0}`, `true`)    // 1.0 == 1
-	assertQuery(t, ".a == 1", `{"a":1e0}`, `true`)    // 1e0 == 1
+	assertQuery(t, ".a == 1", `{"a":1.0}`, `true`) // 1.0 == 1
+	assertQuery(t, ".a == 1", `{"a":1e0}`, `true`) // 1e0 == 1
 	assertQuery(t, ".a > 0", `{"a":-1}`, `false`)
 	assertQuery(t, ".a > 0", `{"a":0}`, `false`)
 	assertQuery(t, ".a >= 0", `{"a":0}`, `true`)
@@ -376,10 +407,10 @@ func TestEdgeCaseMissingFieldsReturnNull(t *testing.T) {
 func TestEdgeCaseNullAndFalseAreFalsy(t *testing.T) {
 	assertNoOutput(t, `select(.)`, `null`)
 	assertNoOutput(t, `select(.)`, `false`)
-	assertQuery(t, `select(.)`, `0`, `0`)     // 0 is truthy
-	assertQuery(t, `select(.)`, `""`, `""`)   // "" is truthy
-	assertQuery(t, `select(.)`, `[]`, `[]`)   // [] is truthy
-	assertQuery(t, `select(.)`, `{}`, `{}`)   // {} is truthy
+	assertQuery(t, `select(.)`, `0`, `0`)   // 0 is truthy
+	assertQuery(t, `select(.)`, `""`, `""`) // "" is truthy
+	assertQuery(t, `select(.)`, `[]`, `[]`) // [] is truthy
+	assertQuery(t, `select(.)`, `{}`, `{}`) // {} is truthy
 }
 
 func TestEdgeCaseWhitespaceInput(t *testing.T) {

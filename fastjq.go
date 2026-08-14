@@ -112,10 +112,10 @@ func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error {
 		}
 		return nil
 	})
-	// opTry strips its downstreamError before returning, so a callbackError
-	// always surfaces bare here.
-	if ce, ok := err.(*callbackError); ok {
-		return ce.err
+	// Hand the caller's own error back, unwrapping whatever opTry layers it
+	// picked up on the way out.
+	if cause, ok := callbackErrorCause(err); ok {
+		return cause
 	}
 	return err
 }
