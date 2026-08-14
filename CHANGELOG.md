@@ -4,6 +4,30 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — fix infinite loop in compareJSONOrder on malformed arrays
+
+### Fixed
+
+- `compareJSONOrder` no longer hangs forever on malformed array input such as
+  `[[},[},00`. The array-comparison loop assumed `skipValue()` always advances;
+  on a delimiter byte (e.g. `}` inside `[}`) it consumed zero bytes, causing the
+  loop to re-read the same position indefinitely. A zero-progress guard now falls
+  back to a raw byte comparison, guaranteeing termination. Fixes #43.
+
+### Tradeoffs
+
+- Ordering for malformed array values is undefined (raw byte fallback), consistent
+  with the project's existing policy that behaviour on invalid JSON is unspecified.
+  Valid-JSON paths are completely unchanged.
+
+### Benchmark results
+
+- No change. The guard is on a malformed-input-only branch; the valid-JSON hot path
+  is unaffected. `Small_Min`, `Sort`, `Unique`, and `GroupBy` benchmarks hold their
+  existing alloc counts.
+
+---
+
 ## [Unreleased] — propagate RunFunc callback errors
 
 ### Fixed

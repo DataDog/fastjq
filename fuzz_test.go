@@ -125,6 +125,7 @@ func FuzzRunFixed(f *testing.F) {
 		`{"a":`, `{"a":"b`, `[1,2,`,
 		`{"a":1`, `[1,2,3`,
 		`{null}`, `[,]`, `{:1}`,
+		`[[},[},00`, // regression seed for #43
 		`"\u0000"`, `"\n\r\t\b\f\\\""`,
 		`{"key with spaces": 1}`,
 		`{"a":{"b":{"c":{"d":{"e":1}}}}}`,

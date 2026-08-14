@@ -8211,6 +8211,11 @@ func compareJSONOrder(a, b []byte) int {
 			as.skipValue()
 			bElemStart := bs.pos
 			bs.skipValue()
+			// Malformed input (e.g. `[}`) can leave skipValue parked on a
+			// delimiter with zero progress, which would otherwise loop forever.
+			if as.pos == aElemStart || bs.pos == bElemStart {
+				return bytesCompare(a[aElemStart:], b[bElemStart:])
+			}
 			if c := compareJSONOrder(a[aElemStart:as.pos], b[bElemStart:bs.pos]); c != 0 {
 				return c
 			}
