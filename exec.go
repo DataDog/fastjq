@@ -3831,6 +3831,11 @@ func execSlice(state execState, node *op, input []byte, buf []byte) ([]byte, err
 				}
 				s.pos += size
 			}
+			// A truncated escape (\ or a partial \uXXXX) put pos past the end,
+			// and unlike the scan loops this one slices as it goes.
+			if s.pos > len(s.data) {
+				break
+			}
 			if i >= start && i < end {
 				buf = append(buf, input[charStart:s.pos]...)
 			}
@@ -7011,10 +7016,15 @@ func execAsciiCase(input []byte, buf []byte, upcase bool) ([]byte, error) {
 	for s.pos < len(s.data) {
 		ch := s.data[s.pos]
 		if ch == '\\' {
-			if s.pos+1 < len(s.data) {
-				buf = append(buf, ch, s.data[s.pos+1])
-				s.pos += 2
+			if s.pos+1 >= len(s.data) {
+				// Truncated escape: there is no second byte to copy, and
+				// continuing without advancing pos spins forever. Stop and let
+				// the closing quote below terminate the output, which drops the
+				// dangling backslash rather than emitting an unclosed escape.
+				break
 			}
+			buf = append(buf, ch, s.data[s.pos+1])
+			s.pos += 2
 			continue
 		}
 		if ch == '"' {
@@ -8294,6 +8304,7 @@ func collectSortedObjectPairs(obj []byte) [][2][]byte {
 				s.pos++
 			}
 		}
+		s.clampPos() // a truncated trailing escape overshot the end
 		keyBytes := obj[keyStart:s.pos]
 		s.skipWhitespace()
 		if s.pos < len(s.data) && s.data[s.pos] == ':' {

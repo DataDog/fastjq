@@ -4,6 +4,23 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — stop the escape skip from running off the end of input
+
+### Fixed
+
+- A JSON string truncated mid-escape (`"ab\`, `{"ab\`, a partial `\uXXXX`) advanced the scan position past `len(input)`. Callers then sliced `input[start:pos]`, which read a byte from beyond the input's length — adjacent bytes of the caller's buffer when the slice had spare capacity, and a panic when it did not. Affected `readString`, `skipString`, `execSlice`, and `collectSortedObjectPairs`, so it reached identity, `keys`, `to_entries`, `tojson`, string slicing, and any query touching an object key. Fixes #40.
+- `ascii_downcase` / `ascii_upcase` looped forever on a string ending in a backslash: the loop declined to copy a second byte that was not there, then `continue`d without advancing. A malformed document was an unbounded hang, not an error.
+
+### Tradeoffs
+
+- A truncated escape is dropped rather than reported. `ascii_downcase` on `"ab\` now yields `"ab"`, and identity yields `"ab"` — invalid input still produces output rather than an error, consistent with how other truncations already behave (`{"a":1` echoes verbatim). Making malformed input an error is a larger policy change and stays out of scope here.
+
+### Benchmark results
+
+- **Faster, 7–30% on core operations.** Clamping on the scan-exit path rather than per escape kept the byte loops untouched, and hoisting `len(s.data)` into a local — needed to keep `readString` inside the inliner's 80-node budget — also removed the bounds check from its loop. `readString` scans every object key, so the win is broad: `Small_ToEntries` −30%, `Small_StringInterpNum` −25%, `Small_Split` −22%, `Small_Del` −18%, `Small_Field` / `Small_Select` −15%, `Large_Field` −14%, `Large_AsciiDowncase` / `Large_Select` −11%. Allocation counts unchanged everywhere.
+
+---
+
 ## [Unreleased] — fix Compile panic on a truncated object construction
 
 ### Fixed
