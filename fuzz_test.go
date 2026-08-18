@@ -378,6 +378,11 @@ func FuzzBoth(f *testing.F) {
 	f.Add(`def inc: . + 1; inc`, `41`)
 	f.Add(`def addn($x): . + $x; addn(2)`, `40`)
 	f.Add(`def twice(f): f | f; twice(. + 1)`, `1`)
+	// Recursive defs must return an error, not overflow the goroutine stack.
+	f.Add(`def f: f; f`, `{"a":1}`)
+	f.Add(`def f: .|f; f`, `{"a":1}`)
+	f.Add(`def f(x): f(x); f(.)`, `{"a":1}`)
+	f.Add(`def f($x): f($x); f(.)`, `{"a":1}`)
 	// Path / update / recursion helpers
 	f.Add(`paths`, `{"a":[1,true,{"b":"x"}],"c":null}`)
 	f.Add(`paths(type == "number")`, `{"a":[1,true,{"b":"x"}],"c":null}`)

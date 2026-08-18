@@ -4576,6 +4576,29 @@ func TestFromJSONDepthLimit(t *testing.T) {
 	assertQuery(t, `tojson | try fromjson catch . | contains("Exceeds depth limit for parsing")`, deep, `true`)
 }
 
+// TestCallDepthLimit covers the recursive function shapes from #30, each of
+// which overflowed the goroutine stack before the depth guard.
+func TestCallDepthLimit(t *testing.T) {
+	assertQueryErrorContains(t, `def f: f; f`, `{"a":1}`, "exceeded call depth limit")
+	assertQueryErrorContains(t, `def f: .|f; f`, `{"a":1}`, "exceeded call depth limit")
+	assertQueryErrorContains(t, `def f(x): f(x); f(.)`, `{"a":1}`, "exceeded call depth limit")
+	assertQueryErrorContains(t, `def f($x): f($x); f(.)`, `{"a":1}`, "exceeded call depth limit")
+	// path(f) reaches bindCallContexts through collectAssignPaths, covering the
+	// path-mode call site.
+	assertQueryErrorContains(t, `def f: .a = f; f`, `{"a":1}`, "exceeded call depth limit")
+	assertQueryErrorContains(t, `def f: path(f); f`, `{"a":1}`, "exceeded call depth limit")
+}
+
+// TestCallDepthLimitAllowsLegitimateCalls pins the guard to dynamic call depth:
+// ordinary nesting and self-terminating recursion stay unaffected.
+func TestCallDepthLimitAllowsLegitimateCalls(t *testing.T) {
+	assertQuery(t, `def inc: .+1; def twice(g): g|g; (.a|twice(inc))`, `{"a":1}`, `3`)
+	assertQuery(t, `def f: .+1; .a|f|f|f|f|f`, `{"a":1}`, `6`)
+	assertQuery(t, `def countdown: if . <= 0 then 0 else . - 1 | countdown end; countdown`, `100`, `0`)
+	// The depth error is an ordinary error, so `try` catches it.
+	assertQuery(t, `def f: try f catch "caught"; f`, `{"a":1}`, `"caught"`)
+}
+
 // --- tostring / tonumber ---
 
 func TestToString(t *testing.T) {

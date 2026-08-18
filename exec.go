@@ -35,6 +35,8 @@ const (
 	jsonStringifySkipDepthLimit = jsonParseDepthLimit + 1
 	maxArrayUpdateIndex         = 1 << 20
 	maxRecurseDepth             = jsonParseDepthLimit
+	// Go cannot recover() a stack overflow, so unbounded recursion kills the process.
+	maxCallDepth = maxRecurseDepth
 )
 
 // jsonError carries a JSON value thrown by the `error` builtin.
@@ -5914,6 +5916,9 @@ func execCall(state execState, node *op, input []byte, buf []byte, fn func([]byt
 func bindCallContexts(state execState, def *funcDef, callerCtx *execContext, args []*op, input []byte) ([]*execContext, error) {
 	var callCtx *execContext
 	if callerCtx != nil {
+		if callerCtx.depth >= maxCallDepth {
+			return nil, fmt.Errorf("%s exceeded call depth limit", funcKey(def.name, len(def.params)))
+		}
 		callCtx = &execContext{
 			env:    def.capturedEnv,
 			funcs:  def.capturedFuncs,

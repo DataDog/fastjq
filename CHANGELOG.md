@@ -4,6 +4,35 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — bound user-defined function call depth
+
+### Fixed
+
+- A recursive user-defined function (`def f: f; f`) no longer overflows the goroutine
+  stack. Go treats a stack overflow as a fatal error that `recover()` cannot catch, so
+  such a query killed the calling process. `bindCallContexts` returns a normal error past
+  10,000 nested calls, reusing the existing `maxRecurseDepth` value. Fixes #30.
+
+### Tradeoffs
+
+- The limit is on dynamic call depth, so a legitimately 10,000-deep non-recursive call
+  chain is also rejected. No realistic query reaches that depth.
+- The error is an ordinary `error`, not a sentinel, so `errors.Is` cannot single it out.
+  Deferred to #37.
+- `try` catches the error, matching the `errRecurseDepthLimit` precedent. A recursive
+  function whose error handler also recurses (`def f: try f catch f; f`) therefore absorbs
+  the limit and runs unboundedly. Those shapes overflow the stack before this change, so
+  it is not a regression, but the limit bounds call depth and not total work: untrusted
+  queries still need a timeout.
+
+### Benchmark results
+
+- No change. `Small_Def` 680 B/op, 16 allocs/op; `Small_Bind` 432 B/op, 8 allocs/op;
+  `Complex_TolerantMap` 2936 B/op, 124 allocs/op. The guard is one integer comparison
+  per call and allocates nothing.
+
+---
+
 ## [Unreleased] — stop the escape skip from running off the end of input
 
 ### Fixed
