@@ -173,7 +173,7 @@ func TestBindMultiOutput(t *testing.T) {
 }
 
 func TestRecurseSelfLoopReturnsError(t *testing.T) {
-	assertQueryErrorContains(t, `recurse(.foo[])`, `null`, `recurse() produced its input again`)
+	assertQueryErrorContains(t, `recurse(.)`, `null`, `recurse() produced its input again`)
 }
 
 func TestBindDestructuring(t *testing.T) {
@@ -5391,4 +5391,25 @@ func TestGroupBy(t *testing.T) {
 func TestTranspose(t *testing.T) {
 	assertQuery(t, `transpose`, `[[1], [2,3]]`, `[[1,2],[null,3]]`)
 	assertQuery(t, `transpose`, `[]`, `[]`)
+}
+
+func TestMissingFieldContinuesChain(t *testing.T) {
+	// A missing field is null, and the rest of the postfix chain runs on it.
+	assertQueryErrorContains(t, `.a[]`, `{"k":"v"}`, `Cannot iterate over null`)
+	assertQueryAll(t, `.a[]?`, `{"k":"v"}`)
+	assertQuery(t, `[.a[]?, 1]`, `{"k":"v"}`, `[1]`)
+	assertQueryAll(t, `.a.b[]?`, `{"k":"v"}`)
+	assertQuery(t, `.a.b`, `{"k":"v"}`, `null`)
+	assertQuery(t, `.a[0]`, `{"k":"v"}`, `null`)
+	assertQuery(t, `.a[1:]`, `{"k":"v"}`, `null`)
+	assertQuery(t, `try .a[] catch .`, `{"k":"v"}`, `"Cannot iterate over null (null)"`)
+}
+
+func TestNullInputIndexAndChain(t *testing.T) {
+	assertQuery(t, `.[0]`, `null`, `null`)
+	assertQuery(t, `.[-1]`, `null`, `null`)
+	assertQuery(t, `.[0]?`, `null`, `null`)
+	assertQuery(t, `.a?`, `null`, `null`)
+	assertQueryAll(t, `.[5].x[]?`, `[1]`)
+	assertQueryErrorContains(t, `.[5].x[]`, `[1]`, `Cannot iterate over null`)
 }
