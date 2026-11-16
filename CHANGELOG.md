@@ -4,6 +4,20 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — keep running the postfix chain on a missing or null value
+
+### Fixed
+
+- A missing field ended its chain early and emitted `null`, so `.a[]` on `{"k":"v"}` produced `null` instead of an error and `.a[]?` produced `null` instead of nothing. The rest of the chain now runs on the null, matching jq. The same early exit applied to a `null` input and to an out-of-range index (`.[5].x[]`).
+- `null | .[n]` errored with `Cannot index null`; jq returns `null`. `null | .a?` and `null | .[0]?` produced no output; jq returns `null`.
+
+### Tradeoffs
+
+- `.a[]` on an object without `a` now returns an error, as jq does. Callers that relied on getting `null` should use `.a[]?`.
+- `TestRecurseSelfLoopReturnsError` used `recurse(.foo[])` on `null`, which only reached the cycle check through the old early exit. It now uses `recurse(.)`.
+
+---
+
 ## [Unreleased] — stop the escape skip from running off the end of input
 
 ### Fixed

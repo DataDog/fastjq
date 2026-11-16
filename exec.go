@@ -1571,30 +1571,47 @@ func execIdentity(input []byte, buf []byte) ([]byte, error) {
 
 // execFieldMulti extracts a field value from a JSON object, then recurses
 // into the child (if any) via execMulti to support multi-output children like iterators.
+// execNullChainMulti emits null for a field or index step that resolved to
+// null, then runs the remaining postfix chain on that null so that steps such
+// as `[]` still see it.
+func execNullChainMulti(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
+	if node.child != nil {
+		return state.withIndexScope(state.chainedIndexScope(input), func(state execState) error {
+			return execMulti(state, node.child, bNull, buf, fn)
+		})
+	}
+	if buf == nil {
+		return fn(bNull)
+	}
+	return fn(append(buf, "null"...))
+}
+
 func execFieldMulti(state execState, node *op, input []byte, buf []byte, fn func([]byte) error) error {
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '{' {
+		// jq returns null for null | .field, even with the optional suffix;
+		// all other non-object types error.
+		if s.pos < len(s.data) && s.data[s.pos] == 'n' {
+			return execNullChainMulti(state, node, input, buf, fn)
+		}
 		if node.optional {
 			return nil
-		}
-		// jq returns null for null | .field; all other non-object types error.
-		if s.pos < len(s.data) && s.data[s.pos] == 'n' {
-			if buf == nil {
-				return fn(bNull)
-			}
-			return fn(append(buf, "null"...))
 		}
 		return fieldAccessError(input, node.field)
 	}
 
 	vs, ve := s.findFieldStr(node.field)
 	if vs == -1 {
-		// Missing field: return null without following the child chain.
-		if buf == nil {
-			return fn(bNull)
+		if node.child == nil {
+			if buf == nil {
+				return fn(bNull)
+			}
+			return fn(append(buf, "null"...))
 		}
-		return fn(append(buf, "null"...))
+		// A missing field is null, and the rest of the chain still runs on it,
+		// so `.a[]` errors and `.a[]?` is empty just as for an explicit null.
+		return execNullChainMulti(state, node, input, buf, fn)
 	}
 
 	value := input[vs:ve]
@@ -1610,6 +1627,23 @@ func execFieldMulti(state execState, node *op, input []byte, buf []byte, fn func
 	return fn(append(buf, value...))
 }
 
+// execNullChain is the single-result form of execNullChainMulti.
+func execNullChain(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
+	if node.child != nil {
+		var result []byte
+		err := state.withIndexScope(state.chainedIndexScope(input), func(state execState) error {
+			var execErr error
+			result, execErr = exec(state, node.child, bNull, buf)
+			return execErr
+		})
+		return result, err
+	}
+	if buf == nil {
+		return bNull, nil
+	}
+	return append(buf, "null"...), nil
+}
+
 // execField extracts a field value from a JSON object (single-result convenience).
 func execField(state execState, node *op, input []byte, buf []byte) ([]byte, error) {
 	s := &scanner{data: input}
@@ -1620,20 +1654,14 @@ func execField(state execState, node *op, input []byte, buf []byte) ([]byte, err
 		}
 		// jq returns null for null | .field; all other non-object types error.
 		if s.pos < len(s.data) && s.data[s.pos] == 'n' {
-			if buf == nil {
-				return bNull, nil
-			}
-			return append(buf, "null"...), nil
+			return execNullChain(state, node, input, buf)
 		}
 		return nil, fieldAccessError(input, node.field)
 	}
 
 	vs, ve := s.findFieldStr(node.field)
 	if vs == -1 {
-		if buf == nil {
-			return bNull, nil
-		}
-		return append(buf, "null"...), nil
+		return execNullChain(state, node, input, buf)
 	}
 
 	value := input[vs:ve]
@@ -1659,6 +1687,10 @@ func execIndexMulti(state execState, node *op, input []byte, buf []byte, fn func
 	s := &scanner{data: input}
 	s.skipWhitespace()
 	if s.pos >= len(s.data) || s.data[s.pos] != '[' {
+		// jq returns null for null | .[n], even with the optional suffix.
+		if s.pos < len(s.data) && s.data[s.pos] == 'n' {
+			return execNullChainMulti(state, node, input, buf, fn)
+		}
 		if node.optional {
 			return nil
 		}
@@ -1670,7 +1702,7 @@ func execIndexMulti(state execState, node *op, input []byte, buf []byte, fn func
 		length := s.arrayLen()
 		idx = length + idx
 		if idx < 0 {
-			return fn(append(buf, "null"...))
+			return execNullChainMulti(state, node, input, buf, fn)
 		}
 	}
 
@@ -1684,7 +1716,7 @@ func execIndexMulti(state execState, node *op, input []byte, buf []byte, fn func
 	})
 
 	if result == nil {
-		return fn(append(buf, "null"...))
+		return execNullChainMulti(state, node, input, buf, fn)
 	}
 
 	if node.child != nil {
@@ -1706,6 +1738,10 @@ func execIndex(state execState, node *op, input []byte, buf []byte) ([]byte, err
 		if node.optional {
 			return append(buf, "null"...), nil
 		}
+		// jq returns null for null | .[n].
+		if s.pos < len(s.data) && s.data[s.pos] == 'n' {
+			return execNullChain(state, node, input, buf)
+		}
 		return nil, indexAccessError(input, node.index)
 	}
 
@@ -1715,7 +1751,7 @@ func execIndex(state execState, node *op, input []byte, buf []byte) ([]byte, err
 		length := s.arrayLen()
 		idx = length + idx
 		if idx < 0 {
-			return append(buf, "null"...), nil
+			return execNullChain(state, node, input, buf)
 		}
 	}
 
@@ -1729,7 +1765,7 @@ func execIndex(state execState, node *op, input []byte, buf []byte) ([]byte, err
 	})
 
 	if result == nil {
-		return append(buf, "null"...), nil
+		return execNullChain(state, node, input, buf)
 	}
 
 	if node.child != nil {
