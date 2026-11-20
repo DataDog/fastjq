@@ -149,7 +149,7 @@ All 751 attempted cases pass. The remaining 32 skips are limited to full decimal
 
 ## Limitations
 
-**Call depth is bounded; total work is not.** User-defined function calls are limited to 10,000 levels of dynamic nesting. A query that exceeds it — `def f: f; f` — returns an error rather than overflowing the goroutine stack. The error is an ordinary `error` value, and jq `try` catches it, so a recursive function whose error handler also recurses — `def f: try f catch f; f` — absorbs the limit and keeps running. Bound untrusted queries with a timeout; the depth limit alone does not make them safe.
+**Call depth is bounded; total work is not.** User-defined function calls are limited to 10,000 levels of dynamic nesting. A query that exceeds it — `def f: f; f` — returns an error rather than overflowing the goroutine stack, and `try`, `?`, and `//` inside the query cannot catch that error. The limit does not bound total running time. The execution APIs do not support cancellation, and a recursive query may never reach the `RunFunc` callback, so a timeout around a goroutine returns control to the caller but leaves the query running. To bound untrusted queries, run them in a separate process that the caller can kill on timeout.
 
 **Regex uses Go RE2, not PCRE/Oniguruma.**
 Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are unsupported. `test(re)` is 0-alloc; `match`/`capture` alloc one `[]int` on a hit; `scan`/`gsub` alloc per match. Replacement strings in `sub`/`gsub` are literals.
