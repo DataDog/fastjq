@@ -4576,6 +4576,46 @@ func TestFromJSONDepthLimit(t *testing.T) {
 	assertQuery(t, `tojson | try fromjson catch . | contains("Exceeds depth limit for parsing")`, deep, `true`)
 }
 
+// TestCallDepthLimit covers the recursive function shapes from #30, each of
+// which overflowed the goroutine stack before the depth guard.
+func TestCallDepthLimit(t *testing.T) {
+	assertQueryErrorContains(t, `def f: f; f`, `{"a":1}`, "exceeded call depth limit")
+	assertQueryErrorContains(t, `def f: .|f; f`, `{"a":1}`, "exceeded call depth limit")
+	assertQueryErrorContains(t, `def f(x): f(x); f(.)`, `{"a":1}`, "exceeded call depth limit")
+	assertQueryErrorContains(t, `def f($x): f($x); f(.)`, `{"a":1}`, "exceeded call depth limit")
+	// path(f) reaches bindCallContexts through collectAssignPaths, covering the
+	// path-mode call site.
+	assertQueryErrorContains(t, `def f: .a = f; f`, `{"a":1}`, "exceeded call depth limit")
+	assertQueryErrorContains(t, `def f: path(f); f`, `{"a":1}`, "exceeded call depth limit")
+}
+
+// TestCallDepthLimitAllowsLegitimateCalls pins the guard to dynamic call depth:
+// ordinary nesting and self-terminating recursion stay unaffected.
+func TestCallDepthLimitAllowsLegitimateCalls(t *testing.T) {
+	assertQuery(t, `def inc: .+1; def twice(g): g|g; (.a|twice(inc))`, `{"a":1}`, `3`)
+	assertQuery(t, `def f: .+1; .a|f|f|f|f|f`, `{"a":1}`, `6`)
+	assertQuery(t, `def countdown: if . <= 0 then 0 else . - 1 | countdown end; countdown`, `100`, `0`)
+}
+
+// TestCallDepthLimitNotSwallowed checks that iterators, try, and ? cannot
+// absorb the depth error. Before, the iterator case returned no output and no
+// error, and the try/catch case retried every level and never finished.
+func TestCallDepthLimitNotSwallowed(t *testing.T) {
+	for _, q := range []string{
+		`def f: if . == 0 then . else [.][] | . - 1 | f end; 10001 | f`,
+		`def f: try f catch f; f`,
+		`def f: f?; f`,
+	} {
+		p, err := Compile(q)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", q, err)
+		}
+		if err := p.RunFunc([]byte(`1`), func([]byte) error { return nil }); !errors.Is(err, errCallDepthLimit) {
+			t.Errorf("%s: got error %v, want errCallDepthLimit", q, err)
+		}
+	}
+}
+
 // --- tostring / tonumber ---
 
 func TestToString(t *testing.T) {

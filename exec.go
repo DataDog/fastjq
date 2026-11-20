@@ -28,13 +28,32 @@ var (
 	errBreak               = errors.New("stop iteration") // sentinel for first/limit
 	errRecurseCycle        = errors.New("recurse() produced its input again")
 	errRecurseDepthLimit   = errors.New("recurse() exceeded depth limit")
+	// errCallDepthLimit is raised as a panic, not returned, so no try, ?, //, or
+	// iterator between the failing call and the API boundary can swallow it; a
+	// recursive error handler would otherwise retry every level and run
+	// exponentially. recoverCallDepth turns it back into an error.
+	errCallDepthLimit = errors.New("exceeded call depth limit")
 )
+
+// recoverCallDepth is deferred by every public Run* method. It returns the
+// call-depth panic as an error and re-raises any other panic.
+func recoverCallDepth(err *error) {
+	if r := recover(); r != nil {
+		e, ok := r.(error)
+		if !ok || !errors.Is(e, errCallDepthLimit) {
+			panic(r)
+		}
+		*err = e
+	}
+}
 
 const (
 	jsonParseDepthLimit         = 10000
 	jsonStringifySkipDepthLimit = jsonParseDepthLimit + 1
 	maxArrayUpdateIndex         = 1 << 20
 	maxRecurseDepth             = jsonParseDepthLimit
+	// Go cannot recover() a stack overflow, so unbounded recursion kills the process.
+	maxCallDepth = maxRecurseDepth
 )
 
 // jsonError carries a JSON value thrown by the `error` builtin.
@@ -5914,6 +5933,9 @@ func execCall(state execState, node *op, input []byte, buf []byte, fn func([]byt
 func bindCallContexts(state execState, def *funcDef, callerCtx *execContext, args []*op, input []byte) ([]*execContext, error) {
 	var callCtx *execContext
 	if callerCtx != nil {
+		if callerCtx.depth >= maxCallDepth {
+			panic(fmt.Errorf("%s %w", funcKey(def.name, len(def.params)), errCallDepthLimit))
+		}
 		callCtx = &execContext{
 			env:    def.capturedEnv,
 			funcs:  def.capturedFuncs,

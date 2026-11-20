@@ -55,7 +55,8 @@ func normalizeNaNInf(v []byte) []byte {
 // Returns the first result as a new byte slice. For multi-output queries
 // (e.g. .[]), only the first result is returned; use RunAll or RunFunc
 // for all results.
-func (p *Program) Run(input []byte) ([]byte, error) {
+func (p *Program) Run(input []byte) (_ []byte, err error) {
+	defer recoverCallDepth(&err)
 	input = stripBOM(input)
 	buf := make([]byte, 0, len(input))
 	result, err := exec(execState{}, p.root, input, buf)
@@ -69,7 +70,8 @@ func (p *Program) Run(input []byte) ([]byte, error) {
 // to avoid allocations. The buffer is reset (buf[:0]) before use.
 // Callers can pass the same buffer across calls for zero steady-state allocations.
 // For multi-output queries, only the first result is returned.
-func (p *Program) RunWithBuffer(input []byte, buf []byte) ([]byte, error) {
+func (p *Program) RunWithBuffer(input []byte, buf []byte) (_ []byte, err error) {
+	defer recoverCallDepth(&err)
 	buf = buf[:0]
 	result, err := exec(execState{}, p.root, stripBOM(input), buf)
 	if err != nil {
@@ -81,10 +83,11 @@ func (p *Program) RunWithBuffer(input []byte, buf []byte) ([]byte, error) {
 // RunAll executes the compiled query and collects all results.
 // For single-output queries this returns a slice of length 1.
 // For iterators (.[] etc) this returns one result per element.
-func (p *Program) RunAll(input []byte) ([][]byte, error) {
+func (p *Program) RunAll(input []byte) (_ [][]byte, err error) {
+	defer recoverCallDepth(&err)
 	input = stripBOM(input)
 	var results [][]byte
-	err := execMulti(execState{}, p.root, input, nil, func(result []byte) error {
+	err = execMulti(execState{}, p.root, input, nil, func(result []byte) error {
 		result = normalizeNaNInf(result)
 		// Copy result since buf may be reused
 		cp := make([]byte, len(result))
@@ -105,8 +108,9 @@ func (p *Program) RunAll(input []byte) ([][]byte, error) {
 //
 // Returning a non-nil error from fn stops iteration; RunFunc returns that error
 // unchanged. A jq `try` does not catch it.
-func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error {
-	err := execMulti(execState{}, p.root, stripBOM(input), nil, func(result []byte) error {
+func (p *Program) RunFunc(input []byte, fn func(result []byte) error) (err error) {
+	defer recoverCallDepth(&err)
+	err = execMulti(execState{}, p.root, stripBOM(input), nil, func(result []byte) error {
 		if err := fn(normalizeNaNInf(result)); err != nil {
 			return &callbackError{err: err}
 		}

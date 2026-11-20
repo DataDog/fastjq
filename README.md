@@ -8,7 +8,7 @@ fastjq operates directly on raw `[]byte` — no `json.Unmarshal`, no `map[string
 
 fastjq passes all attempted cases in the upstream five-file jq library harness. See [Limitations](#limitations) for the remaining exclusions.
 
-**Requires valid JSON input.** fastjq does not validate its input — behavior on malformed JSON is undefined. It never panics (enforced by fuzz tests), but may silently produce wrong results. Use `json.Valid` if you can't guarantee the source.
+**Requires valid JSON input.** fastjq does not validate its input — behavior on malformed JSON is undefined. It never panics on malformed input (enforced by fuzz tests), but may silently produce wrong results. Use `json.Valid` if you can't guarantee the source.
 
 ## Design
 
@@ -148,6 +148,8 @@ fastjq is validated against five upstream jq library-focused test files (`go tes
 All 751 attempted cases pass. The remaining 32 skips are limited to full decimal semantics (`have_decnum`), module/import helpers, and host-boundary helpers like `input`, `env`, and `stderr`.
 
 ## Limitations
+
+**Call depth is bounded; total work is not.** User-defined function calls are limited to 10,000 levels of dynamic nesting. A query that exceeds it — `def f: f; f` — returns an error rather than overflowing the goroutine stack, and `try`, `?`, and `//` inside the query cannot catch that error. The limit does not bound total running time. The execution APIs do not support cancellation, and a recursive query may never reach the `RunFunc` callback, so a timeout around a goroutine returns control to the caller but leaves the query running. To bound untrusted queries, run them in a separate process that the caller can kill on timeout.
 
 **Regex uses Go RE2, not PCRE/Oniguruma.**
 Named captures require `(?P<name>...)` syntax. Backreferences and lookahead are unsupported. `test(re)` is 0-alloc; `match`/`capture` alloc one `[]int` on a hit; `scan`/`gsub` alloc per match. Replacement strings in `sub`/`gsub` are literals.
