@@ -4595,8 +4595,25 @@ func TestCallDepthLimitAllowsLegitimateCalls(t *testing.T) {
 	assertQuery(t, `def inc: .+1; def twice(g): g|g; (.a|twice(inc))`, `{"a":1}`, `3`)
 	assertQuery(t, `def f: .+1; .a|f|f|f|f|f`, `{"a":1}`, `6`)
 	assertQuery(t, `def countdown: if . <= 0 then 0 else . - 1 | countdown end; countdown`, `100`, `0`)
-	// The depth error is an ordinary error, so `try` catches it.
-	assertQuery(t, `def f: try f catch "caught"; f`, `{"a":1}`, `"caught"`)
+}
+
+// TestCallDepthLimitNotSwallowed checks that iterators, try, and ? cannot
+// absorb the depth error. Before, the iterator case returned no output and no
+// error, and the try/catch case retried every level and never finished.
+func TestCallDepthLimitNotSwallowed(t *testing.T) {
+	for _, q := range []string{
+		`def f: if . == 0 then . else [.][] | . - 1 | f end; 10001 | f`,
+		`def f: try f catch f; f`,
+		`def f: f?; f`,
+	} {
+		p, err := Compile(q)
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", q, err)
+		}
+		if err := p.RunFunc([]byte(`1`), func([]byte) error { return nil }); !errors.Is(err, errCallDepthLimit) {
+			t.Errorf("%s: got error %v, want errCallDepthLimit", q, err)
+		}
+	}
 }
 
 // --- tostring / tonumber ---

@@ -10,20 +10,22 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 - A recursive user-defined function (`def f: f; f`) no longer overflows the goroutine
   stack. Go treats a stack overflow as a fatal error that `recover()` cannot catch, so
-  such a query killed the calling process. `bindCallContexts` returns a normal error past
-  10,000 nested calls, reusing the existing `maxRecurseDepth` value. Fixes #30.
+  such a query killed the calling process. Past 10,000 nested calls `bindCallContexts`
+  fails with `errCallDepthLimit`, reusing the existing `maxRecurseDepth` value. Fixes #30.
+- The depth error is not caught by `try`, `?`, `//`, or iterators. It is raised as a
+  panic inside the executor and recovered by every `Run*` method, which returns it as an
+  ordinary `error`. Otherwise an iterator dropped it and a terminating query returned no
+  output and no error, and a recursive error handler (`def f: try f catch f; f`)
+  retried every level and ran exponentially.
 
 ### Tradeoffs
 
 - The limit is on dynamic call depth, so a legitimately 10,000-deep non-recursive call
   chain is also rejected. No realistic query reaches that depth.
-- The error is an ordinary `error`, not a sentinel, so `errors.Is` cannot single it out.
-  Deferred to #37.
-- `try` catches the error, matching the `errRecurseDepthLimit` precedent. A recursive
-  function whose error handler also recurses (`def f: try f catch f; f`) therefore absorbs
-  the limit and runs unboundedly. Those shapes overflow the stack before this change, so
-  it is not a regression, but the limit bounds call depth and not total work: untrusted
-  queries still need a timeout.
+- Unlike `errRecurseDepthLimit`, the depth error cannot be caught inside the query. The
+  sentinel is unexported; exporting it belongs to #37.
+- The limit bounds call depth, not total work. A query with many shallow calls can still
+  run for a long time, so untrusted queries still need a timeout.
 
 ### Benchmark results
 
