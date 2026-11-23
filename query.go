@@ -281,6 +281,12 @@ type bindPatternField struct {
 
 // parse compiles a jq query string into an AST.
 func parse(query string) (*op, error) {
+	return parseWithVars(query, nil)
+}
+
+// parseWithVars parses query with the given host variable names treated as
+// already in scope, so references to them pass the undefined-variable check.
+func parseWithVars(query string, hostNames []string) (*op, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("empty query")
@@ -298,7 +304,14 @@ func parse(query string) (*op, error) {
 	// Optimization: simplify identity pipes
 	result = simplify(result)
 
-	if err := validateVars(result, nil); err != nil {
+	var scope map[string]bool
+	if len(hostNames) > 0 {
+		scope = make(map[string]bool, len(hostNames))
+		for _, n := range hostNames {
+			scope[n] = true
+		}
+	}
+	if err := validateVars(result, scope); err != nil {
 		return nil, err
 	}
 	if err := validateLabels(result, nil); err != nil {

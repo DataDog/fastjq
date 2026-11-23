@@ -111,20 +111,27 @@ buf, err = p.RunWithBuffer(line, buf)
 
 // Collect all outputs (allocates)
 results, err := p.RunAll(line)
+
+// Pass data in as variables instead of building it into the query text
+p, err = fastjq.Compile(`select(.token == $token) | .id`, fastjq.WithVariables("$token"))
+out, err := p.Run(line, []byte(`"s3cret"`))
 ```
 
 ### API
 
 ```go
-func Compile(query string) (*Program, error)
+func Compile(query string, opts ...CompileOption) (*Program, error)
+func WithVariables(names ...string) CompileOption
 
-func (p *Program) Run(input []byte) ([]byte, error)
-func (p *Program) RunWithBuffer(input []byte, buf []byte) ([]byte, error)
-func (p *Program) RunAll(input []byte) ([][]byte, error)
-func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
+func (p *Program) Run(input []byte, vals ...[]byte) ([]byte, error)
+func (p *Program) RunWithBuffer(input []byte, buf []byte, vals ...[]byte) ([]byte, error)
+func (p *Program) RunAll(input []byte, vals ...[]byte) ([][]byte, error)
+func (p *Program) RunFunc(input []byte, fn func(result []byte) error, vals ...[]byte) error
 ```
 
 `Compile` allocates. Core operations via `RunWithBuffer`/`RunFunc` achieve zero allocations at steady state. Operations that produce new structured output (regex matches, base64/URI encoding, `map(f)` with construction) allocate proportional to result size.
+
+`WithVariables("$a", "$b")` declares host variables, the equivalent of jq's `--argjson`. Each run takes one JSON value per name, in declaration order, and the count has to match. The values never become part of the query text, so they cannot change how it parses and they never appear in a compile error. To stay at zero allocations, build the `[][]byte` once and pass it as `vals...`; listing the values inline at each call makes Go allocate the variadic slice.
 
 Returning a non-nil error from a `RunFunc` callback stops iteration, and `RunFunc` returns that error unchanged. Use it to consume just the first result, or to abort a long stream early.
 

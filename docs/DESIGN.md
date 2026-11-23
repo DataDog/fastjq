@@ -290,7 +290,7 @@ lexical bindings without changing the public API.
 ## File Structure
 
 ```
-fastjq.go           — Public API: Compile, Run, RunWithBuffer, RunAll, RunFunc; BOM stripping
+fastjq.go           — Public API: Compile, WithVariables, Run, RunWithBuffer, RunAll, RunFunc; BOM stripping
 scanner.go          — Zero-alloc JSON scanner: skipValue, readString, objectIter, arrayIter,
                       jsonEqual (key-order independent for objects), jsonContains, isFalsy,
                       byteOffsetToCodepointOffset, compareJSONOrder
@@ -299,6 +299,7 @@ exec.go             — Executor: all op implementations; jsonError type; execPl
                       execArrayConstruct; execDeleteArray (slices); execFindIndex (overlapping,
                       Unicode codepoints, array subsequences); execReduce; format string decoders
 float.go            — Zero-alloc float parsing via unsafe.String
+hostvars_test.go     — WithVariables tests: jq parity, value count, names, shadowing, allocations
 fastjq_test.go      — Unit tests (~435 tests)
 correctness_test.go — Edge case, no-panic, and Unicode tests
 complex_test.go     — Complex multi-step query tests
@@ -315,21 +316,41 @@ scripts/update_benchmarks.go — Regenerates BENCHMARKS.md from the root and com
 
 ```go
 // Compile once, reuse across goroutines
-func Compile(query string) (*Program, error)
+func Compile(query string, opts ...CompileOption) (*Program, error)
+
+// Declare $-variables the caller supplies on every run
+func WithVariables(names ...string) CompileOption
 
 // Single-output (returns first result for multi-output queries)
-func (p *Program) Run(input []byte) ([]byte, error)
-func (p *Program) RunWithBuffer(input []byte, buf []byte) ([]byte, error)
+func (p *Program) Run(input []byte, vals ...[]byte) ([]byte, error)
+func (p *Program) RunWithBuffer(input []byte, buf []byte, vals ...[]byte) ([]byte, error)
 
 // Multi-output
-func (p *Program) RunAll(input []byte) ([][]byte, error)
-func (p *Program) RunFunc(input []byte, fn func(result []byte) error) error
+func (p *Program) RunAll(input []byte, vals ...[]byte) ([][]byte, error)
+func (p *Program) RunFunc(input []byte, fn func(result []byte) error, vals ...[]byte) error
 ```
 
 `Compile` parses once. `Run`/`RunWithBuffer` execute against raw bytes and
 return the first result. `RunAll` collects all results. `RunFunc` streams
 results via callback with zero steady-state allocations. All API methods strip
 a UTF-8 BOM from input before parsing.
+
+### Host variables
+
+`WithVariables` records the declared names on the `Program` and feeds them to
+the undefined-variable check as an initial scope, so a reference to an
+undeclared `$name` is still a compile error. At run time the caller's `[][]byte`
+travels in `execState` next to a pointer to the `Program`'s immutable name list.
+`execState.lookupVar` searches the query's own `as $x` frames first and the host
+values second, which gives host variables the outermost scope: an inner binding
+shadows them, as in jq. Nothing is copied or allocated per run, because the
+values are the caller's slices and the names are shared. Each value is trimmed
+of surrounding whitespace when it is read and is otherwise emitted as given.
+
+The names `$__loc__` and `$ENV` are reserved because jq defines them, and a
+duplicate or malformed name is an error from `Compile`. The value count is
+checked on every run and a mismatch is returned as an error before any
+execution starts.
 
 Returning a non-nil error from a `RunFunc` callback stops iteration, and
 `RunFunc` returns that error unchanged. The executor wraps it internally so

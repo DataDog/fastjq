@@ -4,6 +4,27 @@ Entries are in reverse chronological order. Each entry notes new operations, tra
 
 ---
 
+## [Unreleased] — bind jq variables from the host with WithVariables
+
+### Added
+
+- `fastjq.WithVariables("$a", "$b")`, a `Compile` option that declares `$`-variables the caller supplies per run, the equivalent of jq's `--argjson` and gojq's `WithVariables`. `Run`, `RunWithBuffer`, `RunAll` and `RunFunc` take the values as trailing `vals ...[]byte`, one JSON document per name in declaration order. `Compile` now takes `opts ...CompileOption`. Fixes #35.
+- Names must be jq identifiers, unique, and not `$__loc__` or `$ENV`. A reference to an undeclared variable is still a compile error, and the value count is checked on every run.
+- `Small_HostVar` benchmark and its gojq counterpart.
+
+### Tradeoffs
+
+- The new trailing parameters are variadic so existing call sites compile unchanged. Code that stores a method value such as `p.Run` in a `func([]byte) ([]byte, error)` variable no longer type-checks and needs a small wrapper.
+- Values are used as written, apart from trimmed surrounding whitespace, and are not validated as JSON, the same as input. A caller who passes malformed JSON gets malformed output.
+- A host variable has the outermost scope, so `as $x` inside the query shadows it.
+- Zero steady-state allocations hold when the `[][]byte` is built once and passed as `vals...`. Spelling the values out at each call makes Go allocate the variadic slice.
+
+### Benchmark results
+
+- No change to existing benchmarks; the only hot-path edit is where `opVar` reads its variable. Programs without host variables carry an extra nil check on lookup misses only. `docs/BENCHMARKS.md` is not regenerated in this entry.
+
+---
+
 ## [Unreleased] — stop the escape skip from running off the end of input
 
 ### Fixed

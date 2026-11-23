@@ -120,6 +120,20 @@ func benchFastjqObj(b *testing.B, query string, input []byte) {
 	}
 }
 
+// benchFastjqVars benchmarks a query that reads host variables. The value slice
+// is built once, as a caller on a hot path would.
+func benchFastjqVars(b *testing.B, query string, input []byte, names []string, vals ...[]byte) {
+	p, err := Compile(query, WithVariables(names...))
+	if err != nil {
+		b.Fatal(err)
+	}
+	buf := make([]byte, 0, len(input)+64)
+	b.ReportAllocs()
+	for b.Loop() {
+		buf, _ = p.RunWithBuffer(input, buf, vals...)
+	}
+}
+
 // benchFastjqLargeSelect benchmarks a select-style query on large JSON with input rotation.
 // Rotates 8 distinct inputs and passes scratch[:0] (discarding return) to prevent
 // buf being reassigned to an input sub-slice, which would corrupt rotation inputs.
@@ -158,6 +172,9 @@ func BenchmarkFastjq_Medium_Del(b *testing.B)  { benchFastjqObj(b, "del(.field_5
 func BenchmarkFastjq_Large_Del(b *testing.B)   { benchFastjqObj(b, "del(.field_50)", largeJSON) }
 func BenchmarkFastjq_Small_Field(b *testing.B) { benchFastjqObj(b, ".field_2", smallJSON) }
 func BenchmarkFastjq_Large_Field(b *testing.B) { benchFastjqObj(b, ".field_50", largeJSON) }
+func BenchmarkFastjq_Small_HostVar(b *testing.B) {
+	benchFastjqVars(b, `{field_0, key: $key}`, smallJSON, []string{"$key"}, []byte(`"abc"`))
+}
 func BenchmarkFastjq_Small_Index(b *testing.B) { benchFastjqObj(b, ".[2]", []byte(`[1,2,3,4,5]`)) }
 func BenchmarkFastjq_Small_ArrayDel(b *testing.B) {
 	benchFastjqObj(b, "del(.[1], .[3])", []byte(`[1,2,3,4,5]`))
