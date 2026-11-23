@@ -44,6 +44,7 @@ var tableRows = []row{
 	{"`del(.f)`", "Small (~100B)", "Small_Del", "Small_Del"},
 	{"`del(.f)`", "Medium (~2KB)", "Medium_Del", "Medium_Del"},
 	{"`del(.f)`", "Large (~100KB)", "Large_Del", "Large_Del"},
+	{"`{f0, key: $key}` (host variable)", "Small (~100B)", "Small_HostVar", "Small_HostVar"},
 	{"`.[n]`", "5-elem array", "Small_Index", "Small_Index"},
 	{"`del(.[n], .[m])`", "5-elem array", "Small_ArrayDel", "Small_ArrayDel"},
 	// Construction & iteration

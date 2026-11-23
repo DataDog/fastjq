@@ -7,6 +7,7 @@
 package fastjq
 
 import (
+	"bytes"
 	"strconv"
 )
 
@@ -40,6 +41,33 @@ func (ctx *execContext) lookupVar(name string) ([]byte, bool) {
 	for f := ctx.env; f != nil; f = f.parent {
 		if f.name == name {
 			return f.value, true
+		}
+	}
+	return nil, false
+}
+
+// hostNames is the set of variable names declared with WithVariables. It
+// belongs to the Program and is never written after Compile. The matching
+// values travel in execState.hostVals as the caller's own slice, so binding
+// them costs no allocation per run. Values are trimmed of surrounding
+// whitespace on lookup. Host variables sit outermost: an `as $x` binding inside
+// the query shadows a host variable of the same name, matching jq's scoping.
+type hostNames struct {
+	names []string
+}
+
+// lookupVar resolves a $-variable against the query's own bindings first and
+// the host-supplied ones second.
+func (st execState) lookupVar(name string) ([]byte, bool) {
+	if v, ok := st.ctx.lookupVar(name); ok {
+		return v, true
+	}
+	if st.host == nil {
+		return nil, false
+	}
+	for i, n := range st.host.names {
+		if n == name {
+			return bytes.TrimSpace(st.hostVals[i]), true
 		}
 	}
 	return nil, false
@@ -126,6 +154,8 @@ type indexScopeFrame struct {
 // globals keyed by goroutine id. It is threaded explicitly through the
 // executor so concurrent Program.Run calls stay isolated without mutexes.
 type execState struct {
+	host          *hostNames
+	hostVals      [][]byte
 	ctx           *execContext
 	tryDepth      int
 	optionalDepth int

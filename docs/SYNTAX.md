@@ -124,6 +124,27 @@ Pipes propagate multi-output: if the left side produces N results, the right sid
 
 Destructuring patterns follow jq's soft-missing semantics: absent array slots/object fields bind to `null`, while indexing a non-null value with the wrong container type still raises jq-style errors.
 
+#### Host variables
+
+Variables can also come from the caller, like jq's `--argjson`. Declare the names with `WithVariables` and pass one JSON value per name, in order, to `Run`, `RunWithBuffer`, `RunAll` or `RunFunc`:
+
+```go
+p, err := fastjq.Compile(`select(.k == $key) | .v + $n`, fastjq.WithVariables("$key", "$n"))
+out, err := p.Run([]byte(`{"k":"a","v":1}`), []byte(`"a"`), []byte(`10`))
+// 11
+```
+
+| Rule | Behavior |
+|------|----------|
+| Names | Written with the leading `$`. Must be jq identifiers and unique. `$__loc__` and `$ENV` are reserved. |
+| Scope | Outermost. `1 as $x \| $x` inside the query shadows a host `$x`. |
+| Undeclared use | `$name` in the query without a matching declaration is a compile error. |
+| Value count | Must equal the number of declared names, otherwise the run returns an error. Passing values to a program that declares none is also an error. |
+| Values | JSON text, used as written apart from trimmed surrounding whitespace. An empty value is an error. |
+| Allocations | None per run. Reuse one `[][]byte` and pass it as `vals...`. |
+
+Passing data this way is safer than formatting it into the query string. The values never reach the parser, so they cannot inject query syntax, and they cannot show up in a compile error. Runtime errors raised by jq operations can still quote the value they failed on.
+
 ### Literals
 
 | Syntax | Description | Example Output |
@@ -587,7 +608,7 @@ These features are intentionally outside the current pure `Compile` + `Run` API 
 | `input`, `inputs` | Need stream/stateful stdin access instead of pure input-byte transforms. |
 | `env`, `$ENV` | Need process-environment access, which breaks the current deterministic library boundary. |
 | `stderr` | Needs host stderr output plumbing as a value-producing builtin instead of the existing `debug` side effect. |
-| CLI flags such as `-r`, `-s`, `--arg`, `--argjson` | CLI concerns, not library query semantics. |
+| CLI flags such as `-r`, `-s`, `--arg`, `--argjson` | CLI concerns, not library query semantics. The library equivalent of `--argjson` is `WithVariables`. |
 
 ### Deferred because they need broader runtime work
 

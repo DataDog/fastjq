@@ -178,8 +178,7 @@ func execMulti(state execState, node *op, input []byte, buf []byte, fn func([]by
 			}
 			return fn(append(buf, value...))
 		}
-		ctx := state.currentExecContext()
-		value, ok := ctx.lookupVar(node.name)
+		value, ok := state.lookupVar(node.name)
 		if !ok {
 			return fmt.Errorf("$%s is not defined", node.name)
 		}
@@ -980,8 +979,7 @@ func execSingle(state execState, node *op, input []byte, buf []byte) ([]byte, er
 			}
 			return append(buf, value...), nil
 		}
-		ctx := state.currentExecContext()
-		value, ok := ctx.lookupVar(node.name)
+		value, ok := state.lookupVar(node.name)
 		if !ok {
 			return nil, fmt.Errorf("$%s is not defined", node.name)
 		}

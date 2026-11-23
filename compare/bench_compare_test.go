@@ -204,6 +204,18 @@ func BenchmarkGojq_Small_Field(b *testing.B) {
 	benchGojqObj(b, ".field_2", smallJSON)
 }
 func BenchmarkGojq_Large_Field(b *testing.B) { benchGojqLargeRot(b, ".field_50") }
+func BenchmarkGojq_Small_HostVar(b *testing.B) {
+	q, _ := gojq.Parse(`{field_0, key: $key}`)
+	code, _ := gojq.Compile(q, gojq.WithVariables([]string{"$key"}))
+	b.ReportAllocs()
+	for b.Loop() {
+		var v any
+		json.Unmarshal(smallJSON, &v)
+		iter := code.Run(v, "abc")
+		result, _ := iter.Next()
+		benchSink, _ = json.Marshal(result)
+	}
+}
 func BenchmarkGojq_Small_Index(b *testing.B) { benchGojqObj(b, ".[2]", []byte(`[1,2,3,4,5]`)) }
 func BenchmarkGojq_Small_ArrayDel(b *testing.B) {
 	benchGojqObj(b, "del(.[1], .[3])", []byte(`[1,2,3,4,5]`))
